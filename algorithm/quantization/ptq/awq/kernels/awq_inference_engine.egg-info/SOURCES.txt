@@ -1,0 +1,11 @@
+setup.py
+awq_inference_engine.egg-info/PKG-INFO
+awq_inference_engine.egg-info/SOURCES.txt
+awq_inference_engine.egg-info/dependency_links.txt
+awq_inference_engine.egg-info/requires.txt
+awq_inference_engine.egg-info/top_level.txt
+csrc/pybind.cpp
+csrc/quantization/gemm_cuda_gen.cu
+csrc/quantization/gemv_cuda.cu
+csrc/quantization_new/gemm/gemm_cuda.cu
+csrc/quantization_new/gemv/gemv_cuda.cu
