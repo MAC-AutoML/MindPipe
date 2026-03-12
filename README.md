@@ -149,6 +149,7 @@ python -m mindpipe.algorithm.main --task quantization --method gptq --model <pat
 
 | 目录 | 说明 |
 |------|------|
+
 | `auto_compressor.py` | 一键压缩入口，自动选择工作流 |
 | `workflows/` | 工作流实现，编排算法执行流程 |
 | `algorithm/` | 算法库，包含剪枝和量化的具体实现 |
