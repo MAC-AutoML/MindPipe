@@ -150,3 +150,4 @@ class AutoCompressor:
 
         workflow = EvaluationWorkflow(model=model, metrics=metrics)
         return workflow.run()
+
