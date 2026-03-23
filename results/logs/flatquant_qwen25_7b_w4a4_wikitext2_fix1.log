@@ -1,0 +1,344 @@
+2026-03-22 04:25:49,012 | INFO | algorithm_v1.quantization.base | Loading model from /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct
+
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]
+Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:02,  1.36it/s]
+Loading checkpoint shards:  50%|█████     | 2/4 [00:01<00:01,  1.76it/s]
+Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  1.67it/s]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:02<00:00,  2.01it/s]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:02<00:00,  1.85it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (2530183 > 131072). Running this sequence through the model will result in indexing errors
+2026-03-22 04:26:22,923 | INFO | algorithm_v1.quantization.qat.flatquant.method | Applied FlatQuant wrappers to model
+2026-03-22 04:26:24,968 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 0 =========
+2026-03-22 04:26:26,263 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 0, lr 0.00494542  time 0.945570s, mse: 0.04015434
+2026-03-22 04:26:26,528 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 1, lr 0.00478408  time 0.264789s, mse: 0.03831517
+2026-03-22 04:26:26,839 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 2, lr 0.00452302  time 0.310054s, mse: 0.04137509
+2026-03-22 04:26:27,149 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 3, lr 0.00417365  time 0.309932s, mse: 0.03650331
+2026-03-22 04:26:27,459 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 4, lr 0.00375125  time 0.310598s, mse: 0.03722778
+2026-03-22 04:26:27,772 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 5, lr 0.00327427  time 0.312184s, mse: 0.03580908
+2026-03-22 04:26:28,083 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 6, lr 0.00276356  time 0.311723s, mse: 0.03383641
+2026-03-22 04:26:28,396 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 7, lr 0.00224144  time 0.312188s, mse: 0.03390409
+2026-03-22 04:26:28,707 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 8, lr 0.00173073  time 0.310908s, mse: 0.03340939
+2026-03-22 04:26:29,018 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 9, lr 0.00125375  time 0.310993s, mse: 0.03272561
+2026-03-22 04:26:29,330 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 10, lr 0.00083135  time 0.311743s, mse: 0.03205341
+2026-03-22 04:26:29,640 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 11, lr 0.00048198  time 0.309771s, mse: 0.03232649
+2026-03-22 04:26:29,951 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 12, lr 0.00022092  time 0.311448s, mse: 0.03173649
+2026-03-22 04:26:30,263 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 13, lr 0.00005958  time 0.311635s, mse: 0.03232948
+2026-03-22 04:26:30,575 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 0 lwc lac iter 14, lr 0.00000500  time 0.311381s, mse: 0.03172937
+2026-03-22 04:26:31,144 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:26:31,241 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 1 =========
+2026-03-22 04:26:31,878 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 0, lr 0.00494542  time 0.331704s, mse: 0.00347668
+2026-03-22 04:26:32,181 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 1, lr 0.00478408  time 0.302885s, mse: 0.00275213
+2026-03-22 04:26:32,492 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 2, lr 0.00452302  time 0.311147s, mse: 0.00248566
+2026-03-22 04:26:32,804 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 3, lr 0.00417365  time 0.311399s, mse: 0.00233263
+2026-03-22 04:26:33,115 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 4, lr 0.00375125  time 0.311336s, mse: 0.00211604
+2026-03-22 04:26:33,424 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 5, lr 0.00327427  time 0.309387s, mse: 0.00203264
+2026-03-22 04:26:33,736 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 6, lr 0.00276356  time 0.311714s, mse: 0.00199905
+2026-03-22 04:26:34,051 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 7, lr 0.00224144  time 0.314929s, mse: 0.00191523
+2026-03-22 04:26:34,363 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 8, lr 0.00173073  time 0.311374s, mse: 0.00189453
+2026-03-22 04:26:34,674 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 9, lr 0.00125375  time 0.311333s, mse: 0.00180630
+2026-03-22 04:26:34,986 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 10, lr 0.00083135  time 0.311788s, mse: 0.00176688
+2026-03-22 04:26:35,299 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 11, lr 0.00048198  time 0.312852s, mse: 0.00182678
+2026-03-22 04:26:35,613 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 12, lr 0.00022092  time 0.313289s, mse: 0.00182084
+2026-03-22 04:26:35,925 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 13, lr 0.00005958  time 0.312148s, mse: 0.00185378
+2026-03-22 04:26:36,238 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 1 lwc lac iter 14, lr 0.00000500  time 0.312861s, mse: 0.00185294
+2026-03-22 04:26:36,784 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:26:36,884 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 2 =========
+2026-03-22 04:26:37,534 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 0, lr 0.00494542  time 0.342299s, mse: 0.00347811
+2026-03-22 04:26:37,834 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 1, lr 0.00478408  time 0.300071s, mse: 0.00308131
+2026-03-22 04:26:38,147 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 2, lr 0.00452302  time 0.312280s, mse: 0.00281948
+2026-03-22 04:26:38,459 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 3, lr 0.00417365  time 0.312504s, mse: 0.00264614
+2026-03-22 04:26:38,772 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 4, lr 0.00375125  time 0.312249s, mse: 0.00258692
+2026-03-22 04:26:39,085 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 5, lr 0.00327427  time 0.312968s, mse: 0.00253205
+2026-03-22 04:26:39,397 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 6, lr 0.00276356  time 0.311918s, mse: 0.00249093
+2026-03-22 04:26:39,709 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 7, lr 0.00224144  time 0.311865s, mse: 0.00243755
+2026-03-22 04:26:40,022 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 8, lr 0.00173073  time 0.313566s, mse: 0.00241267
+2026-03-22 04:26:40,335 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 9, lr 0.00125375  time 0.312548s, mse: 0.00238425
+2026-03-22 04:26:40,648 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 10, lr 0.00083135  time 0.312455s, mse: 0.00237166
+2026-03-22 04:26:40,959 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 11, lr 0.00048198  time 0.311714s, mse: 0.00234830
+2026-03-22 04:26:41,273 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 12, lr 0.00022092  time 0.313107s, mse: 0.00234181
+2026-03-22 04:26:41,586 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 13, lr 0.00005958  time 0.313677s, mse: 0.00233180
+2026-03-22 04:26:41,899 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 2 lwc lac iter 14, lr 0.00000500  time 0.312624s, mse: 0.00232734
+2026-03-22 04:26:42,457 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:26:42,568 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 3 =========
+2026-03-22 04:26:43,219 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 0, lr 0.00494542  time 0.335075s, mse: 27.74756622
+2026-03-22 04:26:43,520 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 1, lr 0.00478408  time 0.300917s, mse: 19.27157021
+2026-03-22 04:26:43,833 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 2, lr 0.00452302  time 0.312839s, mse: 14.76014519
+2026-03-22 04:26:44,147 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 3, lr 0.00417365  time 0.314086s, mse: 20.80112648
+2026-03-22 04:26:44,461 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 4, lr 0.00375125  time 0.313588s, mse: 22.56951714
+2026-03-22 04:26:44,774 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 5, lr 0.00327427  time 0.313072s, mse: 21.47675514
+2026-03-22 04:26:45,087 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 6, lr 0.00276356  time 0.312800s, mse: 17.59663391
+2026-03-22 04:26:45,401 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 7, lr 0.00224144  time 0.313591s, mse: 14.58248234
+2026-03-22 04:26:45,713 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 8, lr 0.00173073  time 0.312737s, mse: 5.65917730
+2026-03-22 04:26:46,028 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 9, lr 0.00125375  time 0.314040s, mse: 4804.89550781
+2026-03-22 04:26:46,341 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 10, lr 0.00083135  time 0.313797s, mse: 3.61394906
+2026-03-22 04:26:46,654 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 11, lr 0.00048198  time 0.312030s, mse: 2.17326808
+2026-03-22 04:26:46,966 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 12, lr 0.00022092  time 0.312170s, mse: 2.74180675
+2026-03-22 04:26:47,279 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 13, lr 0.00005958  time 0.312903s, mse: 3.18743610
+2026-03-22 04:26:47,594 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 3 lwc lac iter 14, lr 0.00000500  time 0.315197s, mse: 2.90629601
+2026-03-22 04:26:48,153 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:26:48,268 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 4 =========
+2026-03-22 04:26:48,907 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 0, lr 0.00494542  time 0.337057s, mse: 0.02308229
+2026-03-22 04:26:49,215 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 1, lr 0.00478408  time 0.307322s, mse: 0.02044189
+2026-03-22 04:26:49,528 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 2, lr 0.00452302  time 0.312937s, mse: 0.01676862
+2026-03-22 04:26:49,841 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 3, lr 0.00417365  time 0.313379s, mse: 0.01250284
+2026-03-22 04:26:50,154 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 4, lr 0.00375125  time 0.313033s, mse: 0.01058458
+2026-03-22 04:26:50,468 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 5, lr 0.00327427  time 0.312968s, mse: 0.00943724
+2026-03-22 04:26:50,782 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 6, lr 0.00276356  time 0.313934s, mse: 0.00923233
+2026-03-22 04:26:51,095 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 7, lr 0.00224144  time 0.313733s, mse: 0.00795708
+2026-03-22 04:26:51,410 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 8, lr 0.00173073  time 0.314143s, mse: 0.00807782
+2026-03-22 04:26:51,724 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 9, lr 0.00125375  time 0.314636s, mse: 0.00780127
+2026-03-22 04:26:52,039 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 10, lr 0.00083135  time 0.314397s, mse: 0.00727855
+2026-03-22 04:26:52,352 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 11, lr 0.00048198  time 0.312746s, mse: 0.00699468
+2026-03-22 04:26:52,667 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 12, lr 0.00022092  time 0.315044s, mse: 0.00691177
+2026-03-22 04:26:52,981 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 13, lr 0.00005958  time 0.314198s, mse: 0.00673949
+2026-03-22 04:26:53,295 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 4 lwc lac iter 14, lr 0.00000500  time 0.314128s, mse: 0.00671108
+2026-03-22 04:26:53,874 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:26:53,980 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 5 =========
+2026-03-22 04:26:54,684 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 0, lr 0.00494542  time 0.397259s, mse: 0.00853644
+2026-03-22 04:26:54,989 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 1, lr 0.00478408  time 0.305045s, mse: 0.00773120
+2026-03-22 04:26:55,303 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 2, lr 0.00452302  time 0.314240s, mse: 0.00705486
+2026-03-22 04:26:55,617 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 3, lr 0.00417365  time 0.313633s, mse: 0.00640963
+2026-03-22 04:26:55,930 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 4, lr 0.00375125  time 0.313092s, mse: 0.00605538
+2026-03-22 04:26:56,244 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 5, lr 0.00327427  time 0.313456s, mse: 0.00586483
+2026-03-22 04:26:56,558 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 6, lr 0.00276356  time 0.314176s, mse: 0.00562409
+2026-03-22 04:26:56,873 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 7, lr 0.00224144  time 0.315178s, mse: 0.00554140
+2026-03-22 04:26:57,187 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 8, lr 0.00173073  time 0.313813s, mse: 0.00544067
+2026-03-22 04:26:57,500 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 9, lr 0.00125375  time 0.312956s, mse: 0.00534292
+2026-03-22 04:26:57,815 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 10, lr 0.00083135  time 0.314377s, mse: 0.00525053
+2026-03-22 04:26:58,128 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 11, lr 0.00048198  time 0.313671s, mse: 0.00525418
+2026-03-22 04:26:58,442 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 12, lr 0.00022092  time 0.313823s, mse: 0.00518370
+2026-03-22 04:26:58,756 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 13, lr 0.00005958  time 0.313864s, mse: 0.00516872
+2026-03-22 04:26:59,071 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 5 lwc lac iter 14, lr 0.00000500  time 0.314443s, mse: 0.00518649
+2026-03-22 04:26:59,647 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:26:59,914 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 6 =========
+2026-03-22 04:27:00,506 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 0, lr 0.00494542  time 0.339845s, mse: 0.01818755
+2026-03-22 04:27:00,808 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 1, lr 0.00478408  time 0.302273s, mse: 0.01577739
+2026-03-22 04:27:01,122 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 2, lr 0.00452302  time 0.313893s, mse: 0.01447648
+2026-03-22 04:27:01,437 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 3, lr 0.00417365  time 0.314124s, mse: 0.01367467
+2026-03-22 04:27:01,750 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 4, lr 0.00375125  time 0.313609s, mse: 0.01297535
+2026-03-22 04:27:02,065 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 5, lr 0.00327427  time 0.314190s, mse: 0.01263025
+2026-03-22 04:27:02,380 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 6, lr 0.00276356  time 0.315306s, mse: 0.01236084
+2026-03-22 04:27:02,696 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 7, lr 0.00224144  time 0.316145s, mse: 0.01208701
+2026-03-22 04:27:03,015 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 8, lr 0.00173073  time 0.318827s, mse: 0.01181208
+2026-03-22 04:27:03,329 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 9, lr 0.00125375  time 0.313366s, mse: 0.01163742
+2026-03-22 04:27:03,644 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 10, lr 0.00083135  time 0.314923s, mse: 0.01151814
+2026-03-22 04:27:03,961 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 11, lr 0.00048198  time 0.316579s, mse: 0.01142011
+2026-03-22 04:27:04,277 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 12, lr 0.00022092  time 0.315975s, mse: 0.01137166
+2026-03-22 04:27:04,592 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 13, lr 0.00005958  time 0.315169s, mse: 0.01129502
+2026-03-22 04:27:04,907 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 6 lwc lac iter 14, lr 0.00000500  time 0.315130s, mse: 0.01129202
+2026-03-22 04:27:05,481 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:05,579 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 7 =========
+2026-03-22 04:27:06,223 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 0, lr 0.00494542  time 0.336612s, mse: 0.02231977
+2026-03-22 04:27:06,526 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 1, lr 0.00478408  time 0.303220s, mse: 0.02033810
+2026-03-22 04:27:06,839 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 2, lr 0.00452302  time 0.312747s, mse: 0.01919673
+2026-03-22 04:27:07,155 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 3, lr 0.00417365  time 0.315756s, mse: 0.01828262
+2026-03-22 04:27:07,469 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 4, lr 0.00375125  time 0.313884s, mse: 0.01763460
+2026-03-22 04:27:07,786 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 5, lr 0.00327427  time 0.316590s, mse: 0.01739487
+2026-03-22 04:27:08,103 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 6, lr 0.00276356  time 0.316347s, mse: 0.01697033
+2026-03-22 04:27:08,419 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 7, lr 0.00224144  time 0.316364s, mse: 0.01655447
+2026-03-22 04:27:08,736 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 8, lr 0.00173073  time 0.316725s, mse: 0.01631798
+2026-03-22 04:27:09,052 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 9, lr 0.00125375  time 0.316501s, mse: 0.01603733
+2026-03-22 04:27:09,369 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 10, lr 0.00083135  time 0.315962s, mse: 0.01594529
+2026-03-22 04:27:09,685 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 11, lr 0.00048198  time 0.316146s, mse: 0.01586129
+2026-03-22 04:27:10,001 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 12, lr 0.00022092  time 0.316210s, mse: 0.01574590
+2026-03-22 04:27:10,318 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 13, lr 0.00005958  time 0.317065s, mse: 0.01578202
+2026-03-22 04:27:10,634 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 7 lwc lac iter 14, lr 0.00000500  time 0.315356s, mse: 0.01569308
+2026-03-22 04:27:11,198 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:11,294 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 8 =========
+2026-03-22 04:27:11,948 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 0, lr 0.00494542  time 0.338465s, mse: 0.02416792
+2026-03-22 04:27:12,251 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 1, lr 0.00478408  time 0.302379s, mse: 0.02180816
+2026-03-22 04:27:12,567 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 2, lr 0.00452302  time 0.316220s, mse: 0.02022419
+2026-03-22 04:27:12,882 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 3, lr 0.00417365  time 0.315372s, mse: 0.01925310
+2026-03-22 04:27:13,198 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 4, lr 0.00375125  time 0.315604s, mse: 0.01847330
+2026-03-22 04:27:13,515 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 5, lr 0.00327427  time 0.316973s, mse: 0.01793049
+2026-03-22 04:27:13,832 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 6, lr 0.00276356  time 0.316994s, mse: 0.01747545
+2026-03-22 04:27:14,148 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 7, lr 0.00224144  time 0.315512s, mse: 0.01706250
+2026-03-22 04:27:14,463 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 8, lr 0.00173073  time 0.315228s, mse: 0.01674699
+2026-03-22 04:27:14,779 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 9, lr 0.00125375  time 0.315140s, mse: 0.01661780
+2026-03-22 04:27:15,098 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 10, lr 0.00083135  time 0.319800s, mse: 0.01646174
+2026-03-22 04:27:15,414 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 11, lr 0.00048198  time 0.315497s, mse: 0.01630104
+2026-03-22 04:27:15,729 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 12, lr 0.00022092  time 0.314786s, mse: 0.01623415
+2026-03-22 04:27:16,046 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 13, lr 0.00005958  time 0.317130s, mse: 0.01619238
+2026-03-22 04:27:16,364 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 8 lwc lac iter 14, lr 0.00000500  time 0.317477s, mse: 0.01615500
+2026-03-22 04:27:16,926 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:17,095 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 9 =========
+2026-03-22 04:27:17,721 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 0, lr 0.00494542  time 0.341509s, mse: 0.02648433
+2026-03-22 04:27:18,024 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 1, lr 0.00478408  time 0.303620s, mse: 0.02422804
+2026-03-22 04:27:18,339 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 2, lr 0.00452302  time 0.314623s, mse: 0.02272939
+2026-03-22 04:27:18,657 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 3, lr 0.00417365  time 0.317838s, mse: 0.02214700
+2026-03-22 04:27:18,974 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 4, lr 0.00375125  time 0.316533s, mse: 0.02175932
+2026-03-22 04:27:19,290 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 5, lr 0.00327427  time 0.315829s, mse: 0.02129323
+2026-03-22 04:27:19,608 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 6, lr 0.00276356  time 0.317800s, mse: 0.02063348
+2026-03-22 04:27:19,924 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 7, lr 0.00224144  time 0.315947s, mse: 0.02018411
+2026-03-22 04:27:20,240 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 8, lr 0.00173073  time 0.316019s, mse: 0.02020943
+2026-03-22 04:27:20,557 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 9, lr 0.00125375  time 0.317387s, mse: 0.02004882
+2026-03-22 04:27:20,874 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 10, lr 0.00083135  time 0.316512s, mse: 0.01977651
+2026-03-22 04:27:21,190 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 11, lr 0.00048198  time 0.316231s, mse: 0.01955020
+2026-03-22 04:27:21,508 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 12, lr 0.00022092  time 0.317816s, mse: 0.01956510
+2026-03-22 04:27:21,826 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 13, lr 0.00005958  time 0.317327s, mse: 0.01953405
+2026-03-22 04:27:22,143 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 9 lwc lac iter 14, lr 0.00000500  time 0.316979s, mse: 0.01945294
+2026-03-22 04:27:22,713 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:22,806 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 10 =========
+2026-03-22 04:27:23,450 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 0, lr 0.00494542  time 0.338284s, mse: 0.02424745
+2026-03-22 04:27:23,756 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 1, lr 0.00478408  time 0.306444s, mse: 0.02183081
+2026-03-22 04:27:24,073 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 2, lr 0.00452302  time 0.316450s, mse: 0.02038606
+2026-03-22 04:27:24,388 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 3, lr 0.00417365  time 0.314990s, mse: 0.01974369
+2026-03-22 04:27:24,705 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 4, lr 0.00375125  time 0.317216s, mse: 0.01891670
+2026-03-22 04:27:25,023 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 5, lr 0.00327427  time 0.317204s, mse: 0.01851307
+2026-03-22 04:27:25,339 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 6, lr 0.00276356  time 0.315809s, mse: 0.01823308
+2026-03-22 04:27:25,657 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 7, lr 0.00224144  time 0.317677s, mse: 0.01778500
+2026-03-22 04:27:25,973 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 8, lr 0.00173073  time 0.316769s, mse: 0.01766415
+2026-03-22 04:27:26,289 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 9, lr 0.00125375  time 0.315727s, mse: 0.01734659
+2026-03-22 04:27:26,608 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 10, lr 0.00083135  time 0.319086s, mse: 0.01735748
+2026-03-22 04:27:26,925 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 11, lr 0.00048198  time 0.316484s, mse: 0.01713583
+2026-03-22 04:27:27,242 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 12, lr 0.00022092  time 0.316586s, mse: 0.01705845
+2026-03-22 04:27:27,560 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 13, lr 0.00005958  time 0.318159s, mse: 0.01698419
+2026-03-22 04:27:27,877 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 10 lwc lac iter 14, lr 0.00000500  time 0.317239s, mse: 0.01699385
+2026-03-22 04:27:28,456 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:28,552 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 11 =========
+2026-03-22 04:27:29,205 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 0, lr 0.00494542  time 0.343639s, mse: 0.02422084
+2026-03-22 04:27:29,507 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 1, lr 0.00478408  time 0.301467s, mse: 0.02164527
+2026-03-22 04:27:29,824 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 2, lr 0.00452302  time 0.317330s, mse: 0.01995891
+2026-03-22 04:27:30,141 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 3, lr 0.00417365  time 0.316691s, mse: 0.01907288
+2026-03-22 04:27:30,460 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 4, lr 0.00375125  time 0.318971s, mse: 0.01831724
+2026-03-22 04:27:30,778 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 5, lr 0.00327427  time 0.318097s, mse: 0.01768568
+2026-03-22 04:27:31,094 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 6, lr 0.00276356  time 0.315969s, mse: 0.01723303
+2026-03-22 04:27:31,413 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 7, lr 0.00224144  time 0.318516s, mse: 0.01685226
+2026-03-22 04:27:31,730 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 8, lr 0.00173073  time 0.317479s, mse: 0.01660855
+2026-03-22 04:27:32,048 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 9, lr 0.00125375  time 0.317025s, mse: 0.01635256
+2026-03-22 04:27:32,366 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 10, lr 0.00083135  time 0.318318s, mse: 0.01623119
+2026-03-22 04:27:32,684 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 11, lr 0.00048198  time 0.318074s, mse: 0.01605463
+2026-03-22 04:27:33,002 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 12, lr 0.00022092  time 0.317411s, mse: 0.01600114
+2026-03-22 04:27:33,320 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 13, lr 0.00005958  time 0.318372s, mse: 0.01596266
+2026-03-22 04:27:33,639 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 11 lwc lac iter 14, lr 0.00000500  time 0.318203s, mse: 0.01596320
+2026-03-22 04:27:34,209 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:34,305 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 12 =========
+2026-03-22 04:27:34,952 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 0, lr 0.00494542  time 0.342339s, mse: 0.02438195
+2026-03-22 04:27:35,257 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 1, lr 0.00478408  time 0.305244s, mse: 0.02204692
+2026-03-22 04:27:35,574 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 2, lr 0.00452302  time 0.316969s, mse: 0.02047456
+2026-03-22 04:27:35,893 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 3, lr 0.00417365  time 0.318396s, mse: 0.01961411
+2026-03-22 04:27:36,211 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 4, lr 0.00375125  time 0.318651s, mse: 0.01890833
+2026-03-22 04:27:36,530 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 5, lr 0.00327427  time 0.318328s, mse: 0.01830449
+2026-03-22 04:27:36,847 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 6, lr 0.00276356  time 0.317556s, mse: 0.01806530
+2026-03-22 04:27:37,167 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 7, lr 0.00224144  time 0.319533s, mse: 0.01791514
+2026-03-22 04:27:37,485 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 8, lr 0.00173073  time 0.318245s, mse: 0.01749080
+2026-03-22 04:27:37,803 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 9, lr 0.00125375  time 0.317434s, mse: 0.01720567
+2026-03-22 04:27:38,122 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 10, lr 0.00083135  time 0.318401s, mse: 0.01714130
+2026-03-22 04:27:38,441 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 11, lr 0.00048198  time 0.319764s, mse: 0.01704880
+2026-03-22 04:27:38,761 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 12, lr 0.00022092  time 0.319638s, mse: 0.01689331
+2026-03-22 04:27:39,080 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 13, lr 0.00005958  time 0.318686s, mse: 0.01686561
+2026-03-22 04:27:39,398 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 12 lwc lac iter 14, lr 0.00000500  time 0.318358s, mse: 0.01676863
+2026-03-22 04:27:39,975 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:40,068 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 13 =========
+2026-03-22 04:27:40,715 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 0, lr 0.00494542  time 0.342571s, mse: 0.03115674
+2026-03-22 04:27:41,023 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 1, lr 0.00478408  time 0.307685s, mse: 0.02726396
+2026-03-22 04:27:41,342 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 2, lr 0.00452302  time 0.319229s, mse: 0.02531180
+2026-03-22 04:27:41,663 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 3, lr 0.00417365  time 0.321307s, mse: 0.02435525
+2026-03-22 04:27:41,982 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 4, lr 0.00375125  time 0.318729s, mse: 0.02326919
+2026-03-22 04:27:42,304 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 5, lr 0.00327427  time 0.321520s, mse: 0.02252388
+2026-03-22 04:27:42,623 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 6, lr 0.00276356  time 0.318825s, mse: 0.02193584
+2026-03-22 04:27:42,944 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 7, lr 0.00224144  time 0.320992s, mse: 0.02151527
+2026-03-22 04:27:43,265 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 8, lr 0.00173073  time 0.320585s, mse: 0.02111006
+2026-03-22 04:27:43,588 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 9, lr 0.00125375  time 0.322727s, mse: 0.02102862
+2026-03-22 04:27:43,910 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 10, lr 0.00083135  time 0.322389s, mse: 0.02096090
+2026-03-22 04:27:44,227 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 11, lr 0.00048198  time 0.317082s, mse: 0.02069782
+2026-03-22 04:27:44,545 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 12, lr 0.00022092  time 0.317815s, mse: 0.02044681
+2026-03-22 04:27:44,865 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 13, lr 0.00005958  time 0.319124s, mse: 0.02045538
+2026-03-22 04:27:45,183 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 13 lwc lac iter 14, lr 0.00000500  time 0.318223s, mse: 0.02042012
+2026-03-22 04:27:45,773 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:45,871 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 14 =========
+2026-03-22 04:27:46,518 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 0, lr 0.00494542  time 0.341997s, mse: 0.03054763
+2026-03-22 04:27:46,823 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 1, lr 0.00478408  time 0.305401s, mse: 0.02726917
+2026-03-22 04:27:47,141 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 2, lr 0.00452302  time 0.317555s, mse: 0.02529651
+2026-03-22 04:27:47,462 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 3, lr 0.00417365  time 0.321006s, mse: 0.02397558
+2026-03-22 04:27:47,780 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 4, lr 0.00375125  time 0.317634s, mse: 0.02359786
+2026-03-22 04:27:48,098 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 5, lr 0.00327427  time 0.317806s, mse: 0.02286841
+2026-03-22 04:27:48,418 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 6, lr 0.00276356  time 0.319733s, mse: 0.02211790
+2026-03-22 04:27:48,736 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 7, lr 0.00224144  time 0.318337s, mse: 0.02171972
+2026-03-22 04:27:49,054 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 8, lr 0.00173073  time 0.317715s, mse: 0.02172369
+2026-03-22 04:27:49,372 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 9, lr 0.00125375  time 0.318213s, mse: 0.02182609
+2026-03-22 04:27:49,692 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 10, lr 0.00083135  time 0.319174s, mse: 0.02133910
+2026-03-22 04:27:50,010 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 11, lr 0.00048198  time 0.318763s, mse: 0.02100136
+2026-03-22 04:27:50,329 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 12, lr 0.00022092  time 0.318129s, mse: 0.02092438
+2026-03-22 04:27:50,647 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 13, lr 0.00005958  time 0.318491s, mse: 0.02074725
+2026-03-22 04:27:50,965 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 14 lwc lac iter 14, lr 0.00000500  time 0.317922s, mse: 0.02069538
+2026-03-22 04:27:51,553 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:51,688 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 15 =========
+2026-03-22 04:27:52,390 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 0, lr 0.00494542  time 0.365008s, mse: 0.02536784
+2026-03-22 04:27:52,700 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 1, lr 0.00478408  time 0.309690s, mse: 0.02256828
+2026-03-22 04:27:53,021 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 2, lr 0.00452302  time 0.321404s, mse: 0.02130896
+2026-03-22 04:27:53,341 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 3, lr 0.00417365  time 0.319538s, mse: 0.02015344
+2026-03-22 04:27:53,670 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 4, lr 0.00375125  time 0.328783s, mse: 0.01934095
+2026-03-22 04:27:54,057 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 5, lr 0.00327427  time 0.386188s, mse: 0.01868816
+2026-03-22 04:27:54,428 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 6, lr 0.00276356  time 0.371228s, mse: 0.01819801
+2026-03-22 04:27:54,763 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 7, lr 0.00224144  time 0.334780s, mse: 0.01771566
+2026-03-22 04:27:55,082 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 8, lr 0.00173073  time 0.318664s, mse: 0.01738866
+2026-03-22 04:27:55,433 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 9, lr 0.00125375  time 0.351227s, mse: 0.01711547
+2026-03-22 04:27:55,774 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 10, lr 0.00083135  time 0.340356s, mse: 0.01687144
+2026-03-22 04:27:56,150 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 11, lr 0.00048198  time 0.375888s, mse: 0.01670847
+2026-03-22 04:27:56,545 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 12, lr 0.00022092  time 0.395123s, mse: 0.01659200
+2026-03-22 04:27:56,904 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 13, lr 0.00005958  time 0.358867s, mse: 0.01654128
+2026-03-22 04:27:57,245 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 15 lwc lac iter 14, lr 0.00000500  time 0.340154s, mse: 0.01653988
+2026-03-22 04:27:58,207 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:27:58,562 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 16 =========
+2026-03-22 04:27:59,483 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 0, lr 0.00494542  time 0.512479s, mse: 0.02580184
+2026-03-22 04:27:59,797 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 1, lr 0.00478408  time 0.314663s, mse: 0.02319816
+2026-03-22 04:28:00,132 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 2, lr 0.00452302  time 0.334272s, mse: 0.02119669
+2026-03-22 04:28:00,494 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 3, lr 0.00417365  time 0.361783s, mse: 0.02014121
+2026-03-22 04:28:00,909 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 4, lr 0.00375125  time 0.414710s, mse: 0.01945254
+2026-03-22 04:28:01,328 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 5, lr 0.00327427  time 0.418860s, mse: 0.01888923
+2026-03-22 04:28:01,681 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 6, lr 0.00276356  time 0.352543s, mse: 0.01816834
+2026-03-22 04:28:02,018 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 7, lr 0.00224144  time 0.336988s, mse: 0.01788814
+2026-03-22 04:28:02,363 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 8, lr 0.00173073  time 0.344607s, mse: 0.01753259
+2026-03-22 04:28:02,705 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 9, lr 0.00125375  time 0.342254s, mse: 0.01732799
+2026-03-22 04:28:03,042 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 10, lr 0.00083135  time 0.336842s, mse: 0.01729409
+2026-03-22 04:28:03,387 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 11, lr 0.00048198  time 0.344600s, mse: 0.01714213
+2026-03-22 04:28:03,701 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 12, lr 0.00022092  time 0.314080s, mse: 0.01709287
+2026-03-22 04:28:04,025 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 13, lr 0.00005958  time 0.324009s, mse: 0.01699243
+2026-03-22 04:28:04,390 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 16 lwc lac iter 14, lr 0.00000500  time 0.364643s, mse: 0.01700111
+2026-03-22 04:28:05,239 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:28:05,649 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 17 =========
+2026-03-22 04:28:06,512 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 0, lr 0.00494542  time 0.391771s, mse: 0.02933883
+2026-03-22 04:28:06,842 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 1, lr 0.00478408  time 0.328869s, mse: 0.02618368
+2026-03-22 04:28:07,190 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 2, lr 0.00452302  time 0.348403s, mse: 0.02442988
+2026-03-22 04:28:07,511 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 3, lr 0.00417365  time 0.320840s, mse: 0.02324414
+2026-03-22 04:28:07,923 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 4, lr 0.00375125  time 0.411371s, mse: 0.02209546
+2026-03-22 04:28:08,335 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 5, lr 0.00327427  time 0.411526s, mse: 0.02137533
+2026-03-22 04:28:08,707 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 6, lr 0.00276356  time 0.372216s, mse: 0.02080266
+2026-03-22 04:28:09,055 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 7, lr 0.00224144  time 0.347625s, mse: 0.02062919
+2026-03-22 04:28:09,375 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 8, lr 0.00173073  time 0.320421s, mse: 0.02032561
+2026-03-22 04:28:09,746 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 9, lr 0.00125375  time 0.370792s, mse: 0.02011970
+2026-03-22 04:28:10,124 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 10, lr 0.00083135  time 0.377421s, mse: 0.01984763
+2026-03-22 04:28:10,481 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 11, lr 0.00048198  time 0.356564s, mse: 0.01968133
+2026-03-22 04:28:10,829 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 12, lr 0.00022092  time 0.348305s, mse: 0.01959744
+2026-03-22 04:28:11,203 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 13, lr 0.00005958  time 0.373487s, mse: 0.01955118
+2026-03-22 04:28:11,547 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 17 lwc lac iter 14, lr 0.00000500  time 0.343563s, mse: 0.01944484
+2026-03-22 04:28:12,530 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:28:13,030 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 18 =========
+2026-03-22 04:28:13,779 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 0, lr 0.00494542  time 0.396601s, mse: 0.07001385
+2026-03-22 04:28:14,171 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 1, lr 0.00478408  time 0.392182s, mse: 0.06305365
+2026-03-22 04:28:14,538 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 2, lr 0.00452302  time 0.366011s, mse: 0.05972988
+2026-03-22 04:28:14,880 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 3, lr 0.00417365  time 0.341810s, mse: 0.05835087
+2026-03-22 04:28:15,224 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 4, lr 0.00375125  time 0.344240s, mse: 0.05622021
+2026-03-22 04:28:15,565 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 5, lr 0.00327427  time 0.340324s, mse: 0.05494372
+2026-03-22 04:28:15,913 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 6, lr 0.00276356  time 0.348604s, mse: 0.05396799
+2026-03-22 04:28:16,244 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 7, lr 0.00224144  time 0.330702s, mse: 0.05291336
+2026-03-22 04:28:16,628 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 8, lr 0.00173073  time 0.383499s, mse: 0.05250350
+2026-03-22 04:28:16,964 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 9, lr 0.00125375  time 0.336447s, mse: 0.05198547
+2026-03-22 04:28:17,286 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 10, lr 0.00083135  time 0.321689s, mse: 0.05208230
+2026-03-22 04:28:17,612 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 11, lr 0.00048198  time 0.325531s, mse: 0.05154346
+2026-03-22 04:28:17,947 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 12, lr 0.00022092  time 0.335104s, mse: 0.05139701
+2026-03-22 04:28:18,273 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 13, lr 0.00005958  time 0.325617s, mse: 0.05146060
+2026-03-22 04:28:18,640 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 18 lwc lac iter 14, lr 0.00000500  time 0.366700s, mse: 0.05116174
+2026-03-22 04:28:19,667 | INFO | algorithm_v1.quantization.qat.flatquant.method | saved paramaters at /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/flatquant/flatquant_w4a4_seq512/flat_parameters.pth
+2026-03-22 04:28:20,052 | INFO | algorithm_v1.quantization.qat.flatquant.method | ========= Layer 19 =========
+2026-03-22 04:28:20,985 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 19 lwc lac iter 0, lr 0.00494542  time 0.328527s, mse: 0.08824152
+2026-03-22 04:28:21,293 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 19 lwc lac iter 1, lr 0.00478408  time 0.308450s, mse: 0.08286527
+2026-03-22 04:28:21,613 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 19 lwc lac iter 2, lr 0.00452302  time 0.319067s, mse: 0.07496754
+2026-03-22 04:28:21,931 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 19 lwc lac iter 3, lr 0.00417365  time 0.318498s, mse: 0.07370510
+2026-03-22 04:28:22,253 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 19 lwc lac iter 4, lr 0.00375125  time 0.321191s, mse: 0.06983636
+2026-03-22 04:28:22,573 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 19 lwc lac iter 5, lr 0.00327427  time 0.320127s, mse: 0.06853294
+2026-03-22 04:28:22,892 | INFO | algorithm_v1.quantization.qat.flatquant.method | layer 19 lwc lac iter 6, lr 0.00276356  time 0.318676s, mse: 0.06837640
+Terminated
+
+ERROR conda.cli.main_run:execute(127): `conda run python /mnt/42_store/lcw/data2/Huawei/algorithm-v1/main.py quantization --algorithm flatquant --model_path /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct --device cuda:2 --dtype float16 --calibration_dataset wikitext2 --evaluation_dataset wikitext2 --calibration_samples 4 --sequence_length 512 --batch_size 1 --max_eval_chunks 64 --weight_bits 4 --activation_bits 4 --query_bits 16 --key_bits 4 --value_bits 4 --group_size 128 --kv_group_size 128 --weight_method rtn --output_root /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization` failed. (See above for error)

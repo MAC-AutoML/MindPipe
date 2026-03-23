@@ -1,0 +1,57 @@
+ERROR conda.cli.main_run:execute(127): `conda run python /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/scripts/run_workflow_queue.py --model_path /mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct --output_root /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow --log_root /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow --gpu_pool 1,2,3,4,7 --max_parallel 2` failed. (See above for error)
+[skip] p_then_q__gptq__sparsegpt -> /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/gptq__sparsegpt/gptq_w4a16__sparsegpt_s0.5_seq512/metrics.json
+[skip] q_then_p__gptq__wanda -> /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/gptq__wanda/gptq_w4a16__wanda_s0.5_seq512/metrics.json
+[skip] p_then_q__gptq__wanda -> /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/gptq__wanda/gptq_w4a16__wanda_s0.5_seq512/metrics.json
+[skip] q_then_p__awq__sparsegpt -> /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__sparsegpt/awq_w4a16__sparsegpt_s0.5_seq512/metrics.json
+[skip] p_then_q__awq__sparsegpt -> /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/awq__sparsegpt/awq_w4a16__sparsegpt_s0.5_seq512/metrics.json
+[skip] p_then_q__awq__wanda -> /mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/awq__wanda/awq_w4a16__wanda_s0.5_seq512/metrics.json
+[start] q_then_p__gptq__sparsegpt gpu=1 pid=3332889 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__gptq__sparsegpt.log
+[start] q_then_p__gptq__flap gpu=2 pid=3332921 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__gptq__flap.log
+[done] q_then_p__gptq__flap gpu=2 ppl=12.974792579825321 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/gptq__flap/gptq_w4a16__flap_s0.2_WIFV_h8_seq512/metrics.json
+[start] p_then_q__gptq__flap gpu=2 pid=3469704 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__gptq__flap.log
+[done] q_then_p__gptq__sparsegpt gpu=1 ppl=14.18987280840373 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/gptq__sparsegpt/gptq_w4a16__sparsegpt_s0.5_seq512/metrics.json
+[start] q_then_p__awq__wanda gpu=1 pid=3472210 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__awq__wanda.log
+[done] q_then_p__awq__wanda gpu=1 ppl=14.411407795565033 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__wanda/awq_w4a16__wanda_s0.5_seq512/metrics.json
+[start] q_then_p__awq__flap gpu=1 pid=3472867 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__awq__flap.log
+[done] p_then_q__gptq__flap gpu=2 ppl=13.07877053674251 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/gptq__flap/gptq_w4a16__flap_s0.2_WIFV_h8_seq512/metrics.json
+[done] q_then_p__awq__flap gpu=1 ppl=13.579823162220443 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__flap/awq_w4a16__flap_s0.2_WIFV_h8_seq512/metrics.json
+[start] p_then_q__awq__flap gpu=1 pid=3473521 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__awq__flap.log
+[start] q_then_p__quarot__sparsegpt gpu=2 pid=3473523 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__quarot__sparsegpt.log
+[done] p_then_q__awq__flap gpu=1 ppl=13.25115294096765 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/awq__flap/awq_w4a16__flap_s0.2_WIFV_h8_seq512/metrics.json
+[start] p_then_q__quarot__sparsegpt gpu=1 pid=3474380 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__quarot__sparsegpt.log
+[done] q_then_p__quarot__sparsegpt gpu=2 ppl=15.487379698384785 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/quarot__sparsegpt/quarot_w4a16__sparsegpt_s0.5_seq512/metrics.json
+[start] q_then_p__quarot__wanda gpu=2 pid=3479423 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__quarot__wanda.log
+[done] p_then_q__quarot__sparsegpt gpu=1 ppl=13.743098419945492 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/quarot__sparsegpt/quarot_w4a16__sparsegpt_s0.5_seq512/metrics.json
+[start] p_then_q__quarot__wanda gpu=1 pid=3480349 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__quarot__wanda.log
+[done] q_then_p__quarot__wanda gpu=2 ppl=30.857214074317817 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/quarot__wanda/quarot_w4a16__wanda_s0.5_seq512/metrics.json
+[start] q_then_p__quarot__flap gpu=2 pid=3482482 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__quarot__flap.log
+[done] p_then_q__quarot__wanda gpu=1 ppl=14.178559131437288 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/quarot__wanda/quarot_w4a16__wanda_s0.5_seq512/metrics.json
+[start] p_then_q__quarot__flap gpu=1 pid=3483421 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__quarot__flap.log
+[done] q_then_p__quarot__flap gpu=2 ppl=57.879257819267266 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/quarot__flap/quarot_w4a16__flap_s0.2_WIFV_h8_seq512/metrics.json
+[start] q_then_p__spinquant__sparsegpt gpu=2 pid=3485308 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__spinquant__sparsegpt.log
+[done] p_then_q__quarot__flap gpu=1 ppl=13.025247669317464 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/quarot__flap/quarot_w4a16__flap_s0.2_WIFV_h8_seq512/metrics.json
+[start] p_then_q__spinquant__sparsegpt gpu=1 pid=3486233 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__spinquant__sparsegpt.log
+[done] q_then_p__spinquant__sparsegpt gpu=2 ppl=15.257506055282473 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/spinquant__sparsegpt/spinquant_w4a16__sparsegpt_s0.5_seq512/metrics.json
+[start] q_then_p__spinquant__wanda gpu=2 pid=3490905 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__spinquant__wanda.log
+[done] p_then_q__spinquant__sparsegpt gpu=1 ppl=13.931177646650884 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/spinquant__sparsegpt/spinquant_w4a16__sparsegpt_s0.5_seq512/metrics.json
+[start] p_then_q__spinquant__wanda gpu=1 pid=3491818 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__spinquant__wanda.log
+[done] q_then_p__spinquant__wanda gpu=2 ppl=29.09804501972738 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/spinquant__wanda/spinquant_w4a16__wanda_s0.5_seq512/metrics.json
+[start] q_then_p__spinquant__flap gpu=2 pid=3493897 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__spinquant__flap.log
+[done] p_then_q__spinquant__wanda gpu=1 ppl=14.14685186584402 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/spinquant__wanda/spinquant_w4a16__wanda_s0.5_seq512/metrics.json
+[start] p_then_q__spinquant__flap gpu=1 pid=3494797 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__spinquant__flap.log
+[fail] q_then_p__spinquant__flap gpu=2 exit=1 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__spinquant__flap.log
+[start] q_then_p__flatquant__sparsegpt gpu=2 pid=3496673 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__flatquant__sparsegpt.log
+[done] p_then_q__spinquant__flap gpu=1 ppl=20.088398615704072 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/spinquant__flap/spinquant_w4a16__flap_s0.2_WIFV_h8_seq512/metrics.json
+[start] p_then_q__flatquant__sparsegpt gpu=1 pid=3498487 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__flatquant__sparsegpt.log
+[done] q_then_p__flatquant__sparsegpt gpu=2 ppl=27.7152161838779 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/flatquant__sparsegpt/flatquant_w4a4_q16k16v16__sparsegpt_s0.5_seq512/metrics.json
+[start] q_then_p__flatquant__wanda gpu=2 pid=3505276 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__flatquant__wanda.log
+[done] p_then_q__flatquant__sparsegpt gpu=1 ppl=22.76147145363566 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/flatquant__sparsegpt/flatquant_w4a4_q16k16v16__sparsegpt_s0.5_seq512/metrics.json
+[start] p_then_q__flatquant__wanda gpu=1 pid=3506841 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__flatquant__wanda.log
+[done] q_then_p__flatquant__wanda gpu=2 ppl=75.00344637346817 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/flatquant__wanda/flatquant_w4a4_q16k16v16__wanda_s0.5_seq512/metrics.json
+[start] q_then_p__flatquant__flap gpu=2 pid=3511494 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__flatquant__flap.log
+[done] p_then_q__flatquant__wanda gpu=1 ppl=23.821244328396695 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/flatquant__wanda/flatquant_w4a4_q16k16v16__wanda_s0.5_seq512/metrics.json
+[start] p_then_q__flatquant__flap gpu=1 pid=3512810 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/p_then_q__flatquant__flap.log
+[fail] q_then_p__flatquant__flap gpu=2 exit=1 log=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/logs/workflow/q_then_p__flatquant__flap.log
+[done] p_then_q__flatquant__flap gpu=1 ppl=22.356782377893648 metrics=/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/flatquant__flap/flatquant_w4a4_q16k16v16__flap_s0.2_WIFV_h8_seq512/metrics.json
+All jobs finished. failures=2
+

@@ -1,0 +1,44 @@
+2026-03-22 10:31:01,629 | INFO | algorithm_v1.quantization.base | Loading model from /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00, 104.10it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (2530183 > 131072). Running this sequence through the model will result in indexing errors
+{
+  "algorithm_name": "flatquant",
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+  "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization_full_eval/Qwen2.5-7B-Instruct/flatquant/flatquant_w16a16_q16k16v16_seq2048",
+  "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization_full_eval/Qwen2.5-7B-Instruct/flatquant/flatquant_w16a16_q16k16v16_seq2048/metrics.json",
+  "metrics": {
+    "perplexity": 7.358808627160017,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 2048,
+    "evaluated_chunks": 146,
+    "batch_size": 1,
+    "elapsed_seconds": 32.64118237840012,
+    "tokens_per_second": 9155.979600719615,
+    "algorithm_name": "flatquant",
+    "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+    "device": "cuda:3",
+    "dtype": "auto"
+  },
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/quantization/qat/flatquant/source",
+    "flatquant_config": {
+      "weight_bits": 16,
+      "activation_bits": 16,
+      "query_bits": 16,
+      "key_bits": 16,
+      "value_bits": 16,
+      "calibration_samples": 128,
+      "calibration_batch_size": 4,
+      "epochs": 0,
+      "flat_lr": 0.0,
+      "lwc": false,
+      "lac": false,
+      "cali_trans": false,
+      "add_diag": false,
+      "weight_quantizer": "none"
+    },
+    "quantized_linear_count": 0,
+    "quantized_linear_layers": {},
+    "skipped_reason": "all quantization bit-widths are 16; keep baseline model unchanged"
+  }
+}

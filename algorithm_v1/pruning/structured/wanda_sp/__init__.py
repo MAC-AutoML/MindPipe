@@ -1,0 +1,1 @@
+"""Structured Wanda method package."""

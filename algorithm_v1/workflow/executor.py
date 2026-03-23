@@ -1,0 +1,146 @@
+"""Common executor for single-stage and multi-stage workflows."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import gc
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from ..common.evaluation import evaluate_perplexity
+from ..common.evaluation import evaluate_zero_shot
+from ..common.io import ensure_dir
+from ..common.io import write_json
+from ..common.modeling import load_model_and_tokenizer
+from ..pruning.registry import get_method as get_pruning_method
+from ..quantization.config import normalize_args as normalize_quantization_args
+from ..quantization.registry import get_method as get_quantization_method
+from .schema import WorkflowConfig
+from .schema import WorkflowRunResult
+from .schema import WorkflowStage
+from .validation import validate_workflow_config
+
+
+def _build_stage_args(common_args: dict[str, Any], stage: WorkflowStage) -> argparse.Namespace:
+    stage_args_dict = copy.deepcopy(common_args)
+    stage_args_dict.update(stage.parameters)
+    stage_args = argparse.Namespace(**stage_args_dict)
+    if stage.stage_type == "quantization":
+        normalize_quantization_args(stage_args)
+    return stage_args
+
+
+def _resolve_stage_method(stage: WorkflowStage):
+    if stage.stage_type == "quantization":
+        return get_quantization_method(stage.algorithm_name)
+    return get_pruning_method(stage.algorithm_name)
+
+
+def _resolve_final_output_dir(
+    config: WorkflowConfig,
+    stage_method,
+    stage_args: argparse.Namespace,
+) -> Path:
+    if config.flatten_single_stage and len(config.stages) == 1:
+        return ensure_dir(stage_method.resolve_output_dir(stage_args))
+    if config.output_dir is None:
+        raise ValueError("Workflow output_dir is required for multi-stage runs")
+    return ensure_dir(config.output_dir)
+
+
+def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stage_args: argparse.Namespace):
+    stage_start = time.perf_counter()
+    stage_output_dir = ensure_dir(stage_method.resolve_output_dir(stage_args))
+    if stage.stage_type == "quantization":
+        artifacts = stage_method.apply_fake_quantization(model, tokenizer_bundle, stage_args)
+    else:
+        artifacts = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
+    return {
+        "stage_type": stage.stage_type,
+        "algorithm_name": stage.algorithm_name,
+        "parameters": {
+            key: value
+            for key, value in vars(stage_args).items()
+            if key not in {"hf_token"}
+        },
+        "output_dir": str(stage_output_dir),
+        "elapsed_seconds": time.perf_counter() - stage_start,
+        "artifacts": artifacts,
+    }
+
+
+def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
+    validate_workflow_config(config)
+
+    dtype = config.common_args.get("dtype", "auto")
+    model, tokenizer_bundle = load_model_and_tokenizer(config.model_path, dtype=dtype)
+    sequence_length = int(config.common_args["sequence_length"])
+    model.seqlen = sequence_length
+
+    stage_records: list[dict[str, Any]] = []
+    final_output_dir: Path | None = None
+    for stage in config.stages:
+        stage_method = _resolve_stage_method(stage)
+        stage_args = _build_stage_args(config.common_args, stage)
+        stage_args.model_path = config.model_path
+        if final_output_dir is None:
+            final_output_dir = _resolve_final_output_dir(config, stage_method, stage_args)
+        stage_record = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
+        stage_records.append(stage_record)
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    if final_output_dir is None:
+        raise RuntimeError("Workflow produced no stages")
+
+    metrics = evaluate_perplexity(
+        model=model,
+        tokenizer=tokenizer_bundle.tokenizer,
+        dataset_name=config.common_args["evaluation_dataset"],
+        sequence_length=sequence_length,
+        batch_size=int(config.common_args["batch_size"]),
+        max_eval_chunks=config.common_args["max_eval_chunks"],
+        device=config.common_args["device"],
+    )
+    if config.common_args.get("eval_zero_shot", False):
+        metrics["zero_shot"] = evaluate_zero_shot(
+            model=model,
+            tokenizer=tokenizer_bundle.tokenizer,
+            task_names=config.common_args["zero_shot_tasks"],
+            batch_size=int(config.common_args["zero_shot_batch_size"]),
+            device=config.common_args["device"],
+            num_fewshot=int(config.common_args["zero_shot_num_fewshot"]),
+            limit=config.common_args.get("zero_shot_limit"),
+        )
+    metrics.update(config.result_metadata)
+    metrics.update(
+        {
+            "model_path": config.model_path,
+            "device": config.common_args["device"],
+            "dtype": dtype,
+        }
+    )
+
+    artifacts: dict[str, Any]
+    if config.flatten_single_stage and len(stage_records) == 1:
+        artifacts = stage_records[0]["artifacts"]
+    else:
+        artifacts = {"stages": stage_records}
+    if config.save_composed_model:
+        model_dir = ensure_dir(final_output_dir / "composed_model")
+        model.save_pretrained(model_dir)
+        tokenizer_bundle.save_pretrained(str(model_dir))
+        artifacts["composed_model_dir"] = str(model_dir)
+
+    metrics_path = write_json(final_output_dir / "metrics.json", {**metrics, "artifacts": artifacts})
+    return WorkflowRunResult(
+        model_path=config.model_path,
+        output_dir=str(final_output_dir),
+        metrics_path=str(metrics_path),
+        metrics=metrics,
+        artifacts=artifacts,
+    )

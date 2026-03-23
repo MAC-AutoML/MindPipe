@@ -1,0 +1,42 @@
+{
+  "model_name": "Qwen2.5-VL-7B-Instruct",
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+  "assumptions": {
+    "baseline_dtype": "fp16/bf16-compatible 2 bytes per parameter",
+    "quantization_bits": 4,
+    "sparsity_ratio": 0.5,
+    "group_size": 128,
+    "metadata_model": "conservative int4 + fp16 scale + fp16 zero estimate",
+    "note": "Current fake-quant and pseudo-prune experiments do not physically compress runtime tensors; numbers below are theoretical post-export weight footprints."
+  },
+  "parameter_scope": {
+    "all_parameters": 8292166656,
+    "quantized_pruned_linear_parameters": 6525288448,
+    "other_parameters": 1766878208,
+    "linear_parameter_ratio": 0.7869220094941614
+  },
+  "linear_weights": {
+    "fp16_dense_gib": 12.154296875,
+    "int4_only_gib": 3.228485107421875,
+    "int4_only_reduction_ratio": 0.734375,
+    "int4_only_compression_ratio": 3.764705882352941,
+    "int4_plus_50_sparse_gib": 1.6142425537109375,
+    "int4_plus_50_sparse_reduction_ratio": 0.8671875,
+    "int4_plus_50_sparse_compression_ratio": 7.529411764705882,
+    "extra_reduction_vs_int4_only": 0.5
+  },
+  "whole_model_upper_bound": {
+    "fp16_dense_gib": 15.445363998413086,
+    "int4_only_gib": 6.519552230834961,
+    "int4_only_reduction_ratio": 0.5778958507222747,
+    "int4_only_compression_ratio": 2.369083558432508,
+    "int4_plus_50_sparse_gib": 4.905309677124023,
+    "int4_plus_50_sparse_reduction_ratio": 0.682408930108218,
+    "int4_plus_50_sparse_compression_ratio": 3.1487031431354366,
+    "extra_reduction_vs_int4_only": 0.2476002180143898
+  },
+  "interpretation": {
+    "same_memory_for_all_8_workflows": true,
+    "why": "All 8 workflows end at the same target setting: 4-bit weight quantization on the same decoder linear layers plus 50% unstructured sparsity."
+  }
+}

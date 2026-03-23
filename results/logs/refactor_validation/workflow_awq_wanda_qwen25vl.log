@@ -1,0 +1,404 @@
+
+Loading checkpoint shards:   0%|          | 0/5 [00:00<?, ?it/s]
+Loading checkpoint shards:  20%|██        | 1/5 [00:00<00:02,  1.71it/s]
+Loading checkpoint shards:  40%|████      | 2/5 [00:01<00:02,  1.42it/s]
+Loading checkpoint shards:  60%|██████    | 3/5 [00:02<00:01,  1.16it/s]
+Loading checkpoint shards:  80%|████████  | 4/5 [00:02<00:00,  1.45it/s]
+Loading checkpoint shards: 100%|██████████| 5/5 [00:02<00:00,  2.10it/s]
+Loading checkpoint shards: 100%|██████████| 5/5 [00:02<00:00,  1.70it/s]
+The image processor of type `Qwen2VLImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. Note that this behavior will be extended to all models in a future release.
+
+pseudo weight quantization...:   0%|          | 0/28 [00:00<?, ?it/s]
+pseudo weight quantization...:   4%|▎         | 1/28 [00:01<00:31,  1.16s/it]
+pseudo weight quantization...:   7%|▋         | 2/28 [00:01<00:21,  1.23it/s]
+pseudo weight quantization...:  11%|█         | 3/28 [00:02<00:15,  1.65it/s]
+pseudo weight quantization...:  14%|█▍        | 4/28 [00:02<00:14,  1.69it/s]
+pseudo weight quantization...:  18%|█▊        | 5/28 [00:03<00:13,  1.70it/s]
+pseudo weight quantization...:  21%|██▏       | 6/28 [00:03<00:12,  1.71it/s]
+pseudo weight quantization...:  25%|██▌       | 7/28 [00:04<00:12,  1.72it/s]
+pseudo weight quantization...:  29%|██▊       | 8/28 [00:04<00:11,  1.73it/s]
+pseudo weight quantization...:  32%|███▏      | 9/28 [00:05<00:10,  1.74it/s]
+pseudo weight quantization...:  36%|███▌      | 10/28 [00:05<00:09,  1.94it/s]
+pseudo weight quantization...:  39%|███▉      | 11/28 [00:06<00:09,  1.89it/s]
+pseudo weight quantization...:  43%|████▎     | 12/28 [00:06<00:08,  1.92it/s]
+pseudo weight quantization...:  46%|████▋     | 13/28 [00:07<00:07,  1.88it/s]
+pseudo weight quantization...:  50%|█████     | 14/28 [00:08<00:07,  1.88it/s]
+pseudo weight quantization...:  54%|█████▎    | 15/28 [00:08<00:06,  1.88it/s]
+pseudo weight quantization...:  57%|█████▋    | 16/28 [00:09<00:06,  1.89it/s]
+pseudo weight quantization...:  61%|██████    | 17/28 [00:09<00:05,  1.88it/s]
+pseudo weight quantization...:  64%|██████▍   | 18/28 [00:10<00:05,  1.83it/s]
+pseudo weight quantization...:  68%|██████▊   | 19/28 [00:10<00:05,  1.79it/s]
+pseudo weight quantization...:  71%|███████▏  | 20/28 [00:11<00:04,  1.74it/s]
+pseudo weight quantization...:  75%|███████▌  | 21/28 [00:12<00:04,  1.70it/s]
+pseudo weight quantization...:  79%|███████▊  | 22/28 [00:12<00:03,  1.64it/s]
+pseudo weight quantization...:  82%|████████▏ | 23/28 [00:13<00:03,  1.65it/s]
+pseudo weight quantization...:  86%|████████▌ | 24/28 [00:13<00:02,  1.70it/s]
+pseudo weight quantization...:  89%|████████▉ | 25/28 [00:14<00:01,  1.76it/s]
+pseudo weight quantization...:  93%|█████████▎| 26/28 [00:14<00:01,  1.78it/s]
+pseudo weight quantization...:  96%|█████████▋| 27/28 [00:15<00:00,  1.80it/s]
+pseudo weight quantization...: 100%|██████████| 28/28 [00:16<00:00,  1.82it/s]
+pseudo weight quantization...: 100%|██████████| 28/28 [00:16<00:00,  1.75it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (526359 > 131072). Running this sequence through the model will result in indexing errors
+
+loading calibdation data
+dataset loading complete
+pruning layer 0 name self_attn.q_proj
+pruning layer 0 name self_attn.k_proj
+pruning layer 0 name self_attn.v_proj
+pruning layer 0 name self_attn.o_proj
+pruning layer 0 name mlp.gate_proj
+pruning layer 0 name mlp.up_proj
+pruning layer 0 name mlp.down_proj
+pruning layer 1 name self_attn.q_proj
+pruning layer 1 name self_attn.k_proj
+pruning layer 1 name self_attn.v_proj
+pruning layer 1 name self_attn.o_proj
+pruning layer 1 name mlp.gate_proj
+pruning layer 1 name mlp.up_proj
+pruning layer 1 name mlp.down_proj
+pruning layer 2 name self_attn.q_proj
+pruning layer 2 name self_attn.k_proj
+pruning layer 2 name self_attn.v_proj
+pruning layer 2 name self_attn.o_proj
+pruning layer 2 name mlp.gate_proj
+pruning layer 2 name mlp.up_proj
+pruning layer 2 name mlp.down_proj
+pruning layer 3 name self_attn.q_proj
+pruning layer 3 name self_attn.k_proj
+pruning layer 3 name self_attn.v_proj
+pruning layer 3 name self_attn.o_proj
+pruning layer 3 name mlp.gate_proj
+pruning layer 3 name mlp.up_proj
+pruning layer 3 name mlp.down_proj
+pruning layer 4 name self_attn.q_proj
+pruning layer 4 name self_attn.k_proj
+pruning layer 4 name self_attn.v_proj
+pruning layer 4 name self_attn.o_proj
+pruning layer 4 name mlp.gate_proj
+pruning layer 4 name mlp.up_proj
+pruning layer 4 name mlp.down_proj
+pruning layer 5 name self_attn.q_proj
+pruning layer 5 name self_attn.k_proj
+pruning layer 5 name self_attn.v_proj
+pruning layer 5 name self_attn.o_proj
+pruning layer 5 name mlp.gate_proj
+pruning layer 5 name mlp.up_proj
+pruning layer 5 name mlp.down_proj
+pruning layer 6 name self_attn.q_proj
+pruning layer 6 name self_attn.k_proj
+pruning layer 6 name self_attn.v_proj
+pruning layer 6 name self_attn.o_proj
+pruning layer 6 name mlp.gate_proj
+pruning layer 6 name mlp.up_proj
+pruning layer 6 name mlp.down_proj
+pruning layer 7 name self_attn.q_proj
+pruning layer 7 name self_attn.k_proj
+pruning layer 7 name self_attn.v_proj
+pruning layer 7 name self_attn.o_proj
+pruning layer 7 name mlp.gate_proj
+pruning layer 7 name mlp.up_proj
+pruning layer 7 name mlp.down_proj
+pruning layer 8 name self_attn.q_proj
+pruning layer 8 name self_attn.k_proj
+pruning layer 8 name self_attn.v_proj
+pruning layer 8 name self_attn.o_proj
+pruning layer 8 name mlp.gate_proj
+pruning layer 8 name mlp.up_proj
+pruning layer 8 name mlp.down_proj
+pruning layer 9 name self_attn.q_proj
+pruning layer 9 name self_attn.k_proj
+pruning layer 9 name self_attn.v_proj
+pruning layer 9 name self_attn.o_proj
+pruning layer 9 name mlp.gate_proj
+pruning layer 9 name mlp.up_proj
+pruning layer 9 name mlp.down_proj
+pruning layer 10 name self_attn.q_proj
+pruning layer 10 name self_attn.k_proj
+pruning layer 10 name self_attn.v_proj
+pruning layer 10 name self_attn.o_proj
+pruning layer 10 name mlp.gate_proj
+pruning layer 10 name mlp.up_proj
+pruning layer 10 name mlp.down_proj
+pruning layer 11 name self_attn.q_proj
+pruning layer 11 name self_attn.k_proj
+pruning layer 11 name self_attn.v_proj
+pruning layer 11 name self_attn.o_proj
+pruning layer 11 name mlp.gate_proj
+pruning layer 11 name mlp.up_proj
+pruning layer 11 name mlp.down_proj
+pruning layer 12 name self_attn.q_proj
+pruning layer 12 name self_attn.k_proj
+pruning layer 12 name self_attn.v_proj
+pruning layer 12 name self_attn.o_proj
+pruning layer 12 name mlp.gate_proj
+pruning layer 12 name mlp.up_proj
+pruning layer 12 name mlp.down_proj
+pruning layer 13 name self_attn.q_proj
+pruning layer 13 name self_attn.k_proj
+pruning layer 13 name self_attn.v_proj
+pruning layer 13 name self_attn.o_proj
+pruning layer 13 name mlp.gate_proj
+pruning layer 13 name mlp.up_proj
+pruning layer 13 name mlp.down_proj
+pruning layer 14 name self_attn.q_proj
+pruning layer 14 name self_attn.k_proj
+pruning layer 14 name self_attn.v_proj
+pruning layer 14 name self_attn.o_proj
+pruning layer 14 name mlp.gate_proj
+pruning layer 14 name mlp.up_proj
+pruning layer 14 name mlp.down_proj
+pruning layer 15 name self_attn.q_proj
+pruning layer 15 name self_attn.k_proj
+pruning layer 15 name self_attn.v_proj
+pruning layer 15 name self_attn.o_proj
+pruning layer 15 name mlp.gate_proj
+pruning layer 15 name mlp.up_proj
+pruning layer 15 name mlp.down_proj
+pruning layer 16 name self_attn.q_proj
+pruning layer 16 name self_attn.k_proj
+pruning layer 16 name self_attn.v_proj
+pruning layer 16 name self_attn.o_proj
+pruning layer 16 name mlp.gate_proj
+pruning layer 16 name mlp.up_proj
+pruning layer 16 name mlp.down_proj
+pruning layer 17 name self_attn.q_proj
+pruning layer 17 name self_attn.k_proj
+pruning layer 17 name self_attn.v_proj
+pruning layer 17 name self_attn.o_proj
+pruning layer 17 name mlp.gate_proj
+pruning layer 17 name mlp.up_proj
+pruning layer 17 name mlp.down_proj
+pruning layer 18 name self_attn.q_proj
+pruning layer 18 name self_attn.k_proj
+pruning layer 18 name self_attn.v_proj
+pruning layer 18 name self_attn.o_proj
+pruning layer 18 name mlp.gate_proj
+pruning layer 18 name mlp.up_proj
+pruning layer 18 name mlp.down_proj
+pruning layer 19 name self_attn.q_proj
+pruning layer 19 name self_attn.k_proj
+pruning layer 19 name self_attn.v_proj
+pruning layer 19 name self_attn.o_proj
+pruning layer 19 name mlp.gate_proj
+pruning layer 19 name mlp.up_proj
+pruning layer 19 name mlp.down_proj
+pruning layer 20 name self_attn.q_proj
+pruning layer 20 name self_attn.k_proj
+pruning layer 20 name self_attn.v_proj
+pruning layer 20 name self_attn.o_proj
+pruning layer 20 name mlp.gate_proj
+pruning layer 20 name mlp.up_proj
+pruning layer 20 name mlp.down_proj
+pruning layer 21 name self_attn.q_proj
+pruning layer 21 name self_attn.k_proj
+pruning layer 21 name self_attn.v_proj
+pruning layer 21 name self_attn.o_proj
+pruning layer 21 name mlp.gate_proj
+pruning layer 21 name mlp.up_proj
+pruning layer 21 name mlp.down_proj
+pruning layer 22 name self_attn.q_proj
+pruning layer 22 name self_attn.k_proj
+pruning layer 22 name self_attn.v_proj
+pruning layer 22 name self_attn.o_proj
+pruning layer 22 name mlp.gate_proj
+pruning layer 22 name mlp.up_proj
+pruning layer 22 name mlp.down_proj
+pruning layer 23 name self_attn.q_proj
+pruning layer 23 name self_attn.k_proj
+pruning layer 23 name self_attn.v_proj
+pruning layer 23 name self_attn.o_proj
+pruning layer 23 name mlp.gate_proj
+pruning layer 23 name mlp.up_proj
+pruning layer 23 name mlp.down_proj
+pruning layer 24 name self_attn.q_proj
+pruning layer 24 name self_attn.k_proj
+pruning layer 24 name self_attn.v_proj
+pruning layer 24 name self_attn.o_proj
+pruning layer 24 name mlp.gate_proj
+pruning layer 24 name mlp.up_proj
+pruning layer 24 name mlp.down_proj
+pruning layer 25 name self_attn.q_proj
+pruning layer 25 name self_attn.k_proj
+pruning layer 25 name self_attn.v_proj
+pruning layer 25 name self_attn.o_proj
+pruning layer 25 name mlp.gate_proj
+pruning layer 25 name mlp.up_proj
+pruning layer 25 name mlp.down_proj
+pruning layer 26 name self_attn.q_proj
+pruning layer 26 name self_attn.k_proj
+pruning layer 26 name self_attn.v_proj
+pruning layer 26 name self_attn.o_proj
+pruning layer 26 name mlp.gate_proj
+pruning layer 26 name mlp.up_proj
+pruning layer 26 name mlp.down_proj
+pruning layer 27 name self_attn.q_proj
+pruning layer 27 name self_attn.k_proj
+pruning layer 27 name self_attn.v_proj
+pruning layer 27 name self_attn.o_proj
+pruning layer 27 name mlp.gate_proj
+pruning layer 27 name mlp.up_proj
+pruning layer 27 name mlp.down_proj
+layer 0 sparsity 0.500000
+layer 1 sparsity 0.502176
+layer 2 sparsity 0.500005
+layer 3 sparsity 0.500040
+layer 4 sparsity 0.500000
+layer 5 sparsity 0.500000
+layer 6 sparsity 0.500000
+layer 7 sparsity 0.500000
+layer 8 sparsity 0.500000
+layer 9 sparsity 0.500000
+layer 10 sparsity 0.500000
+layer 11 sparsity 0.500000
+layer 12 sparsity 0.500000
+layer 13 sparsity 0.500000
+layer 14 sparsity 0.500005
+layer 15 sparsity 0.500000
+layer 16 sparsity 0.500000
+layer 17 sparsity 0.500000
+layer 18 sparsity 0.500001
+layer 19 sparsity 0.500002
+layer 20 sparsity 0.500014
+layer 21 sparsity 0.500004
+layer 22 sparsity 0.500000
+layer 23 sparsity 0.500000
+layer 24 sparsity 0.500002
+layer 25 sparsity 0.500020
+layer 26 sparsity 0.500017
+layer 27 sparsity 0.500000
+{
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+  "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__wanda/awq_w4a16__wanda_s0.5_seq512",
+  "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__wanda/awq_w4a16__wanda_s0.5_seq512/metrics.json",
+  "metrics": {
+    "perplexity": 14.411407795565033,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 512,
+    "evaluated_chunks": 64,
+    "batch_size": 1,
+    "elapsed_seconds": 3.5107838758267462,
+    "tokens_per_second": 9315.298564853587,
+    "execution_order": "quantization_then_pruning",
+    "quantization_algorithm": "awq",
+    "pruning_algorithm": "wanda",
+    "weight_bits": 4,
+    "activation_bits": 16,
+    "sparsity_ratio": 0.5,
+    "quantization_calibration_dataset": "pileval",
+    "pruning_calibration_dataset": "c4",
+    "quantization_calibration_samples": 4,
+    "pruning_calibration_samples": 128,
+    "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+    "device": "cuda:4",
+    "dtype": "float16"
+  },
+  "artifacts": {
+    "stages": [
+      {
+        "stage_type": "quantization",
+        "algorithm_name": "awq",
+        "parameters": {
+          "device": "cuda:4",
+          "dtype": "float16",
+          "log_level": "INFO",
+          "evaluation_dataset": "wikitext2",
+          "sequence_length": 512,
+          "batch_size": 1,
+          "max_eval_chunks": 64,
+          "seed": 0,
+          "weight_bits": 4,
+          "activation_bits": 16,
+          "query_bits": 16,
+          "key_bits": 16,
+          "value_bits": 16,
+          "group_size": 128,
+          "weight_group_size": 128,
+          "activation_group_size": 128,
+          "kv_group_size": 128,
+          "weight_symmetric": false,
+          "activation_symmetric": true,
+          "query_symmetric": true,
+          "key_symmetric": true,
+          "value_symmetric": true,
+          "weight_method": "gptq",
+          "use_activation_order": false,
+          "static_groups": false,
+          "awq_search": false,
+          "rotation_mode": "hadamard",
+          "rotation_checkpoint": null,
+          "sparsity_ratio": 0.5,
+          "structure_pattern": "unstructured",
+          "block_size": 128,
+          "use_variant": false,
+          "output_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__wanda/awq_w4a16__wanda_s0.5_seq512/stages",
+          "calibration_dataset": "pileval",
+          "calibration_samples": 4,
+          "damp_percent": 0.05,
+          "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
+        },
+        "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__wanda/awq_w4a16__wanda_s0.5_seq512/stages/Qwen2.5-VL-7B-Instruct/awq/awq_w4a16_seq512",
+        "elapsed_seconds": 16.05756229488179,
+        "artifacts": {
+          "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/algorithm_v1/quantization/ptq/awq/source",
+          "quantization_config": {
+            "zero_point": true,
+            "q_group_size": 128
+          }
+        }
+      },
+      {
+        "stage_type": "pruning",
+        "algorithm_name": "wanda",
+        "parameters": {
+          "device": "cuda:4",
+          "dtype": "float16",
+          "log_level": "INFO",
+          "evaluation_dataset": "wikitext2",
+          "sequence_length": 512,
+          "batch_size": 1,
+          "max_eval_chunks": 64,
+          "seed": 0,
+          "weight_bits": 4,
+          "activation_bits": 16,
+          "query_bits": 16,
+          "key_bits": 16,
+          "value_bits": 16,
+          "group_size": 128,
+          "weight_group_size": 128,
+          "activation_group_size": 128,
+          "kv_group_size": 128,
+          "weight_symmetric": false,
+          "activation_symmetric": true,
+          "query_symmetric": true,
+          "key_symmetric": true,
+          "value_symmetric": true,
+          "weight_method": "gptq",
+          "use_activation_order": false,
+          "static_groups": false,
+          "awq_search": false,
+          "rotation_mode": "hadamard",
+          "rotation_checkpoint": null,
+          "sparsity_ratio": 0.5,
+          "structure_pattern": "unstructured",
+          "block_size": 128,
+          "use_variant": false,
+          "output_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__wanda/awq_w4a16__wanda_s0.5_seq512/stages",
+          "calibration_dataset": "c4",
+          "calibration_samples": 128,
+          "damp_percent": 0.01,
+          "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+          "nsamples": 128
+        },
+        "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__wanda/awq_w4a16__wanda_s0.5_seq512/stages/Qwen2.5-VL-7B-Instruct/wanda/wanda_s0.5_seq512",
+        "elapsed_seconds": 58.68027256242931,
+        "artifacts": {
+          "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/algorithm_v1/pruning/unstructured/wanda/source",
+          "target_sparsity_ratio": 0.5,
+          "observed_sparsity_ratio": 0.5000816947793569,
+          "structure_pattern": "unstructured"
+        }
+      }
+    ]
+  }
+}
+

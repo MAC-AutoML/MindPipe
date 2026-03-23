@@ -1,0 +1,36 @@
+
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]
+Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.60it/s]
+Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  2.71it/s]
+Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.80it/s]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.95it/s]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.86it/s]
+Traceback (most recent call last):
+  File "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/main.py", line 5, in <module>
+    raise SystemExit(main())
+  File "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/main.py", line 39, in main
+    return int(task_main(argv[1:]) or 0)
+  File "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/pruning/main.py", line 46, in main
+    result = get_method(args.algorithm).run(args)
+  File "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/pruning/base.py", line 47, in run
+    artifacts = self.apply_pruning(model, tokenizer_bundle, args)
+  File "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/pruning/structured/flap/method.py", line 47, in apply_pruning
+    model.to(args.device)
+  File "/mnt/42_store/lcw/miniconda3/envs/mindpipe/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4343, in to
+    return super().to(*args, **kwargs)
+  File "/mnt/42_store/lcw/miniconda3/envs/mindpipe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1381, in to
+    return self._apply(convert)
+  File "/mnt/42_store/lcw/miniconda3/envs/mindpipe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  File "/mnt/42_store/lcw/miniconda3/envs/mindpipe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  File "/mnt/42_store/lcw/miniconda3/envs/mindpipe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  [Previous line repeated 2 more times]
+  File "/mnt/42_store/lcw/miniconda3/envs/mindpipe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 964, in _apply
+    param_applied = fn(param)
+  File "/mnt/42_store/lcw/miniconda3/envs/mindpipe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1367, in convert
+    return t.to(
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 130.00 MiB. GPU 1 has a total capacity of 39.39 GiB of which 32.81 MiB is free. Process 2944759 has 34.65 GiB memory in use. Including non-PyTorch memory, this process has 4.70 GiB memory in use. Of the allocated memory 4.25 GiB is allocated by PyTorch, and 49.83 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+ERROR conda.cli.main_run:execute(127): `conda run python /mnt/42_store/lcw/data2/Huawei/algorithm-v1/main.py pruning --algorithm flap --model_path /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct --device cuda:1 --dtype float16 --calibration_dataset wikitext2 --evaluation_dataset wikitext2 --calibration_samples 128 --sequence_length 512 --batch_size 1 --max_eval_chunks 64 --sparsity_ratio 0.5 --structure_pattern unstructured --flap_metrics WIFV --flap_remove_heads 8 --output_root /mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/pruning` failed. (See above for error)

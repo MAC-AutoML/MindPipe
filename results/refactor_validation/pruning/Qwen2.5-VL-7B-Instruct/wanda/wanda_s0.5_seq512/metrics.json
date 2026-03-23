@@ -1,0 +1,20 @@
+{
+  "perplexity": 13.551517497615658,
+  "evaluation_dataset": "wikitext2",
+  "sequence_length": 512,
+  "evaluated_chunks": 64,
+  "batch_size": 1,
+  "elapsed_seconds": 3.4568861932493746,
+  "tokens_per_second": 9460.537076362116,
+  "algorithm_name": "wanda",
+  "sparsity_ratio": 0.5,
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+  "device": "cuda:4",
+  "dtype": "float16",
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/algorithm_v1/pruning/unstructured/wanda/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.5,
+    "structure_pattern": "unstructured"
+  }
+}

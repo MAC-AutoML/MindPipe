@@ -1,0 +1,104 @@
+{
+  "Qwen2.5-VL-7B-Instruct": {
+    "pruning_then_quantization": {
+      "awq__sparsegpt": {
+        "perplexity": 13.884618153735927,
+        "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/awq__sparsegpt/awq_w4a16__sparsegpt_s0.5_seq512/metrics.json",
+        "results_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow",
+        "weight_bits": 4,
+        "activation_bits": 16,
+        "sparsity_ratio": 0.5,
+        "quantization_calibration_dataset": "pileval",
+        "pruning_calibration_dataset": "c4",
+        "quantization_calibration_samples": 4,
+        "pruning_calibration_samples": 128
+      },
+      "awq__wanda": {
+        "perplexity": 14.16503578635995,
+        "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/awq__wanda/awq_w4a16__wanda_s0.5_seq512/metrics.json",
+        "results_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow",
+        "weight_bits": 4,
+        "activation_bits": 16,
+        "sparsity_ratio": 0.5,
+        "quantization_calibration_dataset": "pileval",
+        "pruning_calibration_dataset": "c4",
+        "quantization_calibration_samples": 4,
+        "pruning_calibration_samples": 128
+      },
+      "gptq__sparsegpt": {
+        "perplexity": 13.684551389151803,
+        "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/gptq__sparsegpt/gptq_w4a16__sparsegpt_s0.5_seq512/metrics.json",
+        "results_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow",
+        "weight_bits": 4,
+        "activation_bits": 16,
+        "sparsity_ratio": 0.5,
+        "quantization_calibration_dataset": "pileval",
+        "pruning_calibration_dataset": "c4",
+        "quantization_calibration_samples": 4,
+        "pruning_calibration_samples": 128
+      },
+      "gptq__wanda": {
+        "perplexity": 14.05293132422766,
+        "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/pruning_then_quantization/gptq__wanda/gptq_w4a16__wanda_s0.5_seq512/metrics.json",
+        "results_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow",
+        "weight_bits": 4,
+        "activation_bits": 16,
+        "sparsity_ratio": 0.5,
+        "quantization_calibration_dataset": "pileval",
+        "pruning_calibration_dataset": "c4",
+        "quantization_calibration_samples": 4,
+        "pruning_calibration_samples": 128
+      }
+    },
+    "quantization_then_pruning": {
+      "awq__sparsegpt": {
+        "perplexity": 14.529758012554462,
+        "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__sparsegpt/awq_w4a16__sparsegpt_s0.5_seq512/metrics.json",
+        "results_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow",
+        "weight_bits": 4,
+        "activation_bits": 16,
+        "sparsity_ratio": 0.5,
+        "quantization_calibration_dataset": "pileval",
+        "pruning_calibration_dataset": "c4",
+        "quantization_calibration_samples": 4,
+        "pruning_calibration_samples": 128
+      },
+      "gptq__wanda": {
+        "perplexity": 13.883324080610485,
+        "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/gptq__wanda/gptq_w4a16__wanda_s0.5_seq512/metrics.json",
+        "results_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/workflow",
+        "weight_bits": 4,
+        "activation_bits": 16,
+        "sparsity_ratio": 0.5,
+        "quantization_calibration_dataset": "pileval",
+        "pruning_calibration_dataset": "c4",
+        "quantization_calibration_samples": 4,
+        "pruning_calibration_samples": 128
+      },
+      "awq__wanda": {
+        "perplexity": 14.411407795565033,
+        "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/awq__wanda/awq_w4a16__wanda_s0.5_seq512/metrics.json",
+        "results_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow",
+        "weight_bits": 4,
+        "activation_bits": 16,
+        "sparsity_ratio": 0.5,
+        "quantization_calibration_dataset": "pileval",
+        "pruning_calibration_dataset": "c4",
+        "quantization_calibration_samples": 4,
+        "pruning_calibration_samples": 128
+      },
+      "gptq__sparsegpt": {
+        "perplexity": 14.18987280840373,
+        "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow/Qwen2.5-VL-7B-Instruct/quantization_then_pruning/gptq__sparsegpt/gptq_w4a16__sparsegpt_s0.5_seq512/metrics.json",
+        "results_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow-v1/results/refactor_validation/workflow",
+        "weight_bits": 4,
+        "activation_bits": 16,
+        "sparsity_ratio": 0.5,
+        "quantization_calibration_dataset": "pileval",
+        "pruning_calibration_dataset": "c4",
+        "quantization_calibration_samples": 4,
+        "pruning_calibration_samples": 128
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  1.59it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:01<00:01,  1.98it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.13it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.29it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.15it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (2517233 > 131072). Running this sequence through the model will result in indexing errors
+loading calibdation data
+dataset loading complete
+Processing layers:   0%|          | 0/28 [00:00<?, ?it/s]Processing layers:   4%|▎         | 1/28 [00:00<00:06,  4.31it/s]Processing layers:  25%|██▌       | 7/28 [00:00<00:00, 24.67it/s]Processing layers:  39%|███▉      | 11/28 [00:00<00:00, 21.86it/s]Processing layers:  64%|██████▍   | 18/28 [00:00<00:00, 33.91it/s]Processing layers:  82%|████████▏ | 23/28 [00:00<00:00, 38.06it/s]Processing layers: 100%|██████████| 28/28 [00:00<00:00, 33.33it/s]
+{
+  "algorithm_name": "flap",
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+  "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/pruning/Qwen2.5-7B-Instruct/flap/flap_s0.5_seq512",
+  "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/pruning/Qwen2.5-7B-Instruct/flap/flap_s0.5_seq512/metrics.json",
+  "metrics": {
+    "perplexity": 5549.209172516675,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 512,
+    "evaluated_chunks": 64,
+    "batch_size": 1,
+    "elapsed_seconds": 3.652872814796865,
+    "tokens_per_second": 8952.953376182264,
+    "algorithm_name": "flap",
+    "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+    "device": "cuda:3",
+    "dtype": "float16",
+    "sparsity_ratio": 0.5
+  },
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/pruning/structured/flap/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.3285580643806047,
+    "structure_pattern": "AL-AM",
+    "flap_metrics": "WIFV",
+    "flap_remove_heads": 8,
+    "pseudo_pruning": true
+  }
+}

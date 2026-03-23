@@ -1,0 +1,72 @@
+
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]
+Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:02,  1.42it/s]
+Loading checkpoint shards:  50%|█████     | 2/4 [00:01<00:01,  1.69it/s]
+Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  1.88it/s]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:02<00:00,  2.16it/s]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:02<00:00,  1.96it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (2517233 > 131072). Running this sequence through the model will result in indexing errors
+
+Processing layers:   0%|          | 0/28 [00:00<?, ?it/s]
+Processing layers:   4%|▎         | 1/28 [00:00<00:16,  1.63it/s]
+Processing layers:   7%|▋         | 2/28 [00:00<00:12,  2.12it/s]
+Processing layers:  11%|█         | 3/28 [00:01<00:09,  2.52it/s]
+Processing layers:  14%|█▍        | 4/28 [00:01<00:08,  2.78it/s]
+Processing layers:  18%|█▊        | 5/28 [00:01<00:07,  2.94it/s]
+Processing layers:  21%|██▏       | 6/28 [00:02<00:07,  3.05it/s]
+Processing layers:  25%|██▌       | 7/28 [00:02<00:06,  3.13it/s]
+Processing layers:  29%|██▊       | 8/28 [00:02<00:06,  3.00it/s]
+Processing layers:  32%|███▏      | 9/28 [00:03<00:06,  3.09it/s]
+Processing layers:  36%|███▌      | 10/28 [00:03<00:05,  3.14it/s]
+Processing layers:  39%|███▉      | 11/28 [00:03<00:05,  3.12it/s]
+Processing layers:  43%|████▎     | 12/28 [00:04<00:05,  3.10it/s]
+Processing layers:  46%|████▋     | 13/28 [00:04<00:04,  3.14it/s]
+Processing layers:  50%|█████     | 14/28 [00:04<00:04,  3.18it/s]
+Processing layers:  54%|█████▎    | 15/28 [00:05<00:04,  3.20it/s]
+Processing layers:  57%|█████▋    | 16/28 [00:05<00:03,  3.22it/s]
+Processing layers:  61%|██████    | 17/28 [00:05<00:03,  3.23it/s]
+Processing layers:  64%|██████▍   | 18/28 [00:05<00:03,  3.24it/s]
+Processing layers:  68%|██████▊   | 19/28 [00:06<00:02,  3.25it/s]
+Processing layers:  71%|███████▏  | 20/28 [00:06<00:02,  3.24it/s]
+Processing layers:  75%|███████▌  | 21/28 [00:06<00:02,  3.23it/s]
+Processing layers:  79%|███████▊  | 22/28 [00:07<00:01,  3.24it/s]
+Processing layers:  82%|████████▏ | 23/28 [00:07<00:01,  3.25it/s]
+Processing layers:  86%|████████▌ | 24/28 [00:07<00:01,  3.26it/s]
+Processing layers:  89%|████████▉ | 25/28 [00:08<00:00,  3.23it/s]
+Processing layers:  93%|█████████▎| 26/28 [00:08<00:00,  3.15it/s]
+Processing layers:  96%|█████████▋| 27/28 [00:08<00:00,  3.18it/s]
+Processing layers: 100%|██████████| 28/28 [00:09<00:00,  3.27it/s]
+Processing layers: 100%|██████████| 28/28 [00:09<00:00,  3.09it/s]
+
+loading calibdation data
+dataset loading complete
+{
+  "algorithm_name": "flap",
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+  "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/pruning/Qwen2.5-7B-Instruct/flap/flap_s0.5_seq512",
+  "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/pruning/Qwen2.5-7B-Instruct/flap/flap_s0.5_seq512/metrics.json",
+  "metrics": {
+    "perplexity": 152063.6366040415,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 512,
+    "evaluated_chunks": 64,
+    "batch_size": 1,
+    "elapsed_seconds": 3.8707030885852873,
+    "tokens_per_second": 8449.110988761751,
+    "algorithm_name": "flap",
+    "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+    "device": "cuda:2",
+    "dtype": "float16",
+    "sparsity_ratio": 0.5
+  },
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/pruning/structured/flap/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.3402919715649634,
+    "structure_pattern": "AL-AM",
+    "flap_metrics": "WIFV",
+    "flap_remove_heads": 8,
+    "pseudo_pruning": true
+  }
+}
+

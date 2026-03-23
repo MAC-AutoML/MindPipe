@@ -1,0 +1,85 @@
+2026-03-22 02:54:50,067 | INFO | algorithm_v1.quantization.base | Loading model from /mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct
+
+Loading checkpoint shards:   0%|          | 0/5 [00:00<?, ?it/s]
+Loading checkpoint shards:  20%|██        | 1/5 [00:02<00:11,  2.96s/it]
+Loading checkpoint shards:  40%|████      | 2/5 [00:04<00:06,  2.25s/it]
+Loading checkpoint shards:  60%|██████    | 3/5 [00:05<00:03,  1.69s/it]
+Loading checkpoint shards:  80%|████████  | 4/5 [00:07<00:01,  1.57s/it]
+Loading checkpoint shards: 100%|██████████| 5/5 [00:07<00:00,  1.20s/it]
+Loading checkpoint shards: 100%|██████████| 5/5 [00:07<00:00,  1.53s/it]
+The image processor of type `Qwen2VLImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. Note that this behavior will be extended to all models in a future release.
+2026-03-22 02:55:45,173 | INFO | root | GPU memory (from rotate_model): 0.10 -> 0.00 GB (-0.10 GB)
+
+Rotating:   0%|          | 0/28 [00:00<?, ?layer/s]
+Rotating:   4%|▎         | 1/28 [00:06<02:52,  6.38s/layer]
+Rotating:   7%|▋         | 2/28 [00:12<02:39,  6.13s/layer]
+Rotating:  11%|█         | 3/28 [00:18<02:29,  5.99s/layer]
+Rotating:  14%|█▍        | 4/28 [00:24<02:24,  6.04s/layer]
+Rotating:  18%|█▊        | 5/28 [00:30<02:22,  6.20s/layer]
+Rotating:  21%|██▏       | 6/28 [00:37<02:18,  6.29s/layer]
+Rotating:  25%|██▌       | 7/28 [00:42<02:08,  6.12s/layer]
+Rotating:  29%|██▊       | 8/28 [00:48<01:59,  5.99s/layer]
+Rotating:  32%|███▏      | 9/28 [00:54<01:55,  6.08s/layer]
+Rotating:  36%|███▌      | 10/28 [01:00<01:48,  6.00s/layer]
+Rotating:  39%|███▉      | 11/28 [01:07<01:43,  6.06s/layer]
+Rotating:  43%|████▎     | 12/28 [01:13<01:37,  6.08s/layer]
+Rotating:  46%|████▋     | 13/28 [01:19<01:32,  6.13s/layer]
+Rotating:  50%|█████     | 14/28 [01:25<01:26,  6.19s/layer]
+Rotating:  54%|█████▎    | 15/28 [01:31<01:20,  6.19s/layer]
+Rotating:  57%|█████▋    | 16/28 [01:38<01:14,  6.19s/layer]
+Rotating:  61%|██████    | 17/28 [01:44<01:08,  6.24s/layer]
+Rotating:  64%|██████▍   | 18/28 [01:49<01:00,  6.01s/layer]
+Rotating:  68%|██████▊   | 19/28 [01:55<00:53,  5.96s/layer]
+Rotating:  71%|███████▏  | 20/28 [02:01<00:47,  5.98s/layer]
+Rotating:  75%|███████▌  | 21/28 [02:07<00:42,  6.03s/layer]
+Rotating:  79%|███████▊  | 22/28 [02:14<00:36,  6.10s/layer]
+Rotating:  82%|████████▏ | 23/28 [02:20<00:30,  6.09s/layer]
+Rotating:  86%|████████▌ | 24/28 [02:26<00:24,  6.01s/layer]
+Rotating:  89%|████████▉ | 25/28 [02:32<00:18,  6.14s/layer]
+Rotating:  93%|█████████▎| 26/28 [02:36<00:10,  5.48s/layer]
+Rotating:  96%|█████████▋| 27/28 [02:39<00:04,  4.88s/layer]
+Rotating: 100%|██████████| 28/28 [02:42<00:00,  4.13s/layer]
+Rotating: 100%|██████████| 28/28 [02:42<00:00,  5.80s/layer]
+`loss_type=None` was set in the config but it is unrecognized. Using the default loss: `ForCausalLMLoss`.
+Token indices sequence length is longer than the specified maximum sequence length for this model (2530183 > 131072). Running this sequence through the model will result in indexing errors
+
+{
+  "algorithm_name": "spinquant",
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+  "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-VL-7B-Instruct/spinquant/spinquant_w16a16_seq512",
+  "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-VL-7B-Instruct/spinquant/spinquant_w16a16_seq512/metrics.json",
+  "metrics": {
+    "perplexity": 10.960102182009733,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 512,
+    "evaluated_chunks": 64,
+    "batch_size": 1,
+    "elapsed_seconds": 5.3430209760554135,
+    "tokens_per_second": 6120.8818281945705,
+    "algorithm_name": "spinquant",
+    "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+    "device": "cuda:3",
+    "dtype": "float16"
+  },
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/quantization/ptq/spinquant/source",
+    "spinquant_config": {
+      "rotate": true,
+      "rotation_mode": "hadamard",
+      "rotation_checkpoint": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-VL-7B-Instruct/spinquant/spinquant_w16a16_seq512/rotation/spinquant_hadamard_identity_r2.bin",
+      "rotation_fallback": "identity_r2",
+      "weight_bits": 16,
+      "activation_bits": 16,
+      "key_bits": 16,
+      "value_bits": 16,
+      "weight_group_size": 128,
+      "activation_group_size": 128,
+      "kv_group_size": 128,
+      "weight_quantizer": "none",
+      "calibration_samples": 4
+    },
+    "quantized_linear_count": 0,
+    "quantized_linear_layers": {}
+  }
+}
+

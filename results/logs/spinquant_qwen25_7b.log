@@ -1,0 +1,1063 @@
+2026-03-21 20:40:15,976 | INFO | algorithm_v1.quantization.base | Loading model from /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct
+
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]
+Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.43it/s]
+Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  2.59it/s]
+Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.70it/s]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.87it/s]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.76it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (2530183 > 131072). Running this sequence through the model will result in indexing errors
+2026-03-21 20:40:57,390 | INFO | root | GPU memory (from rotate_model): 8.24 -> 0.12 GB (-8.12 GB)
+
+Rotating:   0%|          | 0/28 [00:00<?, ?layer/s]
+Rotating:   4%|▎         | 1/28 [00:02<01:00,  2.24s/layer]
+Rotating:   7%|▋         | 2/28 [00:04<00:55,  2.13s/layer]
+Rotating:  11%|█         | 3/28 [00:06<00:52,  2.10s/layer]
+Rotating:  14%|█▍        | 4/28 [00:08<00:49,  2.08s/layer]
+Rotating:  18%|█▊        | 5/28 [00:10<00:47,  2.06s/layer]
+Rotating:  21%|██▏       | 6/28 [00:12<00:45,  2.07s/layer]
+Rotating:  25%|██▌       | 7/28 [00:14<00:44,  2.10s/layer]
+Rotating:  29%|██▊       | 8/28 [00:16<00:42,  2.11s/layer]
+Rotating:  32%|███▏      | 9/28 [00:18<00:40,  2.13s/layer]
+Rotating:  36%|███▌      | 10/28 [00:21<00:38,  2.12s/layer]
+Rotating:  39%|███▉      | 11/28 [00:23<00:35,  2.09s/layer]
+Rotating:  43%|████▎     | 12/28 [00:25<00:33,  2.08s/layer]
+Rotating:  46%|████▋     | 13/28 [00:27<00:31,  2.07s/layer]
+Rotating:  50%|█████     | 14/28 [00:29<00:28,  2.07s/layer]
+Rotating:  54%|█████▎    | 15/28 [00:31<00:26,  2.07s/layer]
+Rotating:  57%|█████▋    | 16/28 [00:33<00:24,  2.06s/layer]
+Rotating:  61%|██████    | 17/28 [00:35<00:22,  2.05s/layer]
+Rotating:  64%|██████▍   | 18/28 [00:37<00:20,  2.04s/layer]
+Rotating:  68%|██████▊   | 19/28 [00:39<00:18,  2.04s/layer]
+Rotating:  71%|███████▏  | 20/28 [00:41<00:16,  2.03s/layer]
+Rotating:  75%|███████▌  | 21/28 [00:43<00:14,  2.03s/layer]
+Rotating:  79%|███████▊  | 22/28 [00:45<00:12,  2.02s/layer]
+Rotating:  82%|████████▏ | 23/28 [00:47<00:10,  2.01s/layer]
+Rotating:  86%|████████▌ | 24/28 [00:49<00:08,  2.01s/layer]
+Rotating:  89%|████████▉ | 25/28 [00:51<00:06,  2.01s/layer]
+Rotating:  93%|█████████▎| 26/28 [00:53<00:04,  2.01s/layer]
+Rotating:  96%|█████████▋| 27/28 [00:55<00:02,  2.00s/layer]
+Rotating: 100%|██████████| 28/28 [00:57<00:00,  2.00s/layer]
+Rotating: 100%|██████████| 28/28 [00:57<00:00,  2.05s/layer]
+`loss_type=None` was set in the config but it is unrecognized. Using the default loss: `ForCausalLMLoss`.
+
+{
+  "algorithm_name": "spinquant",
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+  "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/spinquant/spinquant_w4a4_seq512",
+  "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/quantization/Qwen2.5-7B-Instruct/spinquant/spinquant_w4a4_seq512/metrics.json",
+  "metrics": {
+    "perplexity": 161157.0966997454,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 512,
+    "evaluated_chunks": 64,
+    "batch_size": 1,
+    "elapsed_seconds": 11.881663199979812,
+    "tokens_per_second": 2752.4766061417704,
+    "algorithm_name": "spinquant",
+    "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+    "device": "cuda:0",
+    "dtype": "float16"
+  },
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/quantization/ptq/spinquant/source",
+    "spinquant_config": {
+      "rotate": true,
+      "rotation_mode": "hadamard",
+      "rotation_checkpoint": null,
+      "weight_bits": 4,
+      "activation_bits": 4,
+      "key_bits": 4,
+      "value_bits": 4,
+      "weight_group_size": -1,
+      "activation_group_size": -1,
+      "kv_group_size": 128,
+      "weight_quantizer": "gptq",
+      "calibration_samples": 4
+    },
+    "quantized_linear_count": 196,
+    "quantized_linear_layers": {
+      "model.layers.0.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.0.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.0.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.0.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.0.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.0.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.0.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.1.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.1.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.1.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.1.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.1.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.1.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.1.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.2.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.2.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.2.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.2.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.2.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.2.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.2.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.3.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.3.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.3.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.3.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.3.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.3.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.3.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.4.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.4.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.4.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.4.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.4.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.4.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.4.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.5.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.5.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.5.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.5.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.5.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.5.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.5.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.6.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.6.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.6.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.6.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.6.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.6.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.6.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.7.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.7.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.7.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.7.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.7.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.7.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.7.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.8.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.8.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.8.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.8.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.8.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.8.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.8.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.9.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.9.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.9.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.9.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.9.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.9.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.9.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.10.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.10.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.10.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.10.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.10.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.10.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.10.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.11.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.11.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.11.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.11.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.11.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.11.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.11.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.12.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.12.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.12.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.12.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.12.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.12.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.12.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.13.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.13.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.13.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.13.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.13.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.13.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.13.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.14.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.14.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.14.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.14.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.14.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.14.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.14.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.15.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.15.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.15.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.15.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.15.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.15.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.15.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.16.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.16.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.16.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.16.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.16.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.16.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.16.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.17.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.17.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.17.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.17.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.17.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.17.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.17.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.18.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.18.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.18.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.18.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.18.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.18.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.18.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.19.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.19.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.19.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.19.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.19.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.19.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.19.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.20.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.20.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.20.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.20.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.20.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.20.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.20.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.21.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.21.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.21.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.21.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.21.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.21.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.21.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.22.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.22.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.22.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.22.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.22.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.22.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.22.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.23.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.23.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.23.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.23.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.23.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.23.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.23.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.24.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.24.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.24.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.24.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.24.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.24.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.24.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.25.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.25.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.25.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.25.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.25.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.25.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.25.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.26.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.26.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.26.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.26.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.26.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.26.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.26.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.27.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.27.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.27.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.27.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.27.mlp.up_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.27.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      },
+      "model.layers.27.mlp.down_proj": {
+        "bits": 4,
+        "group_size": -1,
+        "symmetric": true
+      }
+    }
+  }
+}
+

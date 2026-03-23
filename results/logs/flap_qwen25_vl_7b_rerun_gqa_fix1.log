@@ -1,0 +1,74 @@
+
+Loading checkpoint shards:   0%|          | 0/5 [00:00<?, ?it/s]
+Loading checkpoint shards:  20%|██        | 1/5 [00:00<00:02,  1.88it/s]
+Loading checkpoint shards:  40%|████      | 2/5 [00:00<00:01,  2.04it/s]
+Loading checkpoint shards:  60%|██████    | 3/5 [00:01<00:00,  2.09it/s]
+Loading checkpoint shards:  80%|████████  | 4/5 [00:01<00:00,  2.15it/s]
+Loading checkpoint shards: 100%|██████████| 5/5 [00:02<00:00,  2.87it/s]
+Loading checkpoint shards: 100%|██████████| 5/5 [00:02<00:00,  2.45it/s]
+The image processor of type `Qwen2VLImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. Note that this behavior will be extended to all models in a future release.
+Token indices sequence length is longer than the specified maximum sequence length for this model (2517233 > 131072). Running this sequence through the model will result in indexing errors
+
+Processing layers:   0%|          | 0/28 [00:00<?, ?it/s]
+Processing layers:   4%|▎         | 1/28 [00:00<00:17,  1.54it/s]
+Processing layers:   7%|▋         | 2/28 [00:00<00:11,  2.30it/s]
+Processing layers:  11%|█         | 3/28 [00:01<00:09,  2.73it/s]
+Processing layers:  14%|█▍        | 4/28 [00:01<00:08,  2.92it/s]
+Processing layers:  18%|█▊        | 5/28 [00:01<00:07,  3.11it/s]
+Processing layers:  21%|██▏       | 6/28 [00:02<00:06,  3.24it/s]
+Processing layers:  25%|██▌       | 7/28 [00:02<00:06,  3.32it/s]
+Processing layers:  29%|██▊       | 8/28 [00:02<00:06,  3.08it/s]
+Processing layers:  32%|███▏      | 9/28 [00:03<00:06,  3.11it/s]
+Processing layers:  36%|███▌      | 10/28 [00:03<00:05,  3.22it/s]
+Processing layers:  39%|███▉      | 11/28 [00:03<00:05,  3.23it/s]
+Processing layers:  43%|████▎     | 12/28 [00:03<00:04,  3.32it/s]
+Processing layers:  46%|████▋     | 13/28 [00:04<00:04,  3.37it/s]
+Processing layers:  50%|█████     | 14/28 [00:04<00:04,  3.41it/s]
+Processing layers:  54%|█████▎    | 15/28 [00:04<00:03,  3.44it/s]
+Processing layers:  57%|█████▋    | 16/28 [00:05<00:03,  3.46it/s]
+Processing layers:  61%|██████    | 17/28 [00:05<00:03,  3.48it/s]
+Processing layers:  64%|██████▍   | 18/28 [00:05<00:02,  3.48it/s]
+Processing layers:  68%|██████▊   | 19/28 [00:05<00:02,  3.43it/s]
+Processing layers:  71%|███████▏  | 20/28 [00:06<00:02,  3.45it/s]
+Processing layers:  75%|███████▌  | 21/28 [00:06<00:02,  3.46it/s]
+Processing layers:  79%|███████▊  | 22/28 [00:06<00:01,  3.39it/s]
+Processing layers:  82%|████████▏ | 23/28 [00:07<00:01,  3.42it/s]
+Processing layers:  86%|████████▌ | 24/28 [00:07<00:01,  3.45it/s]
+Processing layers:  89%|████████▉ | 25/28 [00:07<00:00,  3.44it/s]
+Processing layers:  93%|█████████▎| 26/28 [00:07<00:00,  3.45it/s]
+Processing layers:  96%|█████████▋| 27/28 [00:08<00:00,  3.47it/s]
+Processing layers: 100%|██████████| 28/28 [00:08<00:00,  3.47it/s]
+Processing layers: 100%|██████████| 28/28 [00:08<00:00,  3.27it/s]
+
+loading calibdation data
+dataset loading complete
+{
+  "algorithm_name": "flap",
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+  "output_dir": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/pruning/Qwen2.5-VL-7B-Instruct/flap/flap_s0.5_seq512",
+  "metrics_path": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/results/pruning/Qwen2.5-VL-7B-Instruct/flap/flap_s0.5_seq512/metrics.json",
+  "metrics": {
+    "perplexity": 481.4336379166918,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 512,
+    "evaluated_chunks": 64,
+    "batch_size": 1,
+    "elapsed_seconds": 3.4161627390421927,
+    "tokens_per_second": 9573.314416856321,
+    "algorithm_name": "flap",
+    "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct",
+    "device": "cuda:7",
+    "dtype": "float16",
+    "sparsity_ratio": 0.5
+  },
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/pruning/structured/flap/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.35363631453062777,
+    "structure_pattern": "AL-AM",
+    "flap_metrics": "WIFV",
+    "flap_remove_heads": 8,
+    "pseudo_pruning": true
+  }
+}
+

@@ -1,0 +1,23 @@
+{
+  "perplexity": 12.917199318301234,
+  "evaluation_dataset": "wikitext2",
+  "sequence_length": 256,
+  "evaluated_chunks": 64,
+  "batch_size": 1,
+  "elapsed_seconds": 2.4183190129697323,
+  "tokens_per_second": 6748.489307024383,
+  "algorithm_name": "flap",
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+  "device": "cuda:3",
+  "dtype": "bfloat16",
+  "sparsity_ratio": 0.2,
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-v1/algorithm_v1/pruning/structured/flap/source",
+    "target_sparsity_ratio": 0.2,
+    "observed_sparsity_ratio": 0.1999992310531496,
+    "structure_pattern": "AL-AM",
+    "flap_metrics": "WIFN",
+    "flap_remove_heads": -1,
+    "pseudo_pruning": true
+  }
+}

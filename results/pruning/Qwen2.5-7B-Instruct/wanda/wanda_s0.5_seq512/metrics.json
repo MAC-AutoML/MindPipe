@@ -1,0 +1,66 @@
+{
+  "perplexity": 12.124773542710725,
+  "evaluation_dataset": "wikitext2",
+  "sequence_length": 512,
+  "evaluated_chunks": 64,
+  "batch_size": 1,
+  "elapsed_seconds": 3.971028659492731,
+  "tokens_per_second": 8235.649451136847,
+  "zero_shot": {
+    "tasks": [
+      "arc_challenge",
+      "arc_easy",
+      "boolq",
+      "hellaswag",
+      "openbookqa",
+      "rte",
+      "winogrande"
+    ],
+    "num_fewshot": 0,
+    "batch_size": 4,
+    "limit": null,
+    "results": {
+      "arc_challenge": {
+        "metric": "acc_norm,none",
+        "value": 0.4701
+      },
+      "arc_easy": {
+        "metric": "acc_norm,none",
+        "value": 0.7247
+      },
+      "boolq": {
+        "metric": "acc,none",
+        "value": 0.8382
+      },
+      "hellaswag": {
+        "metric": "acc_norm,none",
+        "value": 0.7232
+      },
+      "openbookqa": {
+        "metric": "acc_norm,none",
+        "value": 0.434
+      },
+      "rte": {
+        "metric": "acc,none",
+        "value": 0.8087
+      },
+      "winogrande": {
+        "metric": "acc,none",
+        "value": 0.6977
+      }
+    },
+    "acc_avg": 0.6709,
+    "elapsed_seconds": 1202.539264017716
+  },
+  "algorithm_name": "wanda",
+  "sparsity_ratio": 0.5,
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+  "device": "cuda:0",
+  "dtype": "float16",
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow copy/algorithm_v1/pruning/unstructured/wanda/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.5,
+    "structure_pattern": "unstructured"
+  }
+}

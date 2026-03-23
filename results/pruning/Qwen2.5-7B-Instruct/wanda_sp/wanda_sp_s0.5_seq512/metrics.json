@@ -1,0 +1,44 @@
+{
+  "perplexity": 989.1551826326013,
+  "evaluation_dataset": "wikitext2",
+  "sequence_length": 512,
+  "evaluated_chunks": 64,
+  "batch_size": 1,
+  "elapsed_seconds": 5.39597890432924,
+  "tokens_per_second": 6060.809461979419,
+  "zero_shot": {
+    "tasks": [
+      "boolq",
+      "rte"
+    ],
+    "num_fewshot": 0,
+    "batch_size": 4,
+    "limit": null,
+    "results": {
+      "boolq": {
+        "metric": "acc,none",
+        "value": 0.4645
+      },
+      "rte": {
+        "metric": "acc,none",
+        "value": 0.5307
+      }
+    },
+    "acc_avg": 0.4976,
+    "elapsed_seconds": 157.4256603056565
+  },
+  "algorithm_name": "wanda_sp",
+  "sparsity_ratio": 0.5,
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+  "device": "cuda:0",
+  "dtype": "bfloat16",
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/algorithm-workflow copy/algorithm_v1/pruning/structured/wanda_sp/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.4928290213723285,
+    "structure_pattern": "uniform-structured",
+    "calibration_dataset": "c4",
+    "calibration_samples": 128,
+    "pseudo_pruning": true
+  }
+}

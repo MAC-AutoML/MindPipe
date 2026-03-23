@@ -1,0 +1,2 @@
+"""FlatQuant method package."""
+
