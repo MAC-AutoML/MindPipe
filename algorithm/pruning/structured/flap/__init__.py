@@ -1,1 +1,0 @@
-# FLAP pruning algorithms (structured)

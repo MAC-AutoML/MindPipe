@@ -1,1 +1,0 @@
-# Wanda pruning algorithms (unstructured)
