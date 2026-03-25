@@ -11,9 +11,10 @@ import time
 from pathlib import Path
 
 
-DEFAULT_RESULTS_ROOT = Path("/mnt/42_store/lcw/data2/Huawei/algorithm-workflow copy/results/workflow")
-DEFAULT_STATUS_PATH = Path("/mnt/42_store/lcw/data2/Huawei/algorithm-workflow copy/results/workflow_status.json")
-DEFAULT_LOG_PATH = Path("/mnt/42_store/lcw/data2/Huawei/algorithm-workflow copy/results/logs/workflow/monitor.log")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RESULTS_ROOT = REPO_ROOT / "results" / "workflow"
+DEFAULT_STATUS_PATH = REPO_ROOT / "results" / "workflow_status.json"
+DEFAULT_LOG_PATH = REPO_ROOT / "results" / "logs" / "workflow" / "monitor.log"
 DEFAULT_MODEL_PATH = "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
 
 
@@ -55,7 +56,7 @@ def collect_gpu_status() -> list[dict]:
 
 
 def collect_running_jobs(model_path: str) -> list[dict]:
-    pattern = f"algorithm-workflow copy/main.py workflow --model_path {model_path}"
+    pattern = f"{REPO_ROOT / 'main.py'} workflow --model_path {model_path}"
     completed = subprocess.run(
         ["pgrep", "-af", pattern],
         capture_output=True,

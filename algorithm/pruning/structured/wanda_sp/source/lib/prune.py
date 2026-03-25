@@ -5,9 +5,21 @@ from .data import get_loaders
 from .layerwrapper import WrappedGPT
 
 
+def resolve_linear_module(module, layers=(nn.Linear,)):
+    layer_types = tuple(layers)
+    if isinstance(module, layer_types):
+        return module
+    for attr_name in ("linear", "module"):
+        child = getattr(module, attr_name, None)
+        if isinstance(child, layer_types):
+            return child
+    return None
+
+
 def find_layers(module, layers=[nn.Linear], name=""):
-    if type(module) in layers:
-        return {name: module}
+    resolved_module = resolve_linear_module(module, layers)
+    if resolved_module is not None:
+        return {name: resolved_module}
     res = {}
     for name1, child in module.named_children():
         res.update(
@@ -18,6 +30,38 @@ def find_layers(module, layers=[nn.Linear], name=""):
             )
         )
     return res
+
+
+def get_attention_projections(layer):
+    return (
+        resolve_linear_module(layer.self_attn.q_proj),
+        resolve_linear_module(layer.self_attn.k_proj),
+        resolve_linear_module(layer.self_attn.v_proj),
+        resolve_linear_module(layer.self_attn.o_proj),
+    )
+
+
+def get_mlp_projections(layer):
+    return (
+        resolve_linear_module(layer.mlp.up_proj),
+        resolve_linear_module(layer.mlp.gate_proj),
+        resolve_linear_module(layer.mlp.down_proj),
+    )
+
+
+def get_projection_subset(layer):
+    o_proj = resolve_linear_module(layer.self_attn.o_proj)
+    down_proj = resolve_linear_module(layer.mlp.down_proj)
+    if o_proj is None or down_proj is None:
+        available = ", ".join(sorted(find_layers(layer).keys()))
+        raise KeyError(
+            "Failed to resolve structured Wanda target projections. "
+            f"available_layers=[{available}]"
+        )
+    return {
+        "self_attn.o_proj": o_proj,
+        "mlp.down_proj": down_proj,
+    }
 
 
 def get_decoder_root(model):
@@ -132,75 +176,79 @@ def compute_output_bias(mean_input, mask, output_weight):
 
 
 def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bias=True, unstr=False):
+    q_proj, k_proj, v_proj, o_proj = get_attention_projections(layer)
+    up_proj, gate_proj, down_proj = get_mlp_projections(layer)
     if unstr:
         if attn_mask is not None:
             q_mask, kv_mask = expand_attention_masks(layer, attn_mask, device)
-            layer.self_attn.q_proj.weight.data *= q_mask.unsqueeze(-1)
-            layer.self_attn.k_proj.weight.data *= kv_mask.unsqueeze(-1)
-            layer.self_attn.v_proj.weight.data *= kv_mask.unsqueeze(-1)
+            q_proj.weight.data *= q_mask.unsqueeze(-1)
+            k_proj.weight.data *= kv_mask.unsqueeze(-1)
+            v_proj.weight.data *= kv_mask.unsqueeze(-1)
 
-            output_weight = layer.self_attn.o_proj.weight.data
+            output_weight = o_proj.weight.data
             if bias:
                 output_bias = compute_output_bias(attn_mean_inp, q_mask, output_weight)
-                if layer.self_attn.o_proj.bias is None:
-                    layer.self_attn.o_proj.bias = nn.Parameter(
+                if o_proj.bias is None:
+                    o_proj.bias = nn.Parameter(
                         torch.zeros(output_weight.shape[0], device=device, dtype=output_weight.dtype)
                     )
-            layer.self_attn.o_proj.weight.data *= q_mask.unsqueeze(0)
+            o_proj.weight.data *= q_mask.unsqueeze(0)
             if bias:
-                layer.self_attn.o_proj.bias.data = output_bias
+                o_proj.bias.data = output_bias
 
         if mlp_mask is not None:
-            layer.mlp.up_proj.weight.data *= mlp_mask.unsqueeze(-1).to(device)
-            layer.mlp.gate_proj.weight.data *= mlp_mask.unsqueeze(-1).to(device)
+            up_proj.weight.data *= mlp_mask.unsqueeze(-1).to(device)
+            gate_proj.weight.data *= mlp_mask.unsqueeze(-1).to(device)
 
-            output_weight = layer.mlp.down_proj.weight.data
+            output_weight = down_proj.weight.data
             if bias:
                 output_bias = compute_output_bias(mlp_mean_inp, mlp_mask.to(device), output_weight)
-                if layer.mlp.down_proj.bias is None:
-                    layer.mlp.down_proj.bias = nn.Parameter(
+                if down_proj.bias is None:
+                    down_proj.bias = nn.Parameter(
                         torch.zeros(output_weight.shape[0], device=device, dtype=output_weight.dtype)
                     )
-            layer.mlp.down_proj.weight.data *= mlp_mask.unsqueeze(0).to(device)
+            down_proj.weight.data *= mlp_mask.unsqueeze(0).to(device)
             if bias:
-                layer.mlp.down_proj.bias.data = output_bias
+                down_proj.bias.data = output_bias
     else:
         if attn_mask is not None:
             retain_heads = torch.count_nonzero(attn_mask)
             attn_mask = attn_mask.repeat_interleave(128)
-            layer.self_attn.q_proj.weight.data = layer.self_attn.q_proj.weight.data[torch.where(attn_mask)[0]]
-            layer.self_attn.k_proj.weight.data = layer.self_attn.k_proj.weight.data[torch.where(attn_mask)[0]]
-            layer.self_attn.v_proj.weight.data = layer.self_attn.v_proj.weight.data[torch.where(attn_mask)[0]]
-            layer.self_attn.q_proj.out_features = attn_mask.sum().item()
-            layer.self_attn.k_proj.out_features = attn_mask.sum().item()
-            layer.self_attn.v_proj.out_features = attn_mask.sum().item()
+            kept_indices = torch.where(attn_mask)[0]
+            q_proj.weight.data = q_proj.weight.data[kept_indices]
+            k_proj.weight.data = k_proj.weight.data[kept_indices]
+            v_proj.weight.data = v_proj.weight.data[kept_indices]
+            q_proj.out_features = attn_mask.sum().item()
+            k_proj.out_features = attn_mask.sum().item()
+            v_proj.out_features = attn_mask.sum().item()
 
-            output_weight = layer.self_attn.o_proj.weight.data
+            output_weight = o_proj.weight.data
             if bias:
                 output_bias = compute_output_bias(attn_mean_inp, attn_mask.to(device), output_weight)
-            output_weight = layer.self_attn.o_proj.weight.data[:, torch.where(attn_mask)[0]]
+            output_weight = o_proj.weight.data[:, kept_indices]
             layer.self_attn.num_heads = retain_heads
             layer.self_attn.hidden_size = retain_heads * 128
             if bias:
-                layer.self_attn.o_proj.in_features = attn_mask.sum().item()
-                layer.self_attn.o_proj.bias.data = output_bias
-            layer.self_attn.o_proj.weight.data = output_weight
+                o_proj.in_features = attn_mask.sum().item()
+                o_proj.bias.data = output_bias
+            o_proj.weight.data = output_weight
 
         if mlp_mask is not None:
-            layer.mlp.up_proj.weight.data = layer.mlp.up_proj.weight.data[torch.where(mlp_mask)[0]]
-            layer.mlp.gate_proj.weight.data = layer.mlp.gate_proj.weight.data[torch.where(mlp_mask)[0]]
-            layer.mlp.up_proj.out_features = mlp_mask.sum().item()
-            layer.mlp.gate_proj.out_features = mlp_mask.sum().item()
+            kept_indices = torch.where(mlp_mask)[0]
+            up_proj.weight.data = up_proj.weight.data[kept_indices]
+            gate_proj.weight.data = gate_proj.weight.data[kept_indices]
+            up_proj.out_features = mlp_mask.sum().item()
+            gate_proj.out_features = mlp_mask.sum().item()
 
-            output_weight = layer.mlp.down_proj.weight.data
+            output_weight = down_proj.weight.data
             layer.mlp.intermediate_size = mlp_mask.sum().item()
             if bias:
                 output_bias = compute_output_bias(mlp_mean_inp, mlp_mask.to(device), output_weight)
-            output_weight = layer.mlp.down_proj.weight.data[:, torch.where(mlp_mask)[0]]
+            output_weight = down_proj.weight.data[:, kept_indices]
             if bias:
-                layer.mlp.down_proj.in_features = mlp_mask.sum().item()
-                layer.mlp.down_proj.bias.data = output_bias
-            layer.mlp.down_proj.weight.data = output_weight
+                down_proj.in_features = mlp_mask.sum().item()
+                down_proj.bias.data = output_bias
+            down_proj.weight.data = output_weight
 
     torch.cuda.empty_cache()
 
@@ -219,10 +267,7 @@ def prune_wanda_sp(args, model, tokenizer, device=torch.device("cuda:0")):
     layers = get_decoder_layers(model)
     for i in range(len(layers)):
         layer = layers[i]
-        subset = {
-            "self_attn.o_proj": find_layers(layer)["self_attn.o_proj"],
-            "mlp.down_proj": find_layers(layer)["mlp.down_proj"],
-        }
+        subset = get_projection_subset(layer)
 
         if f"model.layers.{i}" in getattr(model, "hf_device_map", {}):
             dev = model.hf_device_map[f"model.layers.{i}"]

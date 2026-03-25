@@ -11,18 +11,17 @@ from typing import Any
 
 import torch
 
-from ..common.evaluation import evaluate_perplexity
-from ..common.evaluation import evaluate_zero_shot
-from ..common.io import ensure_dir
-from ..common.io import write_json
-from ..common.modeling import load_model_and_tokenizer
-from ..pruning.registry import get_method as get_pruning_method
-from ..quantization.config import normalize_args as normalize_quantization_args
-from ..quantization.registry import get_method as get_quantization_method
-from .schema import WorkflowConfig
-from .schema import WorkflowRunResult
-from .schema import WorkflowStage
-from .validation import validate_workflow_config
+from algorithm.common.io import ensure_dir
+from algorithm.common.io import write_json
+from algorithm.common.modeling import load_model_and_tokenizer
+from algorithm.pruning.registry import get_method as get_pruning_method
+from algorithm.quantization.config import normalize_args as normalize_quantization_args
+from algorithm.quantization.registry import get_method as get_quantization_method
+from evaluation.runner import run_evaluations
+from workflow.builder import validate_workflow_config
+from workflow.schema import WorkflowConfig
+from workflow.schema import WorkflowRunResult
+from workflow.schema import WorkflowStage
 
 
 def _build_stage_args(common_args: dict[str, Any], stage: WorkflowStage) -> argparse.Namespace:
@@ -97,25 +96,11 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     if final_output_dir is None:
         raise RuntimeError("Workflow produced no stages")
 
-    metrics = evaluate_perplexity(
+    metrics = run_evaluations(
         model=model,
         tokenizer=tokenizer_bundle.tokenizer,
-        dataset_name=config.common_args["evaluation_dataset"],
-        sequence_length=sequence_length,
-        batch_size=int(config.common_args["batch_size"]),
-        max_eval_chunks=config.common_args["max_eval_chunks"],
-        device=config.common_args["device"],
+        common_args=config.common_args,
     )
-    if config.common_args.get("eval_zero_shot", False):
-        metrics["zero_shot"] = evaluate_zero_shot(
-            model=model,
-            tokenizer=tokenizer_bundle.tokenizer,
-            task_names=config.common_args["zero_shot_tasks"],
-            batch_size=int(config.common_args["zero_shot_batch_size"]),
-            device=config.common_args["device"],
-            num_fewshot=int(config.common_args["zero_shot_num_fewshot"]),
-            limit=config.common_args.get("zero_shot_limit"),
-        )
     metrics.update(config.result_metadata)
     metrics.update(
         {

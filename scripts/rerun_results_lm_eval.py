@@ -347,7 +347,7 @@ def _build_quantization_args(results_root: Path, metrics_path: Path, payload: di
         _append_value(cli_args, "damp_percent", defaults.get("damp_percent"))
     if algorithm_name in {"quarot", "spinquant"}:
         _append_value(cli_args, "rotation_mode", defaults.get("rotation_mode"))
-        if defaults.get("rotation_checkpoint") and "algorithm-workflow copy" in str(defaults["rotation_checkpoint"]):
+        if defaults.get("rotation_checkpoint") and str(REPO_ROOT) in str(defaults["rotation_checkpoint"]):
             _append_value(cli_args, "rotation_checkpoint", defaults.get("rotation_checkpoint"))
     if algorithm_name == "flatquant":
         _append_value(cli_args, "flatquant_epochs", defaults.get("flatquant_epochs"))
@@ -508,7 +508,7 @@ def _build_workflow_args(results_root: Path, metrics_path: Path, payload: dict[s
     _append_value(cli_args, "flatquant_diag_init", shared_parameters.get("flatquant_diag_init"))
     _append_value(cli_args, "flatquant_diag_alpha", shared_parameters.get("flatquant_diag_alpha"))
     _append_value(cli_args, "rotation_mode", shared_parameters.get("rotation_mode", quant_defaults.get("rotation_mode")))
-    if shared_parameters.get("rotation_checkpoint") and "algorithm-workflow copy" in str(shared_parameters["rotation_checkpoint"]):
+    if shared_parameters.get("rotation_checkpoint") and str(REPO_ROOT) in str(shared_parameters["rotation_checkpoint"]):
         _append_value(cli_args, "rotation_checkpoint", shared_parameters.get("rotation_checkpoint"))
     _append_value(cli_args, "block_size", shared_parameters.get("block_size"))
     _append_value(cli_args, "flap_metrics", payload.get("flap_metrics", shared_parameters.get("flap_metrics", pruning_defaults.get("flap_metrics"))))

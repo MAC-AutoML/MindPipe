@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 
-DEFAULT_RESULTS_ROOT = Path("/mnt/42_store/lcw/data2/Huawei/algorithm-workflow copy/results/workflow")
+DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[1] / "results" / "workflow"
 
 
 def build_parser() -> argparse.ArgumentParser:
