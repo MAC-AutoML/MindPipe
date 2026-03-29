@@ -24,7 +24,6 @@ class AWQMethod(BaseQuantizationMethod):
         }
 
         with prepend_python_path(source_root):
-            from awq.quantize.pre_quant import apply_awq
             from awq.quantize.pre_quant import run_awq
             from awq.quantize.quantizer import pseudo_quantize_model_weight
 
@@ -40,7 +39,6 @@ class AWQMethod(BaseQuantizationMethod):
                     calib_data=args.calibration_dataset,
                 )
                 torch.save(awq_state, awq_state_path)
-                apply_awq(model, awq_state)
 
             pseudo_quantize_model_weight(
                 model,
@@ -55,4 +53,3 @@ class AWQMethod(BaseQuantizationMethod):
         if awq_state_path.exists():
             artifacts["awq_search_path"] = str(awq_state_path)
         return artifacts
-

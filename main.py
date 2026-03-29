@@ -6,6 +6,7 @@ import json
 import sys
 
 from algorithm.common.logging import setup_logging
+from algorithm.common.reproducibility import set_global_seed
 from workflow.builder import build_pruning_config
 from workflow.builder import build_pruning_parser
 from workflow.builder import build_quantization_config
@@ -60,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = task["parser_builder"]().parse_args(argv[1:])
     setup_logging(args.log_level)
+    set_global_seed(args.seed)
     result = run_workflow(task["config_builder"](args))
     print(json.dumps(_build_result_payload(task_name, args, result), ensure_ascii=False, indent=2))
     return 0

@@ -171,8 +171,8 @@ class GPTQ:
 
         if self.dev.type == "cuda":
             torch.cuda.synchronize(self.dev)
-        print('time %.2f' % (time.time() - tick))
-        print('error', torch.sum(Losses).item())
+        # print('time %.2f' % (time.time() - tick))
+        # print('error', torch.sum(Losses).item())
 
         if actorder:
             Q = Q[:, invperm]
