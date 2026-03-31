@@ -22,6 +22,8 @@ class AWQMethod(BaseQuantizationMethod):
             "zero_point": not args.weight_symmetric,
             "q_group_size": args.weight_group_size,
         }
+        if str(args.device).startswith("cuda"):
+            torch.cuda.set_device(torch.device(args.device))
 
         with prepend_python_path(source_root):
             from awq.quantize.pre_quant import run_awq
@@ -37,6 +39,7 @@ class AWQMethod(BaseQuantizationMethod):
                     n_samples=args.calibration_samples,
                     seqlen=args.sequence_length,
                     calib_data=args.calibration_dataset,
+                    device=args.device,
                 )
                 torch.save(awq_state, awq_state_path)
 
@@ -44,6 +47,7 @@ class AWQMethod(BaseQuantizationMethod):
                 model,
                 w_bit=args.weight_bits,
                 q_config=quantization_config,
+                device=args.device,
             )
 
         artifacts = {

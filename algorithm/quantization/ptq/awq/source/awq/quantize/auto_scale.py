@@ -7,21 +7,15 @@ from transformers.models.opt.modeling_opt import OPTDecoderLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRMSNorm
 from transformers.activations import GELUActivation
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm, Qwen2DecoderLayer
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLDecoderLayer
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2RMSNorm as Qwen2_5_VLRMSNorm
 
 from .qmodule import ScaledActivation
+from .forward_utils import forward_in_chunks
 from ..utils.module import get_op_by_name, get_op_name, set_op_by_name
+from ..utils.device import resolve_device
 
 __all__ = ["auto_scale_block", "apply_scale"]
-
-
-def _forward_in_chunks(block, x, kwargs, chunk_size=1):
-    outputs = []
-    for chunk in torch.split(x, chunk_size, dim=0):
-        chunk_output = block(chunk, **kwargs)
-        if isinstance(chunk_output, tuple):
-            chunk_output = chunk_output[0]
-        outputs.append(chunk_output)
-    return torch.cat(outputs, dim=0)
 
 
 @torch.no_grad()
@@ -94,7 +88,7 @@ def scale_gelu_fc(gelu, fc, scales):
 
 
 @torch.no_grad()
-def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
+def auto_scale_block(model, module, module_kwargs, w_bit, q_config, input_feat):
     from .quantizer import pseudo_quantize_tensor
 
     # firstly, get the weight quantize function
@@ -121,7 +115,7 @@ def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
         # x: n, ci
         x = x.to(next(block.parameters()).device)
         with torch.no_grad():
-            org_out = _forward_in_chunks(block, x, kwargs)
+            org_out = forward_in_chunks(model, block, x, kwargs)
 
         x_max = get_act_scale(x)
 
@@ -140,7 +134,7 @@ def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
             for fc in linears2scale:
                 fc.weight.mul_(scales.view(1, -1).to(fc.weight.device))
                 fc.weight.data = w_quantize_func(fc.weight.data) / (scales.view(1, -1))
-            out = _forward_in_chunks(block, x, kwargs)
+            out = forward_in_chunks(model, block, x, kwargs)
 
             loss = (
                 (org_out - out).float().pow(2).mean().item()
@@ -218,7 +212,7 @@ def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
             )
         )
 
-    elif isinstance(module, (LlamaDecoderLayer, Qwen2DecoderLayer)):
+    elif isinstance(module, (LlamaDecoderLayer, Qwen2DecoderLayer, Qwen2_5_VLDecoderLayer)):
         # attention input
         scales_list.append(
             _auto_get_scale(
@@ -452,20 +446,21 @@ def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
     return scales_list
 
 
-def apply_scale(module, scales_list, input_feat_dict=None):
+def apply_scale(module, scales_list, input_feat_dict=None, device=None):
+    runtime_device = resolve_device(device)
     for prev_op_name, layer_names, scales in scales_list:
         prev_op = get_op_by_name(module, prev_op_name)
         layers = [get_op_by_name(module, name) for name in layer_names]
 
-        prev_op.cuda()
+        prev_op.to(runtime_device)
         for layer in layers:
-            layer.cuda()
-        scales.cuda()
+            layer.to(runtime_device)
+        scales = scales.to(runtime_device)
 
         if isinstance(prev_op, nn.Linear):
             assert len(layers) == 1
             scale_fc_fc(prev_op, layers[0], scales)
-        elif isinstance(prev_op, (nn.LayerNorm, LlamaRMSNorm, Qwen2RMSNorm)):
+        elif isinstance(prev_op, (nn.LayerNorm, LlamaRMSNorm, Qwen2RMSNorm, Qwen2_5_VLRMSNorm)):
             scale_ln_fcs(prev_op, layers, scales)
         elif isinstance(prev_op, (nn.GELU, BloomGelu, GELUActivation, nn.SiLU)):
             new_module = ScaledActivation(prev_op, scales)
@@ -483,4 +478,3 @@ def apply_scale(module, scales_list, input_feat_dict=None):
         prev_op.cpu()
         for layer in layers:
             layer.cpu()
-        scales.cpu()

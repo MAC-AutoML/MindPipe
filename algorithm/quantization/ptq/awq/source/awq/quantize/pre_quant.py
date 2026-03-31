@@ -18,18 +18,10 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
 from .auto_scale import auto_scale_block, apply_scale
 from .auto_clip import auto_clip_block, apply_clip
+from .forward_utils import forward_in_chunks
+from ..utils.device import resolve_device
 
 __all__ = ["run_awq"]
-
-
-def _forward_in_chunks(layer, inputs, kwargs, chunk_size=1):
-    outputs = []
-    for chunk in torch.split(inputs, chunk_size, dim=0):
-        chunk_output = layer(chunk, **kwargs)
-        if isinstance(chunk_output, tuple):
-            chunk_output = chunk_output[0]
-        outputs.append(chunk_output)
-    return torch.cat(outputs, dim=0)
 
 
 def get_named_linears(module):
@@ -122,6 +114,15 @@ def move_embed(model, device):
         raise NotImplementedError(type(model))
 
 
+def get_model_input_device(model):
+    input_embeddings = None
+    if hasattr(model, "get_input_embeddings"):
+        input_embeddings = model.get_input_embeddings()
+    if input_embeddings is not None and hasattr(input_embeddings, "weight"):
+        return input_embeddings.weight.device
+    return resolve_device()
+
+
 @torch.no_grad()
 def run_awq(
     model,
@@ -134,13 +135,16 @@ def run_awq(
     mse_range=True,
     # some configs for ablation study
     calib_data="pileval",
+    device=None,
 ):
     from ..utils.calib_data import get_calib_dataset
     from ..utils.module import append_str_prefix, get_op_name
 
+    runtime_device = resolve_device(device)
+
     if "bigcode" in str(model.__class__).lower():
         # otherwise attention_mask will always be on cpu.
-        model.transformer.bias = model.transformer.bias.to("cuda")
+        model.transformer.bias = model.transformer.bias.to(runtime_device)
 
     layers = get_blocks(model)
 
@@ -152,8 +156,8 @@ def run_awq(
     inps = []
     layer_kwargs = {}
 
-    layers[0] = layers[0].cuda()
-    move_embed(model, "cuda")
+    layers[0] = layers[0].to(runtime_device)
+    move_embed(model, runtime_device)
 
     # get input and kwargs to layer 0
     # with_kwargs is only supported in PyTorch 2.0
@@ -176,13 +180,14 @@ def run_awq(
 
     # patch layer 0 to catch input and kwargs
     layers[0] = Catcher(layers[0])
+    model_input_device = get_model_input_device(model)
     try:
         if model.__class__.__name__ == "LlavaLlamaModel":
-            model.llm(samples.to(next(model.parameters()).device))
+            model.llm(samples.to(model_input_device))
         elif model.__class__.__name__ == "InternVL3":
-            model.language_model(samples.to(next(model.parameters()).device))
+            model.language_model(samples.to(model_input_device))
         else:
-            model(samples.to(next(model.parameters()).device))
+            model(samples.to(model_input_device))
     except ValueError:  # work with early exit
         pass
     del samples
@@ -203,7 +208,7 @@ def run_awq(
     # solve layer by layer
     for i in tqdm.tqdm(range(len(layers)), desc="Running AWQ..."):
         layer = layers[i]
-        layer = layer.cuda()
+        layer = layer.to(runtime_device)
         named_linears = get_named_linears(layer)
 
         # firstly, get input features of all linear layers
@@ -222,7 +227,7 @@ def run_awq(
             )
         inps = inps.to(next(layer.parameters()).device)  # in case multi-gpu
         # get output as next layer's input
-        inps = _forward_in_chunks(layer, inps, layer_kwargs)
+        inps = forward_in_chunks(model, layer, inps, layer_kwargs)
         for h in handles:
             h.remove()
         # now solve for scaling and clipping
@@ -235,6 +240,7 @@ def run_awq(
             auto_scale
         ):  # if it applies, we should also modify the input_feat with scales
             scales_list = auto_scale_block(
+                model,
                 layer,
                 layer_kwargs,
                 w_bit=w_bit,
@@ -242,7 +248,7 @@ def run_awq(
                 input_feat=input_feat,
             )
             # apply_scale(layer, scales_list, input_feat_dict=input_feat)
-            apply_scale(layers[i], scales_list, input_feat_dict=input_feat)
+            apply_scale(layers[i], scales_list, input_feat_dict=input_feat, device=runtime_device)
             # append prefix to make names global
             awq_results["scale"] += append_str_prefix(
                 scales_list, get_op_name(model, layer) + "."
@@ -260,8 +266,9 @@ def run_awq(
                 w_bit=w_bit,
                 q_config=q_config,
                 input_feat=input_feat,
+                device=runtime_device,
             )
-            apply_clip(layer, clip_list)
+            apply_clip(layer, clip_list, device=runtime_device)
             # append prefix to make names global
             awq_results["clip"] += append_str_prefix(
                 clip_list, get_op_name(model, layer) + "."
@@ -279,6 +286,7 @@ def run_awq(
     return awq_results
 
 
-def apply_awq(model, awq_results):
-    apply_scale(model, awq_results["scale"])
-    apply_clip(model, awq_results["clip"])
+def apply_awq(model, awq_results, device=None):
+    runtime_device = resolve_device(device)
+    apply_scale(model, awq_results["scale"], device=runtime_device)
+    apply_clip(model, awq_results["clip"], device=runtime_device)

@@ -36,7 +36,6 @@ class W8A8OF16LinearStaticScale(torch.nn.Module):
         if bias:
             self.bias = torch.empty(
                 self.out_features,
-                device=torch.cuda.current_device(),
                 dtype=torch.float16,
             )
         else:
@@ -144,6 +143,7 @@ class W8A8OF16LinearDynamicInputScale(W8A8OF16LinearStaticScale):
         s1_scale=None,
         fc1=False,
     ):
+        target_device = linear.weight.device
         q_linear = cls(
             linear.in_features,
             linear.out_features,
@@ -151,25 +151,29 @@ class W8A8OF16LinearDynamicInputScale(W8A8OF16LinearStaticScale):
         )
         if init_only:  # just prepare for loading sd
             return q_linear
+        q_linear = q_linear.to(target_device)
         if s1_scale is None:
             s1_scale, _ = torch.max(abs(linear.weight.data), dim=-1, keepdim=True)
             s1_scale = s1_scale.clamp_(min=1e-5).div_(127)
 
         if linear.bias is not None:
-            q_linear.bias = linear.bias.clone().half().contiguous().cuda()
+            q_linear.bias = linear.bias.clone().half().contiguous().to(target_device)
         ## Quantize the weights
         # ---- Quantize the weights to int8 ---- #
         linear_weight = linear.weight.data  # OC, IC
         linear_weight = linear_weight.div_(s1_scale.to(linear_weight.device))
         linear_weight = linear_weight.round_().to(torch.int8)
             
-        q_linear.weight.data[:, :] = linear_weight.half().contiguous().cuda()
+        q_linear.weight.data[:, :] = linear_weight.contiguous().to(
+            device=target_device,
+            dtype=q_linear.weight.dtype,
+        )
 
         # ---- Pack the scales ---- #
         q_linear.dequant_scale.data[:] = (
-            s1_scale.reshape(-1).half().contiguous().cuda()
+            s1_scale.reshape(-1).half().contiguous().to(target_device)
         )
-        return q_linear.cuda()
+        return q_linear
 
     @classmethod
     def from_qkv(
@@ -180,6 +184,7 @@ class W8A8OF16LinearDynamicInputScale(W8A8OF16LinearStaticScale):
         init_only=False,
         s1_scale=None,
     ):
+        target_device = q.weight.device
         q_linear = cls(
             q.in_features,
             q.out_features + k.out_features + v.out_features,
@@ -187,6 +192,7 @@ class W8A8OF16LinearDynamicInputScale(W8A8OF16LinearStaticScale):
         )
         if init_only:  # just prepare for loading sd
             return q_linear
+        q_linear = q_linear.to(target_device)
         weight = torch.cat([q.weight.data, k.weight.data, v.weight.data], dim=0)
 
         if s1_scale is None:
@@ -195,20 +201,23 @@ class W8A8OF16LinearDynamicInputScale(W8A8OF16LinearStaticScale):
 
         if q.bias is not None:
             bias = torch.cat([q.bias, k.bias, v.bias], dim=0)
-            q_linear.bias = bias.clone().half().contiguous().cuda()
+            q_linear.bias = bias.clone().half().contiguous().to(target_device)
         # ---- Quantize the weights to int8 ---- #
         weight = weight.div_(s1_scale.to(weight.device))
         weight = weight.round_().to(torch.int8)
 
-        q_linear.weight.data[:, :] = weight.contiguous().cuda()
+        q_linear.weight.data[:, :] = weight.contiguous().to(
+            device=target_device,
+            dtype=q_linear.weight.dtype,
+        )
 
         # ---- Pack the scales ---- #
         q_linear.dequant_scale.data[:] = (
             s1_scale.reshape(q.out_features + k.out_features + v.out_features)
             .half()
-            .contiguous().cuda()
+            .contiguous().to(target_device)
         )
-        return q_linear.cuda()
+        return q_linear
 
 
 class FakeW8A8Linear(torch.nn.Module):

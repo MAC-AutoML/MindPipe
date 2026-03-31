@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .quantizer import pseudo_quantize_tensor
 import gc
+from ..utils.device import resolve_device
 
 __all__ = ["auto_clip_block"]
 
@@ -64,7 +65,8 @@ def auto_clip_layer(
 
 
 @torch.no_grad()
-def auto_clip_block(module, w_bit, q_config, input_feat):
+def auto_clip_block(module, w_bit, q_config, input_feat, device=None):
+    runtime_device = resolve_device(device)
     named_linears = {
         name: m for name, m in module.named_modules() if isinstance(m, nn.Linear)
     }
@@ -74,7 +76,7 @@ def auto_clip_block(module, w_bit, q_config, input_feat):
         # due to qk bmm, it is hard to clip precisely
         if any([_ in name for _ in ["q_", "k_", "query", "key", "Wqkv"]]):
             continue
-        named_linears[name].cuda()
+        named_linears[name].to(runtime_device)
         max_val = auto_clip_layer(
             named_linears[name].weight, input_feat[name], n_bit=w_bit, q_config=q_config
         )
@@ -84,12 +86,13 @@ def auto_clip_block(module, w_bit, q_config, input_feat):
 
 
 @torch.no_grad()
-def apply_clip(module, clip_list):
+def apply_clip(module, clip_list, device=None):
     from ..utils.module import get_op_by_name
 
+    runtime_device = resolve_device(device)
     for name, max_val in clip_list:
         layer = get_op_by_name(module, name)
-        layer.cuda()
+        layer.to(runtime_device)
         max_val = max_val.to(layer.weight.device).to(layer.weight.dtype)
         org_shape = layer.weight.shape
         layer.weight.data = layer.weight.data.reshape(*max_val.shape[:2], -1)

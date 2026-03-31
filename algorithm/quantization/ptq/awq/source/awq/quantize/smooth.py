@@ -18,11 +18,14 @@ from tqdm import tqdm
 import numpy as np
 import functools
 
+from ..utils.device import resolve_device
+
 
 @torch.no_grad()
 def get_act_scales(model, data):
     num_samples = data.shape[0]
     model.eval()
+    device = next(model.parameters()).device
     act_scales = {}
 
     def stat_tensor(name, tensor):
@@ -48,7 +51,7 @@ def get_act_scales(model, data):
 
     for i in tqdm(range(num_samples)):
         input = data[i : i + 1]
-        model(input)
+        model(input.to(device))
 
     for h in hooks:
         h.remove()
@@ -91,7 +94,7 @@ def get_static_decoder_layer_scales(
             hooks.append(m.register_forward_hook(partial(stat_io_hook, name=name)))
     pbar = tqdm(range(num_samples))
     for i in pbar:
-        model(data[i : i + 1])
+        model(data[i : i + 1].to(device))
         mean_scale = np.mean([v["input"] for v in act_dict.values()])
         pbar.set_description(f"Mean input scale: {mean_scale:.2f}")
     for hook in hooks:
@@ -142,13 +145,17 @@ def get_static_decoder_layer_scales(
     return decoder_layer_scales, act_dict
 
 
-def get_smooth_scale(model_path, media):
+def get_smooth_scale(model_path, media, device=None):
+    runtime_device = resolve_device(device)
+    load_devices = [0]
+    if runtime_device.type == "cuda":
+        load_devices = [runtime_device.index if runtime_device.index is not None else torch.cuda.current_device()]
     # Load model
-    model = llava.load(model_path, devices=[0])
+    model = llava.load(model_path, devices=load_devices)
     del model.llm
     del model.mm_projector
     torch.cuda.empty_cache()
-    model = model.cuda().eval()
+    model = model.to(runtime_device).eval()
     prompt = []
     if media is not None:
         for m in media or []:

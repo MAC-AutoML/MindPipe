@@ -4,6 +4,7 @@ from tqdm import tqdm
 import gc
 from .qmodule import ScaledActivation
 from ..utils.module import set_op_by_name
+from ..utils.device import resolve_device
 
 from transformers.models.bloom.modeling_bloom import BloomBlock
 
@@ -108,14 +109,16 @@ def pseudo_quantize_model_weight(
     model,
     w_bit,
     q_config,
+    device=None,
 ):
     from .pre_quant import get_blocks, get_named_linears
 
+    runtime_device = resolve_device(device)
     layers = get_blocks(model)
     for i in tqdm(range(len(layers)), desc="pseudo weight quantization..."):
         named_linears = get_named_linears(layers[i])
         for n, m in named_linears.items():
-            m.cuda()
+            m.to(runtime_device)
             m.weight.data = pseudo_quantize_tensor(
                 m.weight.data, n_bit=w_bit, **q_config
             )
@@ -123,12 +126,13 @@ def pseudo_quantize_model_weight(
 
 
 @torch.no_grad()
-def real_quantize_model_weight(model, w_bit, q_config, init_only=False):
+def real_quantize_model_weight(model, w_bit, q_config, init_only=False, device=None):
     from .qmodule import WQLinear
     from .pre_quant import get_blocks, get_named_linears
 
     assert q_config["zero_point"], "We only support zero_point quantization now."
 
+    runtime_device = resolve_device(device)
     layers = get_blocks(model)
     for i in tqdm(
         range(len(layers)),
@@ -146,7 +150,7 @@ def real_quantize_model_weight(model, w_bit, q_config, init_only=False):
                 q_linear.to(next(layer.parameters()).device)
                 set_op_by_name(layer, name, q_linear)
             else:
-                module.cuda()
+                module.to(runtime_device)
                 module.weight.data, scales, zeros = pseudo_quantize_tensor(
                     module.weight.data, n_bit=w_bit, get_scale_zp=True, **q_config
                 )
@@ -156,7 +160,7 @@ def real_quantize_model_weight(model, w_bit, q_config, init_only=False):
                     module, w_bit, q_config["q_group_size"], False, scales, zeros
                 )
                 module.cpu()
-                q_linear.to(next(layer.parameters()).device)
+                q_linear.to(runtime_device)
                 set_op_by_name(layer, name, q_linear)
                 torch.cuda.empty_cache()
                 gc.collect()
