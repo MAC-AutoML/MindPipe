@@ -1,0 +1,854 @@
+
+[2026-03-23 12:58:56] START /home/ma-user/anaconda3/envs/PyTorch-2.7.1/bin/python main.py pruning --algorithm sparsegpt --model_path /home/ma-user/work/models/Qwen2.5-7B-Instruct --device npu:0 --dtype float16 --calibration_dataset c4 --evaluation_dataset wikitext2 --calibration_samples 4 --sequence_length 512 --batch_size 1 --max_eval_chunks 64 --sparsity_ratio 0.5 --structure_pattern unstructured --block_size 64 --damp_percent 0.05 --output_root /home/ma-user/work/algorithm-v1/results-npu/pruning
+/home/ma-user/anaconda3/envs/PyTorch-2.7.1/lib/python3.11/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /usr/local/Ascend/ascend-toolkit/latest owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/ma-user/anaconda3/envs/PyTorch-2.7.1/lib/python3.11/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /usr/local/Ascend/ascend-toolkit/8.3.RC1/aarch64-linux/ascend_toolkit_install.info owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/ma-user/anaconda3/envs/PyTorch-2.7.1/lib/python3.11/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /usr/local/Ascend/ascend-toolkit/latest owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/ma-user/anaconda3/envs/PyTorch-2.7.1/lib/python3.11/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /usr/local/Ascend/ascend-toolkit/8.3.RC1/aarch64-linux/ascend_toolkit_install.info owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:11<00:34, 11.35s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:22<00:22, 11.12s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:33<00:11, 11.06s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:43<00:00, 10.62s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:43<00:00, 10.82s/it]
+pruning layer 0 name self_attn.k_proj
+time 25.62
+error 576.1915283203125
+pruning layer 0 name self_attn.v_proj
+time 23.80
+error 72.3870849609375
+pruning layer 0 name self_attn.q_proj
+time 23.88
+error 2075.993408203125
+pruning layer 0 name self_attn.o_proj
+time 24.02
+error 242.54629516601562
+pruning layer 0 name mlp.up_proj
+time 24.51
+error 1551.7120361328125
+pruning layer 0 name mlp.gate_proj
+time 24.60
+error 1665.43896484375
+pruning layer 0 name mlp.down_proj
+time 183.81
+error 50.03886032104492
+pruning layer 1 name self_attn.k_proj
+time 23.88
+error 52.20438766479492
+pruning layer 1 name self_attn.v_proj
+time 24.40
+error 38.776893615722656
+pruning layer 1 name self_attn.q_proj
+time 25.21
+error 218.68038940429688
+pruning layer 1 name self_attn.o_proj
+time 23.96
+error 79.31037139892578
+pruning layer 1 name mlp.up_proj
+time 24.18
+error 16294.21484375
+pruning layer 1 name mlp.gate_proj
+time 24.40
+error 21322.203125
+pruning layer 1 name mlp.down_proj
+time 180.63
+error 11.136738777160645
+pruning layer 2 name self_attn.k_proj
+time 23.77
+error 563.6265869140625
+pruning layer 2 name self_attn.v_proj
+time 23.58
+error 157.63839721679688
+pruning layer 2 name self_attn.q_proj
+time 24.00
+error 2717.01904296875
+pruning layer 2 name self_attn.o_proj
+time 23.50
+error 135.46621704101562
+pruning layer 2 name mlp.up_proj
+time 24.23
+error 57774.72265625
+pruning layer 2 name mlp.gate_proj
+time 24.20
+error 76095.90625
+pruning layer 2 name mlp.down_proj
+time 180.78
+error 74.3029556274414
+pruning layer 3 name self_attn.k_proj
+time 23.70
+error 617.3514404296875
+pruning layer 3 name self_attn.v_proj
+time 23.81
+error 202.79641723632812
+pruning layer 3 name self_attn.q_proj
+time 23.98
+error 3008.7197265625
+pruning layer 3 name self_attn.o_proj
+time 24.17
+error 289.29132080078125
+pruning layer 3 name mlp.up_proj
+time 24.80
+error 192149.84375
+pruning layer 3 name mlp.gate_proj
+time 24.34
+error 269842.75
+pruning layer 3 name mlp.down_proj
+time 185.21
+error 3874.129638671875
+pruning layer 4 name self_attn.k_proj
+time 23.50
+error 851.8634033203125
+pruning layer 4 name self_attn.v_proj
+time 23.28
+error 563.9537963867188
+pruning layer 4 name self_attn.q_proj
+time 23.71
+error 4937.23046875
+pruning layer 4 name self_attn.o_proj
+time 24.31
+error 290.5030517578125
+pruning layer 4 name mlp.up_proj
+time 24.43
+error 152264.625
+pruning layer 4 name mlp.gate_proj
+time 24.10
+error 231941.09375
+pruning layer 4 name mlp.down_proj
+time 186.92
+error 2761.82275390625
+pruning layer 5 name self_attn.k_proj
+time 24.51
+error 1045.3458251953125
+pruning layer 5 name self_attn.v_proj
+time 25.08
+error 773.8338623046875
+pruning layer 5 name self_attn.q_proj
+time 25.10
+error 6803.2294921875
+pruning layer 5 name self_attn.o_proj
+time 25.39
+error 239.34725952148438
+pruning layer 5 name mlp.up_proj
+time 25.53
+error 236439.796875
+pruning layer 5 name mlp.gate_proj
+time 25.10
+error 297255.4375
+pruning layer 5 name mlp.down_proj
+time 198.93
+error 285.9594421386719
+pruning layer 6 name self_attn.k_proj
+time 26.58
+error 939.9051513671875
+pruning layer 6 name self_attn.v_proj
+time 25.80
+error 628.7872924804688
+pruning layer 6 name self_attn.q_proj
+time 25.99
+error 5476.517578125
+pruning layer 6 name self_attn.o_proj
+time 26.20
+error 458.060791015625
+pruning layer 6 name mlp.up_proj
+time 26.50
+error 50783.97265625
+pruning layer 6 name mlp.gate_proj
+time 26.92
+error 66019.53125
+pruning layer 6 name mlp.down_proj
+time 200.27
+error 889.868408203125
+pruning layer 7 name self_attn.k_proj
+time 25.50
+error 916.9259643554688
+pruning layer 7 name self_attn.v_proj
+time 25.52
+error 1101.9559326171875
+pruning layer 7 name self_attn.q_proj
+time 25.08
+error 6562.080078125
+pruning layer 7 name self_attn.o_proj
+time 25.71
+error 863.9103393554688
+pruning layer 7 name mlp.up_proj
+time 26.64
+error 38507.47265625
+pruning layer 7 name mlp.gate_proj
+time 26.14
+error 42979.765625
+pruning layer 7 name mlp.down_proj
+time 203.91
+error 1381.80810546875
+pruning layer 8 name self_attn.k_proj
+time 25.01
+error 1183.4945068359375
+pruning layer 8 name self_attn.v_proj
+time 26.09
+error 991.52392578125
+pruning layer 8 name self_attn.q_proj
+time 25.38
+error 7995.01611328125
+pruning layer 8 name self_attn.o_proj
+time 25.00
+error 752.9022216796875
+pruning layer 8 name mlp.up_proj
+time 25.30
+error 45018.203125
+pruning layer 8 name mlp.gate_proj
+time 25.99
+error 47056.0
+pruning layer 8 name mlp.down_proj
+time 201.02
+error 1603.093017578125
+pruning layer 9 name self_attn.k_proj
+time 26.12
+error 1078.0966796875
+pruning layer 9 name self_attn.v_proj
+time 26.06
+error 1515.0654296875
+pruning layer 9 name self_attn.q_proj
+time 25.93
+error 7777.099609375
+pruning layer 9 name self_attn.o_proj
+time 26.54
+error 1404.42919921875
+pruning layer 9 name mlp.up_proj
+time 25.79
+error 82833.7421875
+pruning layer 9 name mlp.gate_proj
+time 27.19
+error 120576.078125
+pruning layer 9 name mlp.down_proj
+time 197.18
+error 1413.205322265625
+pruning layer 10 name self_attn.k_proj
+time 23.78
+error 1203.4635009765625
+pruning layer 10 name self_attn.v_proj
+time 24.09
+error 960.8923950195312
+pruning layer 10 name self_attn.q_proj
+time 24.32
+error 7032.1328125
+pruning layer 10 name self_attn.o_proj
+time 25.01
+error 995.9854125976562
+pruning layer 10 name mlp.up_proj
+time 27.31
+error 43008.7578125
+pruning layer 10 name mlp.gate_proj
+time 25.43
+error 48186.25390625
+pruning layer 10 name mlp.down_proj
+time 195.51
+error 1435.21337890625
+pruning layer 11 name self_attn.k_proj
+time 24.50
+error 1157.4044189453125
+pruning layer 11 name self_attn.v_proj
+time 24.48
+error 771.31640625
+pruning layer 11 name self_attn.q_proj
+time 25.49
+error 7164.80224609375
+pruning layer 11 name self_attn.o_proj
+time 24.87
+error 970.841552734375
+pruning layer 11 name mlp.up_proj
+time 25.86
+error 39089.8125
+pruning layer 11 name mlp.gate_proj
+time 26.19
+error 41057.8828125
+pruning layer 11 name mlp.down_proj
+time 194.17
+error 1361.6644287109375
+pruning layer 12 name self_attn.k_proj
+time 26.32
+error 1164.6044921875
+pruning layer 12 name self_attn.v_proj
+time 24.60
+error 884.521484375
+pruning layer 12 name self_attn.q_proj
+time 24.70
+error 7595.783203125
+pruning layer 12 name self_attn.o_proj
+time 25.09
+error 977.2607421875
+pruning layer 12 name mlp.up_proj
+time 25.52
+error 36784.16796875
+pruning layer 12 name mlp.gate_proj
+time 24.99
+error 36460.21875
+pruning layer 12 name mlp.down_proj
+time 192.20
+error 1189.1175537109375
+pruning layer 13 name self_attn.k_proj
+time 24.39
+error 1219.1339111328125
+pruning layer 13 name self_attn.v_proj
+time 24.39
+error 1096.0340576171875
+pruning layer 13 name self_attn.q_proj
+time 24.79
+error 7980.248046875
+pruning layer 13 name self_attn.o_proj
+time 24.51
+error 1303.9534912109375
+pruning layer 13 name mlp.up_proj
+time 25.61
+error 37128.13671875
+pruning layer 13 name mlp.gate_proj
+time 25.29
+error 38616.2890625
+pruning layer 13 name mlp.down_proj
+time 203.27
+error 1233.21142578125
+pruning layer 14 name self_attn.k_proj
+time 27.09
+error 1149.8526611328125
+pruning layer 14 name self_attn.v_proj
+time 29.20
+error 1042.8668212890625
+pruning layer 14 name self_attn.q_proj
+time 27.44
+error 8368.1396484375
+pruning layer 14 name self_attn.o_proj
+time 27.41
+error 1096.2841796875
+pruning layer 14 name mlp.up_proj
+time 27.13
+error 37411.28125
+pruning layer 14 name mlp.gate_proj
+time 25.93
+error 37368.703125
+pruning layer 14 name mlp.down_proj
+time 209.22
+error 1267.334228515625
+pruning layer 15 name self_attn.k_proj
+time 25.12
+error 1044.6014404296875
+pruning layer 15 name self_attn.v_proj
+time 25.81
+error 890.399658203125
+pruning layer 15 name self_attn.q_proj
+time 25.91
+error 6559.2587890625
+pruning layer 15 name self_attn.o_proj
+time 27.79
+error 1067.803466796875
+pruning layer 15 name mlp.up_proj
+time 27.74
+error 36129.140625
+pruning layer 15 name mlp.gate_proj
+time 26.80
+error 34209.3984375
+pruning layer 15 name mlp.down_proj
+time 210.10
+error 1223.35791015625
+pruning layer 16 name self_attn.k_proj
+time 26.21
+error 1176.170654296875
+pruning layer 16 name self_attn.v_proj
+time 26.66
+error 1427.1138916015625
+pruning layer 16 name self_attn.q_proj
+time 25.80
+error 8784.6435546875
+pruning layer 16 name self_attn.o_proj
+time 25.58
+error 1364.4324951171875
+pruning layer 16 name mlp.up_proj
+time 26.46
+error 37685.265625
+pruning layer 16 name mlp.gate_proj
+time 25.81
+error 35830.6875
+pruning layer 16 name mlp.down_proj
+time 205.69
+error 1221.127197265625
+pruning layer 17 name self_attn.k_proj
+time 25.89
+error 1389.904541015625
+pruning layer 17 name self_attn.v_proj
+time 26.47
+error 1366.075927734375
+pruning layer 17 name self_attn.q_proj
+time 26.31
+error 9262.412109375
+pruning layer 17 name self_attn.o_proj
+time 25.89
+error 1103.8128662109375
+pruning layer 17 name mlp.up_proj
+time 26.40
+error 42703.3828125
+pruning layer 17 name mlp.gate_proj
+time 26.92
+error 39320.140625
+pruning layer 17 name mlp.down_proj
+time 198.70
+error 1496.3538818359375
+pruning layer 18 name self_attn.k_proj
+time 25.60
+error 1227.7181396484375
+pruning layer 18 name self_attn.v_proj
+time 26.20
+error 1554.275146484375
+pruning layer 18 name self_attn.q_proj
+time 24.31
+error 7574.41943359375
+pruning layer 18 name self_attn.o_proj
+time 26.28
+error 2528.96435546875
+pruning layer 18 name mlp.up_proj
+time 25.99
+error 45612.73046875
+pruning layer 18 name mlp.gate_proj
+time 25.23
+error 39946.8125
+pruning layer 18 name mlp.down_proj
+time 203.28
+error 1985.08740234375
+pruning layer 19 name self_attn.k_proj
+time 26.18
+error 1222.171630859375
+pruning layer 19 name self_attn.v_proj
+time 25.29
+error 2104.583984375
+pruning layer 19 name self_attn.q_proj
+time 25.08
+error 10164.712890625
+pruning layer 19 name self_attn.o_proj
+time 24.50
+error 2941.373046875
+pruning layer 19 name mlp.up_proj
+time 28.61
+error 53806.2421875
+pruning layer 19 name mlp.gate_proj
+time 27.20
+error 48223.40625
+pruning layer 19 name mlp.down_proj
+time 210.92
+error 2919.52001953125
+pruning layer 20 name self_attn.k_proj
+time 26.01
+error 1430.8712158203125
+pruning layer 20 name self_attn.v_proj
+time 26.91
+error 2141.4775390625
+pruning layer 20 name self_attn.q_proj
+time 25.47
+error 10571.3115234375
+pruning layer 20 name self_attn.o_proj
+time 26.37
+error 2119.037109375
+pruning layer 20 name mlp.up_proj
+time 28.39
+error 65949.84375
+pruning layer 20 name mlp.gate_proj
+time 25.41
+error 57890.1953125
+pruning layer 20 name mlp.down_proj
+time 213.00
+error 4845.72412109375
+pruning layer 21 name self_attn.k_proj
+time 25.83
+error 1289.664306640625
+pruning layer 21 name self_attn.v_proj
+time 25.90
+error 2608.4765625
+pruning layer 21 name self_attn.q_proj
+time 26.32
+error 10832.9130859375
+pruning layer 21 name self_attn.o_proj
+time 24.83
+error 3796.64990234375
+pruning layer 21 name mlp.up_proj
+time 26.91
+error 91345.5390625
+pruning layer 21 name mlp.gate_proj
+time 27.50
+error 82182.953125
+pruning layer 21 name mlp.down_proj
+time 207.57
+error 7501.654296875
+pruning layer 22 name self_attn.k_proj
+time 26.01
+error 1310.337890625
+pruning layer 22 name self_attn.v_proj
+time 25.79
+error 2787.058837890625
+pruning layer 22 name self_attn.q_proj
+time 25.80
+error 13113.224609375
+pruning layer 22 name self_attn.o_proj
+time 25.04
+error 2690.1630859375
+pruning layer 22 name mlp.up_proj
+time 27.41
+error 124955.5625
+pruning layer 22 name mlp.gate_proj
+time 27.40
+error 112401.078125
+pruning layer 22 name mlp.down_proj
+time 210.83
+error 12613.005859375
+pruning layer 23 name self_attn.k_proj
+time 27.20
+error 1562.80029296875
+pruning layer 23 name self_attn.v_proj
+time 26.69
+error 2658.044921875
+pruning layer 23 name self_attn.q_proj
+time 25.59
+error 14492.6953125
+pruning layer 23 name self_attn.o_proj
+time 25.50
+error 6159.0703125
+pruning layer 23 name mlp.up_proj
+time 26.69
+error 176366.90625
+pruning layer 23 name mlp.gate_proj
+time 26.41
+error 164400.84375
+pruning layer 23 name mlp.down_proj
+time 207.18
+error 16351.1044921875
+pruning layer 24 name self_attn.k_proj
+time 25.28
+error 1425.40087890625
+pruning layer 24 name self_attn.v_proj
+time 25.41
+error 4337.0478515625
+pruning layer 24 name self_attn.q_proj
+time 24.70
+error 15172.822265625
+pruning layer 24 name self_attn.o_proj
+time 24.33
+error 5896.32763671875
+pruning layer 24 name mlp.up_proj
+time 26.02
+error 190607.15625
+pruning layer 24 name mlp.gate_proj
+time 24.43
+error 169348.875
+pruning layer 24 name mlp.down_proj
+time 202.19
+error 23012.5390625
+pruning layer 25 name self_attn.k_proj
+time 24.29
+error 1012.1422119140625
+pruning layer 25 name self_attn.v_proj
+time 24.38
+error 4260.490234375
+pruning layer 25 name self_attn.q_proj
+time 24.58
+error 12857.09765625
+pruning layer 25 name self_attn.o_proj
+time 24.68
+error 8363.076171875
+pruning layer 25 name mlp.up_proj
+time 25.28
+error 225902.4375
+pruning layer 25 name mlp.gate_proj
+time 26.03
+error 192971.96875
+pruning layer 25 name mlp.down_proj
+time 195.40
+error 35072.21875
+pruning layer 26 name self_attn.k_proj
+time 24.51
+error 952.95361328125
+pruning layer 26 name self_attn.v_proj
+time 23.87
+error 6245.83447265625
+pruning layer 26 name self_attn.q_proj
+time 23.88
+error 10674.0634765625
+pruning layer 26 name self_attn.o_proj
+time 23.68
+error 11722.5234375
+pruning layer 26 name mlp.up_proj
+time 24.68
+error 231266.703125
+pruning layer 26 name mlp.gate_proj
+time 24.70
+error 193803.625
+pruning layer 26 name mlp.down_proj
+time 190.79
+error 294935.3125
+pruning layer 27 name self_attn.k_proj
+time 23.50
+error 1236.1817626953125
+pruning layer 27 name self_attn.v_proj
+time 24.40
+error 6323.2421875
+pruning layer 27 name self_attn.q_proj
+time 25.08
+error 14210.41796875
+pruning layer 27 name self_attn.o_proj
+time 24.81
+error 19790.47265625
+pruning layer 27 name mlp.up_proj
+time 24.41
+error 284318.375
+pruning layer 27 name mlp.gate_proj
+time 27.87
+error 259480.890625
+pruning layer 27 name mlp.down_proj
+time 209.16
+error 404959.0
+layer 0 sparsity 0.500004
+layer 1 sparsity 0.500003
+layer 2 sparsity 0.500003
+layer 3 sparsity 0.500003
+layer 4 sparsity 0.500003
+layer 5 sparsity 0.500003
+layer 6 sparsity 0.500003
+layer 7 sparsity 0.500003
+layer 8 sparsity 0.500003
+layer 9 sparsity 0.500003
+layer 10 sparsity 0.500003
+layer 11 sparsity 0.500003
+layer 12 sparsity 0.500003
+layer 13 sparsity 0.500003
+layer 14 sparsity 0.500003
+layer 15 sparsity 0.500003
+layer 16 sparsity 0.500003
+layer 17 sparsity 0.500003
+layer 18 sparsity 0.500003
+layer 19 sparsity 0.500003
+layer 20 sparsity 0.500003
+layer 21 sparsity 0.500003
+layer 22 sparsity 0.500003
+layer 23 sparsity 0.500003
+layer 24 sparsity 0.500003
+layer 25 sparsity 0.500003
+layer 26 sparsity 0.500003
+layer 27 sparsity 0.500003
+Token indices sequence length is longer than the specified maximum sequence length for this model (2518423 > 131072). Running this sequence through the model will result in indexing errors
+{
+  "algorithm_name": "sparsegpt",
+  "model_path": "/home/ma-user/work/models/Qwen2.5-7B-Instruct",
+  "output_dir": "/home/ma-user/work/algorithm-v1/results-npu/pruning/Qwen2.5-7B-Instruct/sparsegpt/sparsegpt_s0.5_seq512",
+  "metrics_path": "/home/ma-user/work/algorithm-v1/results-npu/pruning/Qwen2.5-7B-Instruct/sparsegpt/sparsegpt_s0.5_seq512/metrics.json",
+  "metrics": {
+    "perplexity": 13.277350098695914,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 512,
+    "evaluated_chunks": 64,
+    "batch_size": 1,
+    "elapsed_seconds": 7.3953467309474945,
+    "tokens_per_second": 4422.240253204457,
+    "algorithm_name": "sparsegpt",
+    "model_path": "/home/ma-user/work/models/Qwen2.5-7B-Instruct",
+    "device": "npu:0",
+    "dtype": "float16",
+    "sparsity_ratio": 0.5
+  },
+  "artifacts": {
+    "source_root": "/home/ma-user/work/algorithm-v1/algorithm_v1/pruning/unstructured/sparsegpt/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.5000029952698882,
+    "structure_pattern": "unstructured",
+    "pruned_linear_count": 196,
+    "pruned_linear_layers": [
+      "model.layers.0.self_attn.k_proj",
+      "model.layers.0.self_attn.v_proj",
+      "model.layers.0.self_attn.q_proj",
+      "model.layers.0.self_attn.o_proj",
+      "model.layers.0.mlp.up_proj",
+      "model.layers.0.mlp.gate_proj",
+      "model.layers.0.mlp.down_proj",
+      "model.layers.1.self_attn.k_proj",
+      "model.layers.1.self_attn.v_proj",
+      "model.layers.1.self_attn.q_proj",
+      "model.layers.1.self_attn.o_proj",
+      "model.layers.1.mlp.up_proj",
+      "model.layers.1.mlp.gate_proj",
+      "model.layers.1.mlp.down_proj",
+      "model.layers.2.self_attn.k_proj",
+      "model.layers.2.self_attn.v_proj",
+      "model.layers.2.self_attn.q_proj",
+      "model.layers.2.self_attn.o_proj",
+      "model.layers.2.mlp.up_proj",
+      "model.layers.2.mlp.gate_proj",
+      "model.layers.2.mlp.down_proj",
+      "model.layers.3.self_attn.k_proj",
+      "model.layers.3.self_attn.v_proj",
+      "model.layers.3.self_attn.q_proj",
+      "model.layers.3.self_attn.o_proj",
+      "model.layers.3.mlp.up_proj",
+      "model.layers.3.mlp.gate_proj",
+      "model.layers.3.mlp.down_proj",
+      "model.layers.4.self_attn.k_proj",
+      "model.layers.4.self_attn.v_proj",
+      "model.layers.4.self_attn.q_proj",
+      "model.layers.4.self_attn.o_proj",
+      "model.layers.4.mlp.up_proj",
+      "model.layers.4.mlp.gate_proj",
+      "model.layers.4.mlp.down_proj",
+      "model.layers.5.self_attn.k_proj",
+      "model.layers.5.self_attn.v_proj",
+      "model.layers.5.self_attn.q_proj",
+      "model.layers.5.self_attn.o_proj",
+      "model.layers.5.mlp.up_proj",
+      "model.layers.5.mlp.gate_proj",
+      "model.layers.5.mlp.down_proj",
+      "model.layers.6.self_attn.k_proj",
+      "model.layers.6.self_attn.v_proj",
+      "model.layers.6.self_attn.q_proj",
+      "model.layers.6.self_attn.o_proj",
+      "model.layers.6.mlp.up_proj",
+      "model.layers.6.mlp.gate_proj",
+      "model.layers.6.mlp.down_proj",
+      "model.layers.7.self_attn.k_proj",
+      "model.layers.7.self_attn.v_proj",
+      "model.layers.7.self_attn.q_proj",
+      "model.layers.7.self_attn.o_proj",
+      "model.layers.7.mlp.up_proj",
+      "model.layers.7.mlp.gate_proj",
+      "model.layers.7.mlp.down_proj",
+      "model.layers.8.self_attn.k_proj",
+      "model.layers.8.self_attn.v_proj",
+      "model.layers.8.self_attn.q_proj",
+      "model.layers.8.self_attn.o_proj",
+      "model.layers.8.mlp.up_proj",
+      "model.layers.8.mlp.gate_proj",
+      "model.layers.8.mlp.down_proj",
+      "model.layers.9.self_attn.k_proj",
+      "model.layers.9.self_attn.v_proj",
+      "model.layers.9.self_attn.q_proj",
+      "model.layers.9.self_attn.o_proj",
+      "model.layers.9.mlp.up_proj",
+      "model.layers.9.mlp.gate_proj",
+      "model.layers.9.mlp.down_proj",
+      "model.layers.10.self_attn.k_proj",
+      "model.layers.10.self_attn.v_proj",
+      "model.layers.10.self_attn.q_proj",
+      "model.layers.10.self_attn.o_proj",
+      "model.layers.10.mlp.up_proj",
+      "model.layers.10.mlp.gate_proj",
+      "model.layers.10.mlp.down_proj",
+      "model.layers.11.self_attn.k_proj",
+      "model.layers.11.self_attn.v_proj",
+      "model.layers.11.self_attn.q_proj",
+      "model.layers.11.self_attn.o_proj",
+      "model.layers.11.mlp.up_proj",
+      "model.layers.11.mlp.gate_proj",
+      "model.layers.11.mlp.down_proj",
+      "model.layers.12.self_attn.k_proj",
+      "model.layers.12.self_attn.v_proj",
+      "model.layers.12.self_attn.q_proj",
+      "model.layers.12.self_attn.o_proj",
+      "model.layers.12.mlp.up_proj",
+      "model.layers.12.mlp.gate_proj",
+      "model.layers.12.mlp.down_proj",
+      "model.layers.13.self_attn.k_proj",
+      "model.layers.13.self_attn.v_proj",
+      "model.layers.13.self_attn.q_proj",
+      "model.layers.13.self_attn.o_proj",
+      "model.layers.13.mlp.up_proj",
+      "model.layers.13.mlp.gate_proj",
+      "model.layers.13.mlp.down_proj",
+      "model.layers.14.self_attn.k_proj",
+      "model.layers.14.self_attn.v_proj",
+      "model.layers.14.self_attn.q_proj",
+      "model.layers.14.self_attn.o_proj",
+      "model.layers.14.mlp.up_proj",
+      "model.layers.14.mlp.gate_proj",
+      "model.layers.14.mlp.down_proj",
+      "model.layers.15.self_attn.k_proj",
+      "model.layers.15.self_attn.v_proj",
+      "model.layers.15.self_attn.q_proj",
+      "model.layers.15.self_attn.o_proj",
+      "model.layers.15.mlp.up_proj",
+      "model.layers.15.mlp.gate_proj",
+      "model.layers.15.mlp.down_proj",
+      "model.layers.16.self_attn.k_proj",
+      "model.layers.16.self_attn.v_proj",
+      "model.layers.16.self_attn.q_proj",
+      "model.layers.16.self_attn.o_proj",
+      "model.layers.16.mlp.up_proj",
+      "model.layers.16.mlp.gate_proj",
+      "model.layers.16.mlp.down_proj",
+      "model.layers.17.self_attn.k_proj",
+      "model.layers.17.self_attn.v_proj",
+      "model.layers.17.self_attn.q_proj",
+      "model.layers.17.self_attn.o_proj",
+      "model.layers.17.mlp.up_proj",
+      "model.layers.17.mlp.gate_proj",
+      "model.layers.17.mlp.down_proj",
+      "model.layers.18.self_attn.k_proj",
+      "model.layers.18.self_attn.v_proj",
+      "model.layers.18.self_attn.q_proj",
+      "model.layers.18.self_attn.o_proj",
+      "model.layers.18.mlp.up_proj",
+      "model.layers.18.mlp.gate_proj",
+      "model.layers.18.mlp.down_proj",
+      "model.layers.19.self_attn.k_proj",
+      "model.layers.19.self_attn.v_proj",
+      "model.layers.19.self_attn.q_proj",
+      "model.layers.19.self_attn.o_proj",
+      "model.layers.19.mlp.up_proj",
+      "model.layers.19.mlp.gate_proj",
+      "model.layers.19.mlp.down_proj",
+      "model.layers.20.self_attn.k_proj",
+      "model.layers.20.self_attn.v_proj",
+      "model.layers.20.self_attn.q_proj",
+      "model.layers.20.self_attn.o_proj",
+      "model.layers.20.mlp.up_proj",
+      "model.layers.20.mlp.gate_proj",
+      "model.layers.20.mlp.down_proj",
+      "model.layers.21.self_attn.k_proj",
+      "model.layers.21.self_attn.v_proj",
+      "model.layers.21.self_attn.q_proj",
+      "model.layers.21.self_attn.o_proj",
+      "model.layers.21.mlp.up_proj",
+      "model.layers.21.mlp.gate_proj",
+      "model.layers.21.mlp.down_proj",
+      "model.layers.22.self_attn.k_proj",
+      "model.layers.22.self_attn.v_proj",
+      "model.layers.22.self_attn.q_proj",
+      "model.layers.22.self_attn.o_proj",
+      "model.layers.22.mlp.up_proj",
+      "model.layers.22.mlp.gate_proj",
+      "model.layers.22.mlp.down_proj",
+      "model.layers.23.self_attn.k_proj",
+      "model.layers.23.self_attn.v_proj",
+      "model.layers.23.self_attn.q_proj",
+      "model.layers.23.self_attn.o_proj",
+      "model.layers.23.mlp.up_proj",
+      "model.layers.23.mlp.gate_proj",
+      "model.layers.23.mlp.down_proj",
+      "model.layers.24.self_attn.k_proj",
+      "model.layers.24.self_attn.v_proj",
+      "model.layers.24.self_attn.q_proj",
+      "model.layers.24.self_attn.o_proj",
+      "model.layers.24.mlp.up_proj",
+      "model.layers.24.mlp.gate_proj",
+      "model.layers.24.mlp.down_proj",
+      "model.layers.25.self_attn.k_proj",
+      "model.layers.25.self_attn.v_proj",
+      "model.layers.25.self_attn.q_proj",
+      "model.layers.25.self_attn.o_proj",
+      "model.layers.25.mlp.up_proj",
+      "model.layers.25.mlp.gate_proj",
+      "model.layers.25.mlp.down_proj",
+      "model.layers.26.self_attn.k_proj",
+      "model.layers.26.self_attn.v_proj",
+      "model.layers.26.self_attn.q_proj",
+      "model.layers.26.self_attn.o_proj",
+      "model.layers.26.mlp.up_proj",
+      "model.layers.26.mlp.gate_proj",
+      "model.layers.26.mlp.down_proj",
+      "model.layers.27.self_attn.k_proj",
+      "model.layers.27.self_attn.v_proj",
+      "model.layers.27.self_attn.q_proj",
+      "model.layers.27.self_attn.o_proj",
+      "model.layers.27.mlp.up_proj",
+      "model.layers.27.mlp.gate_proj",
+      "model.layers.27.mlp.down_proj"
+    ]
+  }
+}
+[2026-03-23 15:47:21] END return_code=0

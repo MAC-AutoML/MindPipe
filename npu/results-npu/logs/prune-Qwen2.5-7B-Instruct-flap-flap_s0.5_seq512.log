@@ -1,0 +1,46 @@
+
+[2026-03-23 12:49:43] START /home/ma-user/anaconda3/envs/PyTorch-2.7.1/bin/python main.py pruning --algorithm flap --model_path /home/ma-user/work/models/Qwen2.5-7B-Instruct --device npu:0 --dtype bfloat16 --calibration_dataset c4 --evaluation_dataset wikitext2 --calibration_samples 4 --sequence_length 512 --batch_size 1 --max_eval_chunks 64 --sparsity_ratio 0.5 --structure_pattern AL-AM --flap_metrics WIFV --flap_remove_heads -1 --pseudo_pruning --output_root /home/ma-user/work/algorithm-v1/results-npu/pruning
+/home/ma-user/anaconda3/envs/PyTorch-2.7.1/lib/python3.11/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /usr/local/Ascend/ascend-toolkit/latest owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/ma-user/anaconda3/envs/PyTorch-2.7.1/lib/python3.11/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /usr/local/Ascend/ascend-toolkit/8.3.RC1/aarch64-linux/ascend_toolkit_install.info owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/ma-user/anaconda3/envs/PyTorch-2.7.1/lib/python3.11/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /usr/local/Ascend/ascend-toolkit/latest owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/ma-user/anaconda3/envs/PyTorch-2.7.1/lib/python3.11/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /usr/local/Ascend/ascend-toolkit/8.3.RC1/aarch64-linux/ascend_toolkit_install.info owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:00,  5.29it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  4.82it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:00<00:00,  4.72it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  5.02it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  4.96it/s]
+loading calibdation data
+Token indices sequence length is longer than the specified maximum sequence length for this model (2541000 > 131072). Running this sequence through the model will result in indexing errors
+dataset loading complete
+Processing layers:   0%|          | 0/28 [00:00<?, ?it/s]Processing layers:   4%|▎         | 1/28 [00:00<00:19,  1.39it/s]Processing layers:   7%|▋         | 2/28 [00:00<00:09,  2.77it/s]Processing layers:  11%|█         | 3/28 [00:00<00:06,  3.77it/s]Processing layers:  14%|█▍        | 4/28 [00:01<00:04,  5.00it/s]Processing layers:  21%|██▏       | 6/28 [00:01<00:02,  7.47it/s]Processing layers:  29%|██▊       | 8/28 [00:01<00:02,  7.69it/s]Processing layers:  36%|███▌      | 10/28 [00:01<00:01,  9.15it/s]Processing layers:  43%|████▎     | 12/28 [00:01<00:01,  9.46it/s]Processing layers:  50%|█████     | 14/28 [00:02<00:01,  8.91it/s]Processing layers:  54%|█████▎    | 15/28 [00:02<00:01,  9.10it/s]Processing layers:  57%|█████▋    | 16/28 [00:02<00:01,  9.28it/s]Processing layers:  61%|██████    | 17/28 [00:02<00:01,  9.44it/s]Processing layers:  68%|██████▊   | 19/28 [00:02<00:00, 10.71it/s]Processing layers:  75%|███████▌  | 21/28 [00:02<00:00, 10.44it/s]Processing layers:  82%|████████▏ | 23/28 [00:02<00:00,  9.44it/s]Processing layers:  89%|████████▉ | 25/28 [00:03<00:00, 10.42it/s]Processing layers:  96%|█████████▋| 27/28 [00:03<00:00, 10.31it/s]Processing layers: 100%|██████████| 28/28 [00:03<00:00,  8.16it/s]
+AL-AM exact sparsity targeting: requested=0.5000, estimated=0.5000
+{
+  "algorithm_name": "flap",
+  "model_path": "/home/ma-user/work/models/Qwen2.5-7B-Instruct",
+  "output_dir": "/home/ma-user/work/algorithm-v1/results-npu/pruning/Qwen2.5-7B-Instruct/flap/flap_s0.5_seq512",
+  "metrics_path": "/home/ma-user/work/algorithm-v1/results-npu/pruning/Qwen2.5-7B-Instruct/flap/flap_s0.5_seq512/metrics.json",
+  "metrics": {
+    "perplexity": 314.56451107167004,
+    "evaluation_dataset": "wikitext2",
+    "sequence_length": 512,
+    "evaluated_chunks": 64,
+    "batch_size": 1,
+    "elapsed_seconds": 8.268843084573746,
+    "tokens_per_second": 3955.087751152539,
+    "algorithm_name": "flap",
+    "model_path": "/home/ma-user/work/models/Qwen2.5-7B-Instruct",
+    "device": "npu:0",
+    "dtype": "bfloat16",
+    "sparsity_ratio": 0.5
+  },
+  "artifacts": {
+    "source_root": "/home/ma-user/work/algorithm-v1/algorithm_v1/pruning/structured/flap/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.34875364700506184,
+    "structure_pattern": "AL-AM",
+    "flap_metrics": "WIFV",
+    "flap_remove_heads": -1,
+    "pseudo_pruning": true
+  }
+}
+[2026-03-23 12:54:11] END return_code=0

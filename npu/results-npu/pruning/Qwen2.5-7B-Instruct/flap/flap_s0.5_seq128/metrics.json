@@ -1,0 +1,23 @@
+{
+  "perplexity": 297.5837362588652,
+  "evaluation_dataset": "wikitext2",
+  "sequence_length": 128,
+  "evaluated_chunks": 4,
+  "batch_size": 1,
+  "elapsed_seconds": 0.21989288926124573,
+  "tokens_per_second": 2310.2156768537707,
+  "algorithm_name": "flap",
+  "model_path": "/home/ma-user/work/models/Qwen2.5-7B-Instruct",
+  "device": "npu:0",
+  "dtype": "float16",
+  "sparsity_ratio": 0.5,
+  "artifacts": {
+    "source_root": "/home/ma-user/work/algorithm-v1/algorithm_v1/pruning/structured/flap/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.3498324036080987,
+    "structure_pattern": "AL-AM",
+    "flap_metrics": "WIFV",
+    "flap_remove_heads": 8,
+    "pseudo_pruning": true
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "perplexity": 14.725858167013559,
+  "evaluation_dataset": "wikitext2",
+  "sequence_length": 512,
+  "evaluated_chunks": 64,
+  "batch_size": 1,
+  "elapsed_seconds": 5.06031309068203,
+  "tokens_per_second": 6462.8412143550095,
+  "algorithm_name": "wanda",
+  "model_path": "/home/ma-user/work/models/Qwen2.5-VL-7B-Instruct",
+  "device": "npu:0",
+  "dtype": "float16",
+  "sparsity_ratio": 0.5,
+  "artifacts": {
+    "source_root": "/home/ma-user/work/algorithm-v1/algorithm_v1/pruning/unstructured/wanda/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.5,
+    "structure_pattern": "unstructured"
+  }
+}
