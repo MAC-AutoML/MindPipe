@@ -1,2 +1,0 @@
-"""QAT-like methods."""
-

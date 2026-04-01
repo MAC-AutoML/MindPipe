@@ -1,2 +1,0 @@
-"""GPTQ method package."""
-

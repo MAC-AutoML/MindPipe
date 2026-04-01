@@ -14,6 +14,8 @@ import math
 
 import torch
 
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import preferred_rotation_dtype
 import fast_hadamard_transform
 
 
@@ -204,14 +206,16 @@ def matmul_hadUt(X):
 
 
 def random_hadamard_matrix(size, device):
-    Q = torch.randint(low=0, high=2, size=(size,)).to(torch.float64)
+    rotation_dtype = preferred_rotation_dtype(device)
+    Q = torch.randint(low=0, high=2, size=(size,), device=device).to(rotation_dtype)
     Q = Q * 2 - 1
     Q = torch.diag(Q)
-    return matmul_hadU(Q).to(device)
+    return matmul_hadU(Q).to(device=device, dtype=rotation_dtype)
 
 
 def hadamard_matrix(size, device):
-    return matmul_hadU(torch.eye(size, dtype=torch.float64)).to(device)
+    rotation_dtype = preferred_rotation_dtype(device)
+    return matmul_hadU(torch.eye(size, dtype=rotation_dtype)).to(device=device, dtype=rotation_dtype)
 
 
 def matmul_hadU_cuda(X, hadK, K):
@@ -238,7 +242,8 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, R2=None):
     W_ = module.weight.data
     dtype = W_.dtype
     dev = W_.device
-    transform_device = torch.device("cuda") if torch.cuda.is_available() else dev
+    transform_device = default_accelerator_device() if dev.type == "cpu" else dev
+    rotation_dtype = preferred_rotation_dtype(transform_device)
     W_ = W_.float().to(transform_device)
 
     if had_dim == -1:
@@ -249,19 +254,19 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, R2=None):
             had_K, K = get_hadK(in_features)
             W_ = matmul_hadU_cuda(W_, had_K, K)
     else:
-        hadK = hadamard_matrix(had_dim, transform_device).to(torch.float64)
+        hadK = hadamard_matrix(had_dim, transform_device).to(rotation_dtype)
         if R2 is not None:
-            hadK = R2.to(device=transform_device, dtype=torch.float64)
+            hadK = R2.to(device=transform_device, dtype=rotation_dtype)
         if output:
             W_ = W_.t()
             transposed_shape = W_.shape
             temp = W_.reshape(-1, transposed_shape[-1] // had_dim, had_dim)
-            temp = temp.to(torch.float64) @ hadK
+            temp = temp.to(rotation_dtype) @ hadK
             W_ = temp.reshape(transposed_shape).t()
         else:
             init_shape = W_.shape
             temp = W_.reshape(-1, init_shape[-1] // had_dim, had_dim)
-            temp = temp.to(torch.float64) @ hadK
+            temp = temp.to(rotation_dtype) @ hadK
             W_ = temp.reshape(init_shape)
     module.weight.data = W_.to(device=dev, dtype=dtype)
 

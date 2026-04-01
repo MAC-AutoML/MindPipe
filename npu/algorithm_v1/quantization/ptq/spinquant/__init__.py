@@ -1,2 +1,0 @@
-"""SpinQuant method package."""
-

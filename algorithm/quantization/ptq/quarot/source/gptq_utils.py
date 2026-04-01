@@ -6,9 +6,13 @@ import torch.nn as nn
 import utils
 import quant_utils
 import logging
+from algorithm.common.device import empty_cache
+from algorithm.common.device import maybe_offload_hessian_to_cpu
+from algorithm.common.device import synchronize
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
+CPU_HESSIAN_OFFLOAD_COLUMNS = 16384
 
 
 class GPTQ:
@@ -50,9 +54,11 @@ class GPTQ:
 
         H = self.H
         del self.H
+        H = maybe_offload_hessian_to_cpu(H, "QuaRot GPTQ", CPU_HESSIAN_OFFLOAD_COLUMNS)
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
-        W[:, dead] = 0
+        if dead.any():
+            W[:, dead.to(W.device)] = 0
 
         if static_groups:
             import copy
@@ -72,7 +78,7 @@ class GPTQ:
         Q = torch.zeros_like(W)
 
         damp = percdamp * torch.mean(torch.diag(H))
-        diag = torch.arange(self.columns, device=self.dev)
+        diag = torch.arange(self.columns, device=H.device)
         H[diag, diag] += damp
         H = torch.linalg.cholesky(H)
         H = torch.cholesky_inverse(H)
@@ -87,7 +93,7 @@ class GPTQ:
             Q1 = torch.zeros_like(W1)
             Err1 = torch.zeros_like(W1)
             Losses1 = torch.zeros_like(W1)
-            Hinv1 = Hinv[i1:i2, i1:i2]
+            Hinv1 = Hinv[i1:i2, i1:i2].to(self.dev)
 
             for i in range(count):
                 w = W1[:, i]
@@ -114,9 +120,12 @@ class GPTQ:
             Q[:, i1:i2] = Q1
             Losses[:, i1:i2] = Losses1 / 2
 
-            W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+            if i2 < self.columns:
+                Hinv_tail = Hinv[i1:i2, i2:].to(self.dev)
+                W[:, i2:] -= Err1.matmul(Hinv_tail)
 
-        torch.cuda.synchronize()
+        if self.dev.type in {"cuda", "npu"}:
+            synchronize(self.dev)
 
         if actorder:
             Q = Q[:, invperm]
@@ -132,7 +141,7 @@ class GPTQ:
         self.H = None
         self.Losses = None
         self.Trace = None
-        torch.cuda.empty_cache()
+        empty_cache(self.dev)
         utils.cleanup_memory(verbos=False)
         
         
@@ -179,7 +188,7 @@ def gptq_fwrd(model, dataloader, dev, args):
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
     model.model.norm = model.model.norm.cpu()
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -241,7 +250,7 @@ def gptq_fwrd(model, dataloader, dev, args):
         layers[i] = layer.cpu()
         del layer
         del gptq 
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
@@ -261,7 +270,7 @@ def rtn_fwrd(model, dev, args):
     '''
     assert args.w_groupsize ==-1, "Groupsize not supported in RTN!"
     layers = model.model.layers
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     quantizers = {}
 
@@ -289,7 +298,7 @@ def rtn_fwrd(model, dev, args):
                 next(iter(layer.parameters())).dtype)
             quantizers['model.layers.%d.%s' % (i, name)] = quantizer.cpu()
         layers[i] = layer.cpu()
-        torch.cuda.empty_cache()
+        empty_cache(dev)
         del layer
             
     utils.cleanup_memory(verbos=True)

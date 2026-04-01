@@ -3,6 +3,7 @@ import time
 import torch
 import torch.nn as nn
 
+from algorithm.common.device import empty_cache
 from quant import *
 from sparsegpt import *
 from modelutils import *
@@ -72,7 +73,7 @@ def opt_sequential(model, dataloader, dev):
         model.model.decoder.project_out = model.model.decoder.project_out.cpu()
     if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
         model.model.decoder.project_in = model.model.decoder.project_in.cpu()
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -121,7 +122,7 @@ def opt_sequential(model, dataloader, dev):
 
         layers[i] = layer.cpu()
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
@@ -177,7 +178,7 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
         model.model.decoder.project_out = model.model.decoder.project_out.cpu()
     if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
         model.model.decoder.project_in = model.model.decoder.project_in.cpu()
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -197,7 +198,7 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
         layers[i] = layer.cpu()
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
         inps, outs = outs, inps
 
     if model.model.decoder.final_layer_norm is not None:

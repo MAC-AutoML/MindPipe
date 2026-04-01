@@ -2,11 +2,15 @@ import time
 import heapq 
 import torch 
 import torch.nn as nn 
+from algorithm.common.device import empty_cache
 from .sparsegpt import SparseGPT 
 from .layerwrapper import WrappedGPT
 from .data import get_loaders 
 
 from .ablate import AblateGPT 
+from .backend import move_optional_tensor
+from .backend import resolve_runtime_device
+from .backend import sparsity_threshold
 
 
 def _get_decoder_root(model):
@@ -21,6 +25,13 @@ def _get_decoder_root(model):
 
 def _get_hf_device_map(model):
     return getattr(model, "hf_device_map", {}) or {}
+
+
+def _resolve_layer_device(hf_device_map, candidate_keys, default_device):
+    for candidate_key in candidate_keys:
+        if candidate_key in hf_device_map:
+            return resolve_runtime_device(hf_device_map[candidate_key])
+    return resolve_runtime_device(default_device)
 
 
 def _module_device(module):
@@ -123,6 +134,7 @@ def check_sparsity(model):
     return float(count)/total_params 
 
 def prepare_calibration_input(model, dataloader, device):
+    device = resolve_runtime_device(device)
     use_cache = model.config.use_cache
     model.config.use_cache = False
     decoder_root = _get_decoder_root(model)
@@ -132,7 +144,7 @@ def prepare_calibration_input(model, dataloader, device):
     hf_device_map = _get_hf_device_map(model)
     for candidate_key in ("model.embed_tokens", "language_model.embed_tokens", "model.language_model.embed_tokens"):
         if candidate_key in hf_device_map:
-            device = hf_device_map[candidate_key]
+            device = resolve_runtime_device(hf_device_map[candidate_key])
             break
 
     dtype = next(iter(model.parameters())).dtype
@@ -159,8 +171,8 @@ def prepare_calibration_input(model, dataloader, device):
         def forward(self, inp, **kwargs):
             inps[cache['i']] = inp
             cache['i'] += 1
-            cache['attention_mask'] = kwargs['attention_mask']
-            cache['position_ids'] = kwargs['position_ids']
+            cache['attention_mask'] = kwargs.get('attention_mask')
+            cache['position_ids'] = kwargs.get('position_ids')
             cache['cache_position'] = kwargs.get('cache_position')
             raise ValueError
     layers[0] = Catcher(layers[0])
@@ -175,7 +187,7 @@ def prepare_calibration_input(model, dataloader, device):
         decoder_root.embed_tokens = decoder_root.embed_tokens.cpu()
     if hasattr(decoder_root, "rotary_emb"):
         decoder_root.rotary_emb = decoder_root.rotary_emb.cpu()
-    torch.cuda.empty_cache()
+    empty_cache(device)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -192,7 +204,8 @@ def return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before):
     cur_sparsity = (W_mask==True).sum() / W_mask.numel()
     return W_mask, cur_sparsity
 
-def prune_magnitude(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0, prune_m=0):
+def prune_magnitude(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
+    device = resolve_runtime_device(device)
     layers = _get_decoder_root(model).layers 
 
     for i in range(len(layers)):
@@ -209,12 +222,13 @@ def prune_magnitude(args, model, tokenizer, device=torch.device("cuda:0"), prune
                         tmp = W_metric[:,ii:(ii+prune_m)].float()
                         W_mask.scatter_(1,ii+torch.topk(tmp, prune_n,dim=1, largest=False)[1], True)
             else:
-                thresh = torch.sort(W_metric.flatten().cuda())[0][int(W.numel()*args.sparsity_ratio)].cpu()
+                thresh = sparsity_threshold(W_metric, args.sparsity_ratio, device)
                 W_mask = (W_metric<=thresh)
 
             W[W_mask] = 0
 
-def prune_wanda(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0, prune_m=0):
+def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
+    device = resolve_runtime_device(device)
     use_cache = model.config.use_cache 
     model.config.use_cache = False 
 
@@ -227,22 +241,20 @@ def prune_wanda(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0
     layers = _get_decoder_root(model).layers
     hf_device_map = _get_hf_device_map(model)
     for i in range(len(layers)):
-        dev = device
-
-        layer_device = None
-        for candidate_key in (
-            f"model.layers.{i}",
-            f"language_model.layers.{i}",
-            f"model.language_model.layers.{i}",
-        ):
-            if candidate_key in hf_device_map:
-                layer_device = hf_device_map[candidate_key]
-                break
-        if layer_device is not None:   ## handle the case for multi-GPU device maps.
-            dev = layer_device
-            inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
-            if cache_position is not None:
-                cache_position = cache_position.to(dev)
+        dev = _resolve_layer_device(
+            hf_device_map,
+            (
+                f"model.layers.{i}",
+                f"language_model.layers.{i}",
+                f"model.language_model.layers.{i}",
+            ),
+            device,
+        )
+        inps = inps.to(dev)
+        outs = outs.to(dev)
+        attention_mask = move_optional_tensor(attention_mask, dev)
+        position_ids = move_optional_tensor(position_ids, dev)
+        cache_position = move_optional_tensor(cache_position, dev)
         layer = layers[i].to(dev)
         subset = find_layers(layer)
 
@@ -326,10 +338,10 @@ def prune_wanda(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0
         inps, outs = outs, inps
         layers[i] = layer.cpu()
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
     model.config.use_cache = use_cache 
-    torch.cuda.empty_cache()
+    empty_cache(device)
 
 
 @torch.no_grad()
@@ -342,10 +354,11 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     model.config.use_cache = False
     layers = _get_decoder_root(model).layers
 
+    dev = resolve_runtime_device(dev)
     hf_device_map = _get_hf_device_map(model)
     for candidate_key in ("model.embed_tokens", "language_model.embed_tokens", "model.language_model.embed_tokens"):
         if candidate_key in hf_device_map:
-            dev = hf_device_map[candidate_key]
+            dev = resolve_runtime_device(hf_device_map[candidate_key])
             break
 
     dtype = next(iter(model.parameters())).dtype
@@ -368,8 +381,8 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
         def forward(self, inp, **kwargs):
             inps[cache['i']] = inp
             cache['i'] += 1
-            cache['attention_mask'] = kwargs['attention_mask']
-            cache['position_ids'] = kwargs['position_ids']
+            cache['attention_mask'] = kwargs.get('attention_mask')
+            cache['position_ids'] = kwargs.get('position_ids')
             cache['cache_position'] = kwargs.get('cache_position')
             raise ValueError
     layers[0] = Catcher(layers[0])
@@ -379,7 +392,7 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
         except ValueError:
             pass
     layers[0] = layers[0].module
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -390,19 +403,21 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
     for i in range(len(layers)):
         layer = layers[i]
-        dev = dev
-        for candidate_key in (
-            f"model.layers.{i}",
-            f"language_model.layers.{i}",
-            f"model.language_model.layers.{i}",
-        ):
-            if candidate_key in hf_device_map:
-                dev = hf_device_map[candidate_key]
-                print(f"layer {i} device {dev}")
-                inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
-                if cache_position is not None:
-                    cache_position = cache_position.to(dev)
-                break
+        dev = _resolve_layer_device(
+            hf_device_map,
+            (
+                f"model.layers.{i}",
+                f"language_model.layers.{i}",
+                f"model.language_model.layers.{i}",
+            ),
+            dev,
+        )
+        print(f"layer {i} device {dev}")
+        inps = inps.to(dev)
+        outs = outs.to(dev)
+        attention_mask = move_optional_tensor(attention_mask, dev)
+        position_ids = move_optional_tensor(position_ids, dev)
+        cache_position = move_optional_tensor(cache_position, dev)
         layer = layer.to(dev)
 
         subset = find_layers(layer)
@@ -453,12 +468,12 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
         layers[i] = layer.cpu()
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
 
 
@@ -472,10 +487,11 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     model.config.use_cache = False
     layers = _get_decoder_root(model).layers
 
+    dev = resolve_runtime_device(dev)
     hf_device_map = _get_hf_device_map(model)
     for candidate_key in ("model.embed_tokens", "language_model.embed_tokens", "model.language_model.embed_tokens"):
         if candidate_key in hf_device_map:
-            dev = hf_device_map[candidate_key]
+            dev = resolve_runtime_device(hf_device_map[candidate_key])
             break
 
     dtype = next(iter(model.parameters())).dtype
@@ -498,8 +514,8 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
         def forward(self, inp, **kwargs):
             inps[cache['i']] = inp
             cache['i'] += 1
-            cache['attention_mask'] = kwargs['attention_mask']
-            cache['position_ids'] = kwargs['position_ids']
+            cache['attention_mask'] = kwargs.get('attention_mask')
+            cache['position_ids'] = kwargs.get('position_ids')
             cache['cache_position'] = kwargs.get('cache_position')
             raise ValueError
     layers[0] = Catcher(layers[0])
@@ -509,7 +525,7 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
         except ValueError:
             pass
     layers[0] = layers[0].module
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -520,19 +536,21 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
     for i in range(len(layers)):
         layer = layers[i]
-        dev = dev
-        for candidate_key in (
-            f"model.layers.{i}",
-            f"language_model.layers.{i}",
-            f"model.language_model.layers.{i}",
-        ):
-            if candidate_key in hf_device_map:
-                dev = hf_device_map[candidate_key]
-                print(f"layer {i} device {dev}")
-                inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
-                if cache_position is not None:
-                    cache_position = cache_position.to(dev)
-                break
+        dev = _resolve_layer_device(
+            hf_device_map,
+            (
+                f"model.layers.{i}",
+                f"language_model.layers.{i}",
+                f"model.language_model.layers.{i}",
+            ),
+            dev,
+        )
+        print(f"layer {i} device {dev}")
+        inps = inps.to(dev)
+        outs = outs.to(dev)
+        attention_mask = move_optional_tensor(attention_mask, dev)
+        position_ids = move_optional_tensor(position_ids, dev)
+        cache_position = move_optional_tensor(cache_position, dev)
         layer = layer.to(dev)
 
         subset = find_layers(layer)
@@ -590,9 +608,9 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
         layers[i] = layer.cpu()
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
-    torch.cuda.empty_cache()
+    empty_cache(dev)

@@ -5,6 +5,7 @@ import torch
 import os
 import logging
 from tqdm import tqdm
+from algorithm.common.device import empty_cache
 
 
 @torch.no_grad()
@@ -89,7 +90,7 @@ def evaluator(model, testenc, dev, args):
         model.model.embed_tokens = model.model.embed_tokens.cpu()
         position_ids = cache['position_ids']
 
-    torch.cuda.empty_cache()
+    empty_cache(dev)
     outs = [0] * nbatches
     attention_mask = cache['attention_mask']
 
@@ -111,7 +112,7 @@ def evaluator(model, testenc, dev, args):
                 outs[j] = layer(inps[j], attention_mask=attention_mask, position_ids=position_ids)[0]
         layers[i] = layer.cpu()
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
         inps, outs = outs, inps
 
     if opt_type:

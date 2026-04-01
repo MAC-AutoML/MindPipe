@@ -9,8 +9,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-import torch
-
+from algorithm.common.device import empty_cache
+from algorithm.common.device import enable_device_compat
+from algorithm.common.device import resolve_device_string
 from algorithm.common.io import ensure_dir
 from algorithm.common.io import write_json
 from algorithm.common.modeling import load_model_and_tokenizer
@@ -75,23 +76,27 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
 def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     validate_workflow_config(config)
 
+    common_args = copy.deepcopy(config.common_args)
+    resolved_device = resolve_device_string(common_args.get("device", "auto"))
+    common_args["device"] = enable_device_compat(resolved_device)
+
     dtype = config.common_args.get("dtype", "auto")
     model, tokenizer_bundle = load_model_and_tokenizer(config.model_path, dtype=dtype)
-    sequence_length = int(config.common_args["sequence_length"])
+    sequence_length = int(common_args["sequence_length"])
     model.seqlen = sequence_length
 
     stage_records: list[dict[str, Any]] = []
     final_output_dir: Path | None = None
     for stage in config.stages:
         stage_method = _resolve_stage_method(stage)
-        stage_args = _build_stage_args(config.common_args, stage)
+        stage_args = _build_stage_args(common_args, stage)
         stage_args.model_path = config.model_path
         if final_output_dir is None:
             final_output_dir = _resolve_final_output_dir(config, stage_method, stage_args)
         stage_record = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
         stage_records.append(stage_record)
         gc.collect()
-        torch.cuda.empty_cache()
+        empty_cache(common_args["device"])
 
     if final_output_dir is None:
         raise RuntimeError("Workflow produced no stages")
@@ -99,13 +104,13 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     metrics = run_evaluations(
         model=model,
         tokenizer=tokenizer_bundle.tokenizer,
-        common_args=config.common_args,
+        common_args=common_args,
     )
     metrics.update(config.result_metadata)
     metrics.update(
         {
             "model_path": config.model_path,
-            "device": config.common_args["device"],
+            "device": common_args["device"],
             "dtype": dtype,
         }
     )

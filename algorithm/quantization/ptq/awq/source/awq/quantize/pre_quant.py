@@ -6,6 +6,7 @@ import functools
 from collections import defaultdict
 from typing import List
 
+from algorithm.common.device import empty_cache
 from transformers.models.bloom.modeling_bloom import BloomForCausalLM
 from transformers.models.opt.modeling_opt import OPTForCausalLM
 from transformers.models.llama.modeling_llama import LlamaForCausalLM
@@ -199,7 +200,7 @@ def run_awq(
     move_embed(model, "cpu")
 
     gc.collect()
-    torch.cuda.empty_cache()
+    empty_cache(runtime_device)
 
     awq_results = {
         "scale": [],
@@ -235,7 +236,7 @@ def run_awq(
         input_feat = {k: torch.cat(v, dim=0) for k, v in input_feat.items()}
 
         # Clear GPU memory
-        torch.cuda.empty_cache()
+        empty_cache(runtime_device)
 
         if (
             auto_scale
@@ -256,7 +257,7 @@ def run_awq(
             )
 
         # Clear GPU memory
-        torch.cuda.empty_cache()
+        empty_cache(runtime_device)
         # for line in torch.cuda.memory_summary().splitlines():
         #     if "Allocated" in line:
         #         print(line)
@@ -279,7 +280,7 @@ def run_awq(
         # Haotian: check activation replacement
         del input_feat
         gc.collect()
-        torch.cuda.empty_cache()
+        empty_cache(runtime_device)
         # for line in torch.cuda.memory_summary().splitlines():
         #     if "Allocated" in line:
         #         print(line)

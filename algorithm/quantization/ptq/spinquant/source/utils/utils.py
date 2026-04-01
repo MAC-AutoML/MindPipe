@@ -23,11 +23,16 @@ from torch.distributed.fsdp import (
     FullyShardedDataParallel as PT_FSDP,
 )
 from torch.distributed.fsdp.fully_sharded_data_parallel import StateDictType
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import device_count
+from algorithm.common.device import empty_cache
+from algorithm.common.device import manual_seed_all
+from algorithm.common.device import memory_reserved
 
 # These flags disable using TensorFloat-32 tensor cores (to avoid numerical issues)
 # torch.backends.cuda.matmul.allow_tf32 = False
 # torch.backends.cudnn.allow_tf32 = False
-DEV = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+DEV = default_accelerator_device()
 
 
 def pt_fsdp_state_dict(model: torch.nn.Module):
@@ -74,6 +79,7 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.random.manual_seed(seed)
     random.seed(seed)
+    manual_seed_all(seed, DEV)
 
 
 # Dump the log both to console and a log file.
@@ -107,24 +113,20 @@ def cleanup_memory(verbos=True) -> None:
         pass
 
     def total_reserved_mem() -> int:
-        return sum(
-            torch.cuda.memory_reserved(device=i)
-            for i in range(torch.cuda.device_count())
-        )
+        return sum(memory_reserved(torch.device(DEV.type, i)) for i in range(device_count(DEV)))
 
     memory_before = total_reserved_mem()
 
     # gc.collect and empty cache are necessary to clean up GPU memory if the model was distributed
     gc.collect()
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        memory_after = total_reserved_mem()
-        if verbos:
-            logging.info(
-                f"GPU memory{caller_name}: {memory_before / (1024 ** 3):.2f} -> {memory_after / (1024 ** 3):.2f} GB"
-                f" ({(memory_after - memory_before) / (1024 ** 3):.2f} GB)"
-            )
+    empty_cache(DEV)
+    memory_after = total_reserved_mem()
+    if verbos:
+        logging.info(
+            f"GPU memory{caller_name}: {memory_before / (1024 ** 3):.2f} -> {memory_after / (1024 ** 3):.2f} GB"
+            f" ({(memory_after - memory_before) / (1024 ** 3):.2f} GB)"
+        )
 
 
 # Define a utility method for setting the logging parameters of a logger

@@ -12,6 +12,8 @@ from logging import Logger
 import datasets
 import torch
 import torch.distributed as dist
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import distributed_backend
 from torch import nn
 from transformers import LlamaTokenizerFast, Trainer, default_data_collator
 import transformers
@@ -30,7 +32,7 @@ log: Logger = get_logger("spinquant")
 class RotateModule(nn.Module):
     def __init__(self, R_init):
         super(RotateModule, self).__init__()
-        self.weight = nn.Parameter(R_init.to(torch.float32).to(torch.device("cuda")))
+        self.weight = nn.Parameter(R_init.to(torch.float32))
 
     def forward(self, x, transpose=False):
         if transpose:
@@ -40,9 +42,13 @@ class RotateModule(nn.Module):
 
 
 def train() -> None:
-    dist.init_process_group(backend="nccl", timeout=datetime.timedelta(hours=8))
+    dist.init_process_group(
+        backend=distributed_backend(),
+        timeout=datetime.timedelta(hours=8),
+    )
     model_args, training_args, ptq_args = process_args_ptq()
     local_rank = get_local_rank()
+    device = default_accelerator_device()
 
     log.info("the rank is {}".format(local_rank))
     torch.distributed.barrier()
@@ -69,12 +75,12 @@ def train() -> None:
     model = prepare_model(ptq_args, model)
     for param in model.parameters():
         param.requires_grad = False
-    R1 = random_hadamard_matrix(model.config.hidden_size, "cuda")
+    R1 = random_hadamard_matrix(model.config.hidden_size, device)
     model.R1 = RotateModule(R1)
     for i in range(model.config.num_hidden_layers):
         # Each head dim = 128 for Llama model
         R2 = random_hadamard_matrix(
-            model.config.hidden_size // model.config.num_attention_heads, "cuda"
+            model.config.hidden_size // model.config.num_attention_heads, device
         )
         model.model.layers[i].self_attn.R2 = RotateModule(R2)
     if local_rank == 0:

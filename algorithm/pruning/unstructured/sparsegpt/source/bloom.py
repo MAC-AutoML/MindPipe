@@ -3,6 +3,7 @@ import time
 
 import torch
 import torch.nn as nn
+from algorithm.common.device import empty_cache
 import transformers
 
 from sparsegpt import * 
@@ -66,7 +67,7 @@ def bloom_sequential(model, dataloader, dev, means=None, stds=None):
     layers[0] = layers[0].cpu()
     model.transformer.word_embeddings = model.transformer.word_embeddings.cpu()
     model.transformer.word_embeddings_layernorm = model.transformer.word_embeddings_layernorm.cpu()
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -107,7 +108,7 @@ def bloom_sequential(model, dataloader, dev, means=None, stds=None):
 
         layers[i] = layer.cpu()
         del gpts 
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
@@ -156,7 +157,7 @@ def bloom_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
     layers[0] = layers[0].cpu()
     model.transformer.word_embeddings = model.transformer.word_embeddings.cpu()
     model.transformer.word_embeddings_layernorm = model.transformer.word_embeddings_layernorm.cpu()
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -177,7 +178,7 @@ def bloom_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, alibi=alibi)[0]
         layers[i] = layer.cpu() 
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
         inps, outs = outs, inps
 
     model.transformer.ln_f = model.transformer.ln_f.to(dev)

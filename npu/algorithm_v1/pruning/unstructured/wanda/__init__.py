@@ -1,2 +1,0 @@
-"""Wanda method package."""
-

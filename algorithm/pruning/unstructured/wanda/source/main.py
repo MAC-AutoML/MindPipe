@@ -2,6 +2,8 @@ import argparse
 import os 
 import numpy as np
 import torch
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import device_count
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from importlib.metadata import version
 
@@ -11,7 +13,7 @@ from lib.eval import eval_ppl, eval_zero_shot
 print('torch', version('torch'))
 print('transformers', version('transformers'))
 print('accelerate', version('accelerate'))
-print('# of gpus: ', torch.cuda.device_count())
+print('# of accelerators: ', device_count(default_accelerator_device()))
 
 def get_llm(model_name, cache_dir="llm_weights"):
     model = AutoModelForCausalLM.from_pretrained(
@@ -58,9 +60,9 @@ def main():
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
 
-    device = torch.device("cuda:0")
+    device = default_accelerator_device()
     if "30b" in args.model or "65b" in args.model: # for 30b and 65b we use device_map to load onto multiple A6000 GPUs, thus the processing here.
-        device = model.hf_device_map["lm_head"]
+        device = torch.device(model.hf_device_map["lm_head"])
     print("use device ", device)
 
     if args.sparsity_ratio != 0:

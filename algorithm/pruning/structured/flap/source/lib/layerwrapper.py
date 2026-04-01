@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from algorithm.common.device import empty_cache
 
 # Define WrappedGPT class
 class WrappedGPT:
@@ -36,7 +37,7 @@ class WrappedGPT:
         
     def free(self):
         self.scaler_row = None
-        torch.cuda.empty_cache()
+        empty_cache(self.dev)
 
 
 # Define BiasGPT class
@@ -90,4 +91,4 @@ class BiasGPT:
             self.fluc_inp = None
         if hasattr(self, 'scaler_inp'):
             self.scaler_inp = None
-        torch.cuda.empty_cache()  
+        empty_cache(self.dev)

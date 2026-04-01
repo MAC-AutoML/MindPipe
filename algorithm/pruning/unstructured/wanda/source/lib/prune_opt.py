@@ -2,11 +2,14 @@ import time
 import heapq 
 import torch 
 import torch.nn as nn 
+from algorithm.common.device import empty_cache
+from algorithm.common.device import resolve_device
 from .sparsegpt import SparseGPT 
 from .layerwrapper import WrappedGPT
 from .data import get_loaders 
 
 from .ablate import AblateGPT 
+from .backend import sparsity_threshold
 
 def find_layers(module, layers=[nn.Linear], name=''):
     """
@@ -99,7 +102,8 @@ def return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before):
     cur_sparsity = (W_mask==True).sum() / W_mask.numel()
     return W_mask, cur_sparsity
 
-def prune_magnitude(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0, prune_m=0):
+def prune_magnitude(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
+    device = resolve_device(device)
     layers = model.model.decoder.layers 
 
     for i in range(len(layers)):
@@ -116,12 +120,13 @@ def prune_magnitude(args, model, tokenizer, device=torch.device("cuda:0"), prune
                         tmp = W_metric[:,ii:(ii+prune_m)].float()
                         W_mask.scatter_(1,ii+torch.topk(tmp, prune_n,dim=1, largest=False)[1], True)
             else:
-                thresh = torch.sort(W_metric.flatten().cuda())[0][int(W.numel()*args.sparsity_ratio)].cpu()
+                thresh = sparsity_threshold(W_metric, args.sparsity_ratio, device)
                 W_mask = (W_metric<=thresh)
 
             W[W_mask] = 0
 
-def prune_wanda(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0, prune_m=0):
+def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
+    device = resolve_device(device)
     use_cache = model.config.use_cache 
     model.config.use_cache = False 
 
@@ -184,7 +189,7 @@ def prune_wanda(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache 
-    torch.cuda.empty_cache()
+    empty_cache(device)
 
 @torch.no_grad()
 def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
@@ -222,7 +227,7 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
         except ValueError:
             pass
     layers[0] = layers[0].module
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -267,12 +272,12 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
 
         layers[i] = layer 
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
 @torch.no_grad()
 def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
@@ -310,7 +315,7 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
         except ValueError:
             pass
     layers[0] = layers[0].module
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -364,9 +369,9 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
 
         layers[i] = layer 
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
-    torch.cuda.empty_cache()
+    empty_cache(dev)

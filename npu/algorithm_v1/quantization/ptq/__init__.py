@@ -1,2 +1,0 @@
-"""PTQ methods."""
-

@@ -10,6 +10,7 @@
 
 import torch
 import tqdm
+from algorithm.common.device import empty_cache
 
 from train_utils.quant_linear import QuantizeLinear
 from utils import quant_utils, utils
@@ -22,7 +23,7 @@ def rtn_fwrd(model, dev, args):
     """
     # assert args.w_groupsize == -1, "Groupsize not supported in RTN!"
     layers = model.model.layers
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     quantizers = {}
 
@@ -53,7 +54,7 @@ def rtn_fwrd(model, dev, args):
 
             quantizers["model.layers.%d.%s" % (i, name)] = quantizer.cpu()
         layers[i] = layer.cpu()
-        torch.cuda.empty_cache()
+        empty_cache(dev)
         del layer
 
     utils.cleanup_memory(verbos=True)

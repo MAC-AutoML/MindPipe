@@ -5,6 +5,10 @@ import torch
 import torch.nn as nn
 import transformers
 
+from algorithm.common.device import empty_cache
+from algorithm.common.device import maybe_offload_hessian_to_cpu
+from algorithm.common.device import synchronize
+
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
 
@@ -51,14 +55,16 @@ class SparseGPT:
 
         H = self.H
         del self.H
+        H = maybe_offload_hessian_to_cpu(H, "Wanda SparseGPT")
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
-        W[:, dead] = 0
+        if dead.any():
+            W[:, dead.to(W.device)] = 0
 
         Losses = torch.zeros(self.rows, device=self.dev)
 
         damp = percdamp * torch.mean(torch.diag(H))
-        diag = torch.arange(self.columns, device=self.dev)
+        diag = torch.arange(self.columns, device=H.device)
         H[diag, diag] += damp
         H = torch.linalg.cholesky(H)
         H = torch.cholesky_inverse(H)
@@ -75,7 +81,7 @@ class SparseGPT:
             Q1 = torch.zeros_like(W1)
             Err1 = torch.zeros_like(W1)
             Losses1 = torch.zeros_like(W1)
-            Hinv1 = Hinv[i1:i2, i1:i2]
+            Hinv1 = Hinv[i1:i2, i1:i2].to(self.dev)
 
             if prune_n == 0: 
                 if mask is not None:
@@ -108,13 +114,16 @@ class SparseGPT:
             W[:, i1:i2] = Q1
             Losses += torch.sum(Losses1, 1) / 2
 
-            W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+            if i2 < self.columns:
+                Hinv_tail = Hinv[i1:i2, i2:].to(self.dev)
+                W[:, i2:] -= Err1.matmul(Hinv_tail)
 
-        torch.cuda.synchronize()
+        if self.dev.type in {"cuda", "npu"}:
+            synchronize(self.dev)
         if isinstance(self.layer, transformers.Conv1D):
             W = W.t()
         self.layer.weight.data = W.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
 
     def free(self):
         self.H = None
-        torch.cuda.empty_cache()
+        empty_cache(self.dev)

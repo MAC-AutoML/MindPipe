@@ -3,6 +3,8 @@ import math
 
 import torch
 
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import preferred_rotation_dtype
 import fast_hadamard_transform
 
 
@@ -169,10 +171,11 @@ def matmul_hadUt(X):
 
 
 def random_hadamard_matrix(size, device):
-    Q = torch.randint(low=0, high=2, size=(size,)).to(torch.float64)
+    rotation_dtype = preferred_rotation_dtype(device)
+    Q = torch.randint(low=0, high=2, size=(size,), device=device).to(rotation_dtype)
     Q = Q * 2 - 1
     Q = torch.diag(Q)
-    return matmul_hadU(Q).to(device)
+    return matmul_hadU(Q).to(device=device, dtype=rotation_dtype)
 
 
 def matmul_hadU_cuda(X, hadK, K):
@@ -199,7 +202,7 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False):
     W_ = module.weight.data
     dtype = W_.dtype
     dev = W_.device
-    transform_device = torch.device("cuda") if torch.cuda.is_available() else dev
+    transform_device = default_accelerator_device() if dev.type == "cpu" else dev
     W_ = W_.float().to(transform_device)
 
     if had_dim == -1:

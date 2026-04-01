@@ -14,6 +14,9 @@ import math
 import torch
 import tqdm
 
+from algorithm.common.device import empty_cache
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import preferred_rotation_dtype
 from utils import monkeypatch, quant_utils, utils
 from utils.hadamard_utils import (
     apply_exact_had_to_linear,
@@ -64,14 +67,15 @@ def random_orthogonal_matrix(size, device):
     Returns:
     torch.Tensor: An orthogonal matrix of the specified size.
     """
-    torch.cuda.empty_cache()
-    random_matrix = torch.randn(size, size, dtype=torch.float64).to(device)
+    empty_cache(device)
+    random_matrix = torch.randn(size, size, dtype=preferred_rotation_dtype(device)).to(device)
     q, r = torch.linalg.qr(random_matrix)
     q *= torch.sign(torch.diag(r)).unsqueeze(0)
     return q
 
 
-def get_orthogonal_matrix(size, mode, device="cuda"):
+def get_orthogonal_matrix(size, mode, device=None):
+    device = default_accelerator_device() if device is None else device
     if mode == "random":
         return random_orthogonal_matrix(size, device)
     elif mode == "hadamard":
@@ -83,19 +87,21 @@ def get_orthogonal_matrix(size, mode, device="cuda"):
 def rotate_embeddings(model, R1: torch.Tensor) -> None:
     # Rotate the embeddings.
     rotation_device = R1.device
+    rotation_dtype = preferred_rotation_dtype(rotation_device)
     root, _ = _resolve_text_root_and_prefix(model)
     for W in [root.embed_tokens]:
         dtype = W.weight.data.dtype
-        W_ = W.weight.data.to(device=rotation_device, dtype=torch.float64)
+        W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
         W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
 
 
 def rotate_attention_inputs(layer, R1) -> None:
     # Rotate the WQ, WK and WV matrices of the self-attention layer.
     rotation_device = R1.device
+    rotation_dtype = preferred_rotation_dtype(rotation_device)
     for W in [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj]:
         dtype = W.weight.dtype
-        W_ = W.weight.to(device=rotation_device, dtype=torch.float64)
+        W_ = W.weight.to(device=rotation_device, dtype=rotation_dtype)
         W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
 
 
@@ -103,12 +109,13 @@ def rotate_attention_output(layer, R1) -> None:
     # Rotate output matrix of the self-attention layer.
     W = layer.self_attn.o_proj
     rotation_device = R1.device
+    rotation_dtype = preferred_rotation_dtype(rotation_device)
 
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=rotation_device, dtype=torch.float64)
+    W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
     W.weight.data = torch.matmul(R1.T, W_).to(device="cpu", dtype=dtype)
     if W.bias is not None:
-        b = W.bias.data.to(device=rotation_device, dtype=torch.float64)
+        b = W.bias.data.to(device=rotation_device, dtype=rotation_dtype)
         W.bias.data = torch.matmul(R1.T, b).to(device="cpu", dtype=dtype)
 
 
@@ -116,9 +123,10 @@ def rotate_mlp_input(layer, R1):
     # Rotate the MLP input weights.
     mlp_inputs = [layer.mlp.up_proj, layer.mlp.gate_proj]
     rotation_device = R1.device
+    rotation_dtype = preferred_rotation_dtype(rotation_device)
     for W in mlp_inputs:
         dtype = W.weight.dtype
-        W_ = W.weight.data.to(device=rotation_device, dtype=torch.float64)
+        W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
         W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
 
 
@@ -126,14 +134,15 @@ def rotate_mlp_output(layer, R1):
     # Rotate the MLP output weights and bias.
     W = layer.mlp.down_proj
     rotation_device = R1.device
+    rotation_dtype = preferred_rotation_dtype(rotation_device)
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=rotation_device, dtype=torch.float64)
+    W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
     W.weight.data = torch.matmul(R1.T, W_).to(device="cpu", dtype=dtype)
     apply_exact_had_to_linear(
         W, had_dim=-1, output=False
     )  # apply exact (inverse) hadamard on the weights of mlp output
     if W.bias is not None:
-        b = W.bias.data.to(device=rotation_device, dtype=torch.float64)
+        b = W.bias.data.to(device=rotation_device, dtype=rotation_dtype)
         W.bias.data = torch.matmul(R1.T, b).to(device="cpu", dtype=dtype)
 
 
@@ -141,8 +150,9 @@ def rotate_head(model, R1: torch.Tensor) -> None:
     # Rotate the head.
     W = model.lm_head
     rotation_device = R1.device
+    rotation_dtype = preferred_rotation_dtype(rotation_device)
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=rotation_device, dtype=torch.float64)
+    W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
     W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
 
 
@@ -161,7 +171,8 @@ def rotate_model(model, args):
     if args.optimized_rotation_path is not None:
         R_cpk = args.optimized_rotation_path
         checkpoint = torch.load(R_cpk, map_location="cpu")
-        R1 = checkpoint["R1"].to(device=next(iter(model.parameters())).device, dtype=torch.float64)
+        model_device = next(iter(model.parameters())).device
+        R1 = checkpoint["R1"].to(device=model_device, dtype=preferred_rotation_dtype(model_device))
     config = model.config
     num_heads = config.num_attention_heads
     model_dim = config.hidden_size
@@ -174,7 +185,10 @@ def rotate_model(model, args):
     layers = [layer for layer in root.layers]
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
         if checkpoint is not None:
-            R2 = _resolve_r2_key(checkpoint, idx, layer_key_prefix).to(device=R1.device, dtype=torch.float64)
+            R2 = _resolve_r2_key(checkpoint, idx, layer_key_prefix).to(
+                device=R1.device,
+                dtype=preferred_rotation_dtype(R1.device),
+            )
         else:
             R2 = get_orthogonal_matrix(head_dim, args.rotate_mode)
         rotate_attention_inputs(layers[idx], R1)

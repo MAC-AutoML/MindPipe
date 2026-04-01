@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import torch
 
+from ....common.device import empty_cache
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
@@ -381,7 +382,7 @@ class QuaRotMethod(BaseQuantizationMethod):
 
             backbone.layers[layer_index] = block.cpu()
             del block
-            torch.cuda.empty_cache()
+            empty_cache(args.device)
 
     def _apply_runtime_gptq_quantization(
         self,
@@ -479,7 +480,7 @@ class QuaRotMethod(BaseQuantizationMethod):
                     }
                     gptq_state.free()
                 del gptq_states
-                torch.cuda.empty_cache()
+                empty_cache(args.device)
 
             for sample_index in range(args.calibration_samples):
                 with torch.no_grad():
@@ -494,7 +495,7 @@ class QuaRotMethod(BaseQuantizationMethod):
 
             backbone.layers[layer_index] = block.cpu()
             del block
-            torch.cuda.empty_cache()
+            empty_cache(args.device)
             input_states, output_states = output_states, input_states
 
         return quantizer_artifacts
@@ -525,7 +526,7 @@ class QuaRotMethod(BaseQuantizationMethod):
                 }
             backbone.layers[layer_index] = block.cpu()
             del block
-            torch.cuda.empty_cache()
+            empty_cache(args.device)
         return quantizer_artifacts
 
     def _apply_gptq_quantization(
@@ -624,7 +625,7 @@ class QuaRotMethod(BaseQuantizationMethod):
                     }
                     gptq_state.free()
                 del gptq_states
-                torch.cuda.empty_cache()
+                empty_cache(args.device)
 
             for sample_index in range(args.calibration_samples):
                 with torch.no_grad():
@@ -639,7 +640,7 @@ class QuaRotMethod(BaseQuantizationMethod):
 
             backbone.layers[layer_index] = block.cpu()
             del block
-            torch.cuda.empty_cache()
+            empty_cache(args.device)
             input_states, output_states = output_states, input_states
 
         return quantizer_artifacts

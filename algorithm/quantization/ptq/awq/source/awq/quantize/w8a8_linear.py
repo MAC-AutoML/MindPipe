@@ -6,6 +6,7 @@ from torch.nn import Parameter
 import awq_inference_engine
 import torch
 import gc
+from algorithm.common.device import empty_cache
 from awq.utils.module import set_op_by_name
 from tqdm import tqdm
 
@@ -268,7 +269,7 @@ class FakeW8A8Linear(torch.nn.Module):
         else:
             linear.bias = None
         del linear, scale, weight
-        torch.cuda.empty_cache()
+        empty_cache(fake_linear.weight.device)
         return fake_linear
 
 
@@ -281,5 +282,5 @@ def fake_quant(model, wbit=8):
         if isinstance(m, torch.nn.Linear):
             FQlinear = FakeW8A8Linear.from_linear(m, wbit)
             del m
-            torch.cuda.empty_cache()
+            empty_cache(FQlinear.weight.device)
             set_op_by_name(model, name, FQlinear)
