@@ -10,8 +10,9 @@ from flatquant.trans_utils import SVDSingleTransMatrix, SVDDecomposeTransMatrix
 from flatquant.trans_utils import InvSingleTransMatrix, InvDecomposeTransMatrix
 from flatquant.flat_linear import FlatQuantizedLinear
 
+from transformers.models.llama.modeling_llama import ALL_ATTENTION_FUNCTIONS
 from transformers.models.llama.modeling_llama import LlamaMLP, LlamaAttention, \
-                                                     apply_rotary_pos_emb, repeat_kv
+                                                     apply_rotary_pos_emb, eager_attention_forward
 
 
 class FlatQuantLlamaMLP(LlamaMLP):
@@ -26,8 +27,15 @@ class FlatQuantLlamaMLP(LlamaMLP):
         self._ori_mode = False
         self.diag_init = args.diag_init
         if self.diag_init == "sq_style":
-            self.up_smax = torch.ones_like(self.up_proj.linear.weight.abs().max(dim=0)[0]).cuda() * 1e-5
-            self.down_smax = torch.ones_like(self.down_proj.linear.weight.abs().max(dim=0)[0]).cuda() * 1e-5
+            stat_device = self.up_proj.linear.weight.device
+            self.register_buffer(
+                "up_smax",
+                torch.ones_like(self.up_proj.linear.weight.abs().max(dim=0)[0], device=stat_device) * 1e-5,
+            )
+            self.register_buffer(
+                "down_smax",
+                torch.ones_like(self.down_proj.linear.weight.abs().max(dim=0)[0], device=stat_device) * 1e-5,
+            )
         
     def add_fq_trans(self):
         if self.args.direct_inv:
@@ -111,6 +119,17 @@ class FlatQuantLlamaAttention(LlamaAttention):
     def __init__(self, args, module: LlamaAttention):
         super().__init__(module.config, module.layer_idx)
         self.args = args
+        self.hidden_size = getattr(module, "hidden_size", module.config.hidden_size)
+        self.num_heads = getattr(module, "num_heads", module.config.num_attention_heads)
+        self.num_key_value_heads = getattr(module, "num_key_value_heads", module.config.num_key_value_heads)
+        self.num_key_value_groups = getattr(
+            module,
+            "num_key_value_groups",
+            self.num_heads // self.num_key_value_heads,
+        )
+        self.head_dim = getattr(module, "head_dim", self.hidden_size // self.num_heads)
+        if hasattr(module, "rotary_emb"):
+            self.rotary_emb = module.rotary_emb
         
         self.q_proj = FlatQuantizedLinear(args, module.q_proj)
         self.k_proj = FlatQuantizedLinear(args, module.k_proj)
@@ -132,7 +151,11 @@ class FlatQuantLlamaAttention(LlamaAttention):
         self._eval_mode = False
         self.diag_init = args.diag_init
         if self.diag_init == "sq_style":
-            self.ln_smax = torch.ones_like(self.q_proj.linear.weight.abs().max(dim=0)[0]).cuda() * 1e-5
+            stat_device = self.q_proj.linear.weight.device
+            self.register_buffer(
+                "ln_smax",
+                torch.ones_like(self.q_proj.linear.weight.abs().max(dim=0)[0], device=stat_device) * 1e-5,
+            )
 
     def add_fq_trans(self):
         if self.args.direct_inv:
@@ -197,17 +220,29 @@ class FlatQuantLlamaAttention(LlamaAttention):
             k = self.k_cache_quantizer(k).to(q)
         return q, k
 
-    def forward(self, hidden_states, attention_mask, position_ids, past_key_value, 
-            output_attentions, use_cache, cache_position=None, position_embeddings=None, **kwargs):
+    def forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        position_ids=None,
+        past_key_value=None,
+        output_attentions=False,
+        use_cache=False,
+        cache_position=None,
+        position_embeddings=None,
+        **kwargs,
+    ):
+        input_shape = hidden_states.shape[:-1]
         bsz, q_len, _ = hidden_states.size()
         if self._ori_mode:
             query_states, key_states, value_states = self._ori_forward_after_ln(hidden_states)
         else:
             query_states, key_states, value_states = self._trans_forward_after_ln(hidden_states)
 
-        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        hidden_shape = (*input_shape, -1, self.head_dim)
+        query_states = query_states.view(hidden_shape).transpose(1, 2)
+        key_states = key_states.view(hidden_shape).transpose(1, 2)
+        value_states = value_states.view(hidden_shape).transpose(1, 2)
 
         if position_embeddings is None:
             # logger.warning_once(
@@ -225,32 +260,26 @@ class FlatQuantLlamaAttention(LlamaAttention):
             query_states, key_states = self.quant_kcache(query_states, key_states)
             value_states = self.quant_vcache(value_states)
 
-        if past_key_value is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+        cache_obj = past_key_value if past_key_value is not None else kwargs.get("past_key_values")
+        if cache_obj is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            key_states, value_states = cache_obj.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups) # bnsh
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        attention_interface = eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
-        if attention_mask is not None:  # no matter the length, we just slice it
-            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-            attn_weights = attn_weights + causal_mask
-
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-        attn_output = torch.matmul(attn_weights, value_states)
-
-        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
-            )
-
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, -1)
+        attn_output, attn_weights = attention_interface(
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            dropout=0.0 if not self.training else self.attention_dropout,
+            scaling=self.scaling,
+            **kwargs,
+        )
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         if self._ori_mode:
             attn_output = self.o_proj._ori_forward(attn_output)
         else:
@@ -274,7 +303,7 @@ class FlatQuantLlamaAttention(LlamaAttention):
 
         if not output_attentions:
             attn_weights = None
-        return attn_output, attn_weights, past_key_value
+        return attn_output, attn_weights
 
     def reparameterize(self):
         if self.ln_trans is not None:

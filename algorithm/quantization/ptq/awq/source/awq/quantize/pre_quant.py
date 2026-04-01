@@ -33,7 +33,7 @@ def get_blocks(model):
         layers = model.model.language_model.layers
     elif hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
         layers = model.language_model.layers
-    elif model.__class__.__name__ in ("LlamaForCausalLM", "Qwen2ForCausalLM"):
+    elif hasattr(model, "model") and hasattr(model.model, "layers"):
         layers = model.model.layers
     elif model.__class__.__name__ == "InternVL3":
         layers = model.language_model.model.layers
@@ -71,9 +71,10 @@ def move_embed(model, device):
         root.embed_tokens = root.embed_tokens.to(device)
         if hasattr(root, "rotary_emb"):
             root.rotary_emb = root.rotary_emb.to(device)
-    elif isinstance(model, (LlamaForCausalLM, Qwen2ForCausalLM)):
+    elif hasattr(model, "model") and hasattr(model.model, "layers"):
         model.model.embed_tokens = model.model.embed_tokens.to(device)
-        model.model.rotary_emb = model.model.rotary_emb.to(device)
+        if hasattr(model.model, "rotary_emb"):
+            model.model.rotary_emb = model.model.rotary_emb.to(device)
     elif model.__class__.__name__ == "InternVL3":
         model.language_model.model.embed_tokens = (
             model.language_model.model.embed_tokens.to(device)

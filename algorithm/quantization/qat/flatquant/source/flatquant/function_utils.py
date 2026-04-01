@@ -29,7 +29,9 @@ def get_random_orthg(size):
 
 
 def get_init_weight(dim, ):
-    return get_random_orthg(dim)
+    # FlatQuant transforms should start as exact no-ops so wrapper insertion
+    # does not perturb the baseline model before calibration/training.
+    return torch.eye(dim, dtype=torch.float32)
 
 
 def get_inverse(matrix):

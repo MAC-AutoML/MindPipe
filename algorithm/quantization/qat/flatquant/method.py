@@ -171,10 +171,24 @@ class FlatQuantMethod(BaseQuantizationMethod):
             from flatquant.flat_utils import load_flat_parameters
             from flatquant.flat_utils import reparameterize_model
             from flatquant.flat_utils import save_flat_matrices
+            from flatquant.model_tools.llama31_utils import apply_flatquant_to_llama_31
+            from flatquant.model_tools.llama_utils import apply_flatquant_to_llama
             from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
             from flatquant.train_utils import cali_flat_quant
 
-            model = apply_flatquant_to_qwen(source_args, model)
+            model_type = getattr(model.config, "model_type", None)
+            rope_scaling = getattr(model.config, "rope_scaling", None) or {}
+            rope_type = rope_scaling.get("rope_type") if isinstance(rope_scaling, dict) else None
+            if model_type == "llama":
+                apply_wrapper = apply_flatquant_to_llama_31 if rope_type == "llama3" else apply_flatquant_to_llama
+            elif model_type in {"qwen2", "qwen2_5_vl"}:
+                apply_wrapper = apply_flatquant_to_qwen
+            else:
+                raise NotImplementedError(
+                    f"FlatQuant does not support model_type={model_type!r} in the unified launcher yet."
+                )
+
+            model = apply_wrapper(source_args, model)
             LOGGER.info("Applied FlatQuant wrappers to model")
 
             if source_args.resume:

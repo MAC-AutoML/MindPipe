@@ -212,24 +212,26 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
                 down_proj.bias.data = output_bias
     else:
         if attn_mask is not None:
+            num_heads, _, _, head_dim = get_attention_head_geometry(layer)
             retain_heads = torch.count_nonzero(attn_mask)
-            attn_mask = attn_mask.repeat_interleave(128)
-            kept_indices = torch.where(attn_mask)[0]
-            q_proj.weight.data = q_proj.weight.data[kept_indices]
-            k_proj.weight.data = k_proj.weight.data[kept_indices]
-            v_proj.weight.data = v_proj.weight.data[kept_indices]
-            q_proj.out_features = attn_mask.sum().item()
-            k_proj.out_features = attn_mask.sum().item()
-            v_proj.out_features = attn_mask.sum().item()
+            q_mask, kv_mask = expand_attention_masks(layer, attn_mask, device)
+            q_indices = torch.where(q_mask)[0]
+            kv_indices = torch.where(kv_mask)[0]
+            q_proj.weight.data = q_proj.weight.data[q_indices]
+            k_proj.weight.data = k_proj.weight.data[kv_indices]
+            v_proj.weight.data = v_proj.weight.data[kv_indices]
+            q_proj.out_features = q_indices.numel()
+            k_proj.out_features = kv_indices.numel()
+            v_proj.out_features = kv_indices.numel()
 
             output_weight = o_proj.weight.data
             if bias:
-                output_bias = compute_output_bias(attn_mean_inp, attn_mask.to(device), output_weight)
-            output_weight = o_proj.weight.data[:, kept_indices]
+                output_bias = compute_output_bias(attn_mean_inp, q_mask.to(device), output_weight)
+            output_weight = o_proj.weight.data[:, q_indices]
             layer.self_attn.num_heads = retain_heads
-            layer.self_attn.hidden_size = retain_heads * 128
+            layer.self_attn.hidden_size = retain_heads * head_dim
             if bias:
-                o_proj.in_features = attn_mask.sum().item()
+                o_proj.in_features = q_indices.numel()
                 o_proj.bias.data = output_bias
             o_proj.weight.data = output_weight
 

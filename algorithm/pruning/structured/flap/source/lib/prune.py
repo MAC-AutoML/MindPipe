@@ -482,13 +482,14 @@ def cal_remove_neuron(args, model):
     intermediate_size = model.config.intermediate_size
     hidden_size = model.config.hidden_size
     num_layers = model.config.num_hidden_layers
+    head_dim = hidden_size // model.config.num_attention_heads
     if args.structure == "UL-MM":
         remove_params = args.pruning_ratio * (intermediate_size * hidden_size * 3 + hidden_size * hidden_size * 4)
-        remove_head_params = hidden_size * 4 * (args.remove_heads // num_layers) * 128
+        remove_head_params = hidden_size * 4 * (args.remove_heads // num_layers) * head_dim
         return int((remove_params - remove_head_params) / (hidden_size * 3))
     else:
         remove_params = num_layers * args.pruning_ratio * (intermediate_size * hidden_size * 3 + hidden_size * hidden_size * 4)
-        remove_head_params = hidden_size * 4 * args.remove_heads * 128
+        remove_head_params = hidden_size * 4 * args.remove_heads * head_dim
         return int((remove_params - remove_head_params) / (hidden_size * 3))
 
 
@@ -672,7 +673,8 @@ def prune_magnitude_sp(args, model, tokenizer, device=torch.device("cuda:0")):
             W_metric = torch.norm(subset[name].weight.data, dim=0)
 
             if name == 'self_attn.o_proj':
-                W_metric = W_metric.reshape(-1, 128).sum(dim=1) # importance score of each head
+                head_dim = get_attention_head_geometry(layer)[3]
+                W_metric = W_metric.reshape(-1, head_dim).sum(dim=1) # importance score of each head
                 thresh = torch.sort(W_metric.cuda())[0][int(args.pruning_ratio*layer.self_attn.num_heads)].cpu()
                 W_mask = (W_metric>=thresh)
                 compress(layer, W_mask, None, None, None, device, bias=False, unstr=args.unstr)

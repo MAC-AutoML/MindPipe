@@ -27,6 +27,27 @@ class TokenizerBundle:
         return getattr(self.tokenizer, name)
 
 
+class TextModelAdapter(nn.Module):
+    """Expose a multimodal model's text decoder through a causal-LM interface."""
+
+    def __init__(self, text_model: nn.Module, source_model: nn.Module | None = None):
+        super().__init__()
+        self.text_model = text_model
+        object.__setattr__(self, "_source_model", source_model if source_model is not None else text_model)
+
+    def forward(self, *args, **kwargs):
+        return self.text_model(*args, **kwargs)
+
+    def save_pretrained(self, path: str, *args, **kwargs) -> None:
+        self._source_model.save_pretrained(path, *args, **kwargs)
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.text_model, name)
+
+
 @dataclass
 class TextBackbone:
     model: nn.Module
@@ -115,6 +136,12 @@ def load_model_and_tokenizer(
 
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
         processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif config.model_type == "minicpmv" or "MiniCPMV" in architectures:
+        multimodal_model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+        if not hasattr(multimodal_model, "llm"):
+            raise AttributeError(f"MiniCPM-V model from {model_path} does not expose an `llm` decoder.")
+        model = TextModelAdapter(text_model=multimodal_model.llm, source_model=multimodal_model)
+        processor = None
     else:
         model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
         processor = None
@@ -138,6 +165,8 @@ def load_model_and_tokenizer(
 
 
 def get_text_backbone(model: nn.Module) -> TextBackbone:
+    if hasattr(model, "llm") and hasattr(model.llm, "model") and hasattr(model.llm.model, "layers"):
+        return TextBackbone(model=model, root=model.llm.model, prefix="llm.model")
     if hasattr(model, "model") and hasattr(model.model, "language_model"):
         language_model = model.model.language_model
         if hasattr(language_model, "layers"):
@@ -168,6 +197,8 @@ def get_output_head(model: nn.Module) -> nn.Module | None:
         head = model.get_output_embeddings()
         if head is not None:
             return head
+    if hasattr(model, "llm") and hasattr(model.llm, "lm_head"):
+        return model.llm.lm_head
     for attr_name in ("lm_head", "embed_out"):
         if hasattr(model, attr_name):
             return getattr(model, attr_name)
