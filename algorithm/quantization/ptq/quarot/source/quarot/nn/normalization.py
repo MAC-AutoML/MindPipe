@@ -1,12 +1,7 @@
 import torch
 
-class RMSNorm(torch.nn.Module):
-    """
-    This class implements the Root Mean Square Normalization (RMSN) layer.
-    We use the implementation from LLAMARMSNorm here:
-    https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L75
-    """
 
+class RMSNorm(torch.nn.Module):
     def __init__(self, mean_dim: int, eps=1e-5):
         super().__init__()
         self.eps = eps

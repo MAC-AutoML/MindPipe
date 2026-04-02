@@ -43,7 +43,6 @@ class SpinQuantMethod(BaseQuantizationMethod):
             percdamp=args.damp_percent,
             act_order=args.use_activation_order,
             int8_down_proj=False,
-            export_to_et=False,
             load_qmodel_path=None,
             save_qmodel_path=None,
             a_bits=args.activation_bits,

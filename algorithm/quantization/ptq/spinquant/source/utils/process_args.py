@@ -224,13 +224,6 @@ def parser_gen():
         default=None,
         help="Save the quantized model to the specified path!",
     )
-    parser.add_argument(
-        "--export_to_et",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Export the quantized model to executorch and save in save_qmodel_path",
-    )
-
     # Experiments Arguments
     parser.add_argument(
         "--capture_layer_io",

@@ -55,7 +55,6 @@ class GPTQ:
         groupsize=-1,
         actorder=False,
         static_groups=False,
-        export_to_et=False,
     ):
         W = self.layer.weight.data.clone()
         W = W.float()
@@ -156,11 +155,6 @@ class GPTQ:
         if actorder:
             Q = Q[:, invperm]
 
-        if export_to_et:
-            self.layer.register_buffer(
-                "int_weight", W_int.reshape(self.layer.weight.shape)
-            )
-            self.layer.register_buffer("scale", Scale)
         self.layer.weight.data = Q.reshape(self.layer.weight.shape).to(
             self.layer.weight.data.dtype
         )
@@ -292,7 +286,6 @@ def gptq_fwrd(model, dataloader, dev, args):
                     groupsize=layer_w_groupsize,
                     actorder=args.act_order,
                     static_groups=False,
-                    export_to_et=args.export_to_et,
                 )
                 quantizers["model.layers.%d.%s" % (i, name)] = gptq[name].quantizer
                 gptq[name].free()
@@ -346,9 +339,6 @@ def rtn_fwrd(model, dev, args, custom_layers=None):
                 continue
             if args.int8_down_proj and "down_proj" in name:
                 layer_weight_bits = 8
-            if args.export_to_et:
-                layer_weight_bits = 8  # all per channel 8 bits for executorch export
-                w_groupsize = -1
             quantizer = quant_utils.WeightQuantizer()
             quantizer.configure(
                 layer_weight_bits,
@@ -361,9 +351,6 @@ def rtn_fwrd(model, dev, args, custom_layers=None):
             quantizer.find_params(W)
             q, int_weight, scale = quantizer.fake_quantize(W)
             subset[name].weight.data = q.to(next(iter(layer.parameters())).dtype)
-            if args.export_to_et:
-                subset[name].register_buffer("int_weight", int_weight)
-                subset[name].register_buffer("scale", scale)
             quantizers["model.layers.%d.%s" % (i, name)] = quantizer.cpu()
         layers[i] = layer.cpu()
         empty_cache(dev)

@@ -1,4 +1,3 @@
-from .linear import Linear4bit
+from .hadamard import OnlineHadamard
 from .normalization import RMSNorm
 from .quantization import Quantizer
-from .hadamard import OnlineHadamard
