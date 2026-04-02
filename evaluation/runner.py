@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from evaluation.vlm_eval import evaluate_vlm
 from evaluation.lm_eval import evaluate_zero_shot
 from evaluation.ppl import evaluate_perplexity
 
 
-def run_evaluations(model, tokenizer, common_args: dict) -> dict:
+def run_evaluations(model, tokenizer=None, tokenizer_bundle=None, common_args: dict | None = None) -> dict:
+    common_args = {} if common_args is None else common_args
+    if tokenizer_bundle is None:
+        tokenizer_bundle = tokenizer
+    resolved_tokenizer = getattr(tokenizer_bundle, "tokenizer", tokenizer_bundle)
     metrics = evaluate_perplexity(
         model=model,
-        tokenizer=tokenizer,
+        tokenizer=resolved_tokenizer,
         dataset_name=common_args["evaluation_dataset"],
         sequence_length=int(common_args["sequence_length"]),
         batch_size=int(common_args["batch_size"]),
@@ -19,11 +24,17 @@ def run_evaluations(model, tokenizer, common_args: dict) -> dict:
     if common_args.get("eval_zero_shot", False):
         metrics["zero_shot"] = evaluate_zero_shot(
             model=model,
-            tokenizer=tokenizer,
+            tokenizer=resolved_tokenizer,
             task_names=common_args["zero_shot_tasks"],
             batch_size=int(common_args["zero_shot_batch_size"]),
             device=common_args["device"],
             num_fewshot=int(common_args["zero_shot_num_fewshot"]),
             limit=common_args.get("zero_shot_limit"),
+        )
+    if common_args.get("eval_vlm", False):
+        metrics["vlm_eval"] = evaluate_vlm(
+            model=model,
+            tokenizer_bundle=tokenizer_bundle,
+            common_args=common_args,
         )
     return metrics

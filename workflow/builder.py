@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from algorithm.common.io import ensure_dir
@@ -24,6 +25,10 @@ EXECUTION_ORDER_CHOICES = (
     "pruning_then_quantization",
 )
 VALID_STAGE_TYPES = {"quantization", "pruning"}
+DEFAULT_VLMEVALKIT_ROOT = os.environ.get(
+    "VLMEVALKIT_ROOT",
+    "/mnt/42_store/zxz/VLMEvalKit-source/VLMEvalKit",
+)
 
 
 def _add_zero_shot_args(parser: argparse.ArgumentParser) -> None:
@@ -32,6 +37,19 @@ def _add_zero_shot_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--zero_shot_num_fewshot", type=int, default=0)
     parser.add_argument("--zero_shot_batch_size", type=int, default=1)
     parser.add_argument("--zero_shot_limit", type=int, default=None)
+
+
+def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--eval_vlm", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--vlm_datasets", nargs="+", default=[])
+    parser.add_argument("--vlm_mode", default="all", choices=["all", "infer", "eval"])
+    parser.add_argument("--vlm_work_dir", default=None)
+    parser.add_argument("--vlm_eval_kit_root", default=DEFAULT_VLMEVALKIT_ROOT)
+    parser.add_argument("--vlm_judge", default=None)
+    parser.add_argument("--vlm_api_nproc", type=int, default=4)
+    parser.add_argument("--vlm_verbose", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--vlm_ignore_failed", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--vlm_pred_format", default="xlsx", choices=["xlsx", "tsv", "json"])
 
 
 def build_quantization_parser() -> argparse.ArgumentParser:
@@ -50,6 +68,7 @@ def build_quantization_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_eval_chunks", type=int, default=64)
     _add_zero_shot_args(parser)
+    _add_vlm_eval_args(parser)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--weight_bits", type=int, default=4)
     parser.add_argument("--activation_bits", type=int, default=16)
@@ -107,6 +126,7 @@ def build_pruning_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_eval_chunks", type=int, default=64)
     _add_zero_shot_args(parser)
+    _add_vlm_eval_args(parser)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--sparsity_ratio", type=float, default=0.5)
     parser.add_argument("--structure_pattern", default="unstructured")
@@ -140,6 +160,7 @@ def build_workflow_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_eval_chunks", type=int, default=64)
     _add_zero_shot_args(parser)
+    _add_vlm_eval_args(parser)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--weight_bits", type=int, default=4)
     parser.add_argument("--activation_bits", type=int, default=16)
@@ -253,11 +274,13 @@ def build_pruning_config(args) -> WorkflowConfig:
 def build_workflow_config(args) -> WorkflowConfig:
     output_dir = resolve_workflow_output_dir(args)
     base_common_args = {
+        "model_path": args.model_path,
         "device": args.device,
         "dtype": args.dtype,
         "log_level": args.log_level,
         "hf_token": args.hf_token,
         "evaluation_dataset": args.evaluation_dataset,
+        "evaluation_output_dir": str(output_dir),
         "sequence_length": args.sequence_length,
         "batch_size": args.batch_size,
         "max_eval_chunks": args.max_eval_chunks,
@@ -266,6 +289,16 @@ def build_workflow_config(args) -> WorkflowConfig:
         "zero_shot_num_fewshot": args.zero_shot_num_fewshot,
         "zero_shot_batch_size": args.zero_shot_batch_size,
         "zero_shot_limit": args.zero_shot_limit,
+        "eval_vlm": args.eval_vlm,
+        "vlm_datasets": args.vlm_datasets,
+        "vlm_mode": args.vlm_mode,
+        "vlm_work_dir": args.vlm_work_dir,
+        "vlm_eval_kit_root": args.vlm_eval_kit_root,
+        "vlm_judge": args.vlm_judge,
+        "vlm_api_nproc": args.vlm_api_nproc,
+        "vlm_verbose": args.vlm_verbose,
+        "vlm_ignore_failed": args.vlm_ignore_failed,
+        "vlm_pred_format": args.vlm_pred_format,
         "seed": args.seed,
         "weight_bits": args.weight_bits,
         "activation_bits": args.activation_bits,

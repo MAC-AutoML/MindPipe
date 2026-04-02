@@ -48,10 +48,12 @@ class BasePruningMethod(ABC):
         model, tokenizer_bundle = self.load_resources(args)
         model.seqlen = args.sequence_length
         artifacts = self.apply_pruning(model, tokenizer_bundle, args)
+        evaluation_args = vars(args).copy()
+        evaluation_args["evaluation_output_dir"] = str(output_dir)
         metrics = run_evaluations(
             model=model,
-            tokenizer=tokenizer_bundle.tokenizer,
-            common_args=vars(args).copy(),
+            tokenizer_bundle=tokenizer_bundle,
+            common_args=evaluation_args,
         )
         metrics.update(
             {
