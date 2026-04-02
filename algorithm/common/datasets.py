@@ -67,7 +67,8 @@ def _sample_train_chunks(encoded, sample_count: int, seed: int, sequence_length:
     random.seed(seed)
     calibration_batches = []
     for _ in range(sample_count):
-        start = random.randint(0, encoded.input_ids.shape[1] - sequence_length - 1)
+        max_start = encoded.input_ids.shape[1] - sequence_length
+        start = 0 if max_start <= 0 else random.randint(0, max_start)
         end = start + sequence_length
         input_ids = encoded.input_ids[:, start:end]
         labels = input_ids.clone()
@@ -108,7 +109,8 @@ def _load_c4(tokenizer, sequence_length: int, sample_count: int, seed: int):
             encoded = tokenizer(train_split[sample_index]["text"], return_tensors="pt")
             if encoded.input_ids.shape[1] >= sequence_length:
                 break
-        start = random.randint(0, encoded.input_ids.shape[1] - sequence_length - 1)
+        max_start = encoded.input_ids.shape[1] - sequence_length
+        start = 0 if max_start <= 0 else random.randint(0, max_start)
         end = start + sequence_length
         input_ids = encoded.input_ids[:, start:end]
         labels = input_ids.clone()
@@ -123,7 +125,8 @@ def _load_c4(tokenizer, sequence_length: int, sample_count: int, seed: int):
             encoded = tokenizer(validation_split[sample_index]["text"], return_tensors="pt")
             if encoded.input_ids.shape[1] >= sequence_length:
                 break
-        start = random.randint(0, encoded.input_ids.shape[1] - sequence_length - 1)
+        max_start = encoded.input_ids.shape[1] - sequence_length
+        start = 0 if max_start <= 0 else random.randint(0, max_start)
         end = start + sequence_length
         evaluation_slices.append(encoded.input_ids[:, start:end])
     return calibration_batches, EncodedText(torch.hstack(evaluation_slices))
@@ -179,4 +182,3 @@ def get_evaluation_tokens(tokenizer, dataset_name: str, sequence_length: int, se
     if evaluation_tokens is None:
         raise ValueError(f"Dataset {dataset_name} does not provide evaluation tokens")
     return evaluation_tokens
-

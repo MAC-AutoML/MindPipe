@@ -83,8 +83,8 @@ def _filter_kwargs_for_layer(layer, kwargs):
     return {name: value for name, value in kwargs.items() if name in accepted_names}
 
 
-def build_layer_forward_kwargs(model, layer, hidden_states, layer_kwargs, batch_start=0):
-    batch_size = _infer_batch_size(hidden_states, layer_kwargs)
+def build_layer_forward_kwargs(model, layer, hidden_states, layer_kwargs, batch_start=0, total_batch_size=None):
+    batch_size = total_batch_size if total_batch_size is not None else _infer_batch_size(hidden_states, layer_kwargs)
     batch_end = batch_start + hidden_states.shape[0]
     kwargs = {}
     for key, value in layer_kwargs.items():
@@ -104,6 +104,11 @@ def build_layer_forward_kwargs(model, layer, hidden_states, layer_kwargs, batch_
         return _filter_kwargs_for_layer(layer, kwargs)
 
     model_type = getattr(model.config, "model_type", None)
+    if model_type == "minicpmv":
+        kwargs.pop("cache_position", None)
+        kwargs.pop("position_embeddings", None)
+        kwargs["use_cache"] = False
+        return _filter_kwargs_for_layer(layer, kwargs)
     position_ids = kwargs.get("position_ids")
     cache_position = kwargs.get("cache_position")
     rotary_position_ids = position_ids
@@ -129,6 +134,7 @@ def build_layer_forward_kwargs(model, layer, hidden_states, layer_kwargs, batch_
 def forward_in_chunks(model, layer, inputs, kwargs, chunk_size=1):
     outputs = []
     batch_start = 0
+    total_batch_size = inputs.shape[0]
     for chunk in torch.split(inputs, chunk_size, dim=0):
         chunk_kwargs = build_layer_forward_kwargs(
             model,
@@ -136,6 +142,7 @@ def forward_in_chunks(model, layer, inputs, kwargs, chunk_size=1):
             chunk,
             kwargs,
             batch_start=batch_start,
+            total_batch_size=total_batch_size,
         )
         chunk_output = layer(chunk, **chunk_kwargs)
         if isinstance(chunk_output, tuple):

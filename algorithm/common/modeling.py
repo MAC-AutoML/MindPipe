@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MethodType
 from typing import Any
 
 import torch
@@ -11,6 +12,14 @@ from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 from transformers import AutoProcessor
 from transformers import AutoTokenizer
+from transformers import GenerationConfig
+from transformers.generation import GenerationMixin
+try:
+    from transformers.cache_utils import Cache
+    from transformers.cache_utils import DynamicCache
+except Exception:  # pragma: no cover - older/newer transformers variants
+    Cache = None
+    DynamicCache = None
 
 from .device import empty_cache
 from .device import resolve_device
@@ -114,6 +123,100 @@ def resolve_dtype(dtype_name: str) -> str | torch.dtype:
     return "auto"
 
 
+def ensure_generation_compat(model: nn.Module) -> nn.Module:
+    """Restore `.generate()` for remote-code models that no longer inherit GenerationMixin."""
+
+    _ensure_dynamic_cache_compat()
+    if hasattr(model, "generate"):
+        return model
+    if not hasattr(model, "prepare_inputs_for_generation"):
+        return model
+
+    patched_class = type(
+        f"Patched{model.__class__.__name__}",
+        (model.__class__, GenerationMixin),
+        {},
+    )
+    model.__class__ = patched_class
+    if getattr(model, "generation_config", None) is None and hasattr(model, "config"):
+        model.generation_config = GenerationConfig.from_model_config(model.config)
+    if getattr(model, "generation_config", None) is not None:
+        model.generation_config.use_cache = False
+    if hasattr(model, "config"):
+        model.config.use_cache = False
+    if "MiniCPMForCausalLM" in model.__class__.__name__:
+        model.prepare_inputs_for_generation = MethodType(
+            _patched_minicpm_prepare_inputs_for_generation,
+            model,
+        )
+    return model
+
+
+def _ensure_dynamic_cache_compat() -> None:
+    if DynamicCache is None:
+        return
+    if not hasattr(DynamicCache, "seen_tokens"):
+        DynamicCache.seen_tokens = property(lambda self: self.get_seq_length())
+    if not hasattr(DynamicCache, "get_max_length"):
+        DynamicCache.get_max_length = lambda self, *args, **kwargs: None
+    if not hasattr(DynamicCache, "get_usable_length"):
+        DynamicCache.get_usable_length = lambda self, *args, **kwargs: self.get_seq_length()
+
+
+def _patched_minicpm_prepare_inputs_for_generation(
+    self,
+    input_ids,
+    past_key_values=None,
+    attention_mask=None,
+    inputs_embeds=None,
+    **kwargs,
+):
+    cache_length = 0
+    if past_key_values is not None:
+        if Cache is not None and isinstance(past_key_values, Cache):
+            cache_length = past_key_values.get_seq_length()
+            past_length = getattr(past_key_values, "seen_tokens", cache_length)
+            get_max_length = getattr(past_key_values, "get_max_length", None)
+            max_cache_length = get_max_length() if callable(get_max_length) else None
+        else:
+            cache_length = past_length = past_key_values[0][0].shape[2]
+            max_cache_length = None
+
+        if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
+            input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
+        elif past_length < input_ids.shape[1]:
+            input_ids = input_ids[:, past_length:]
+
+        if (
+            max_cache_length is not None
+            and attention_mask is not None
+            and cache_length + input_ids.shape[1] > max_cache_length
+        ):
+            attention_mask = attention_mask[:, -max_cache_length:]
+
+    position_ids = kwargs.get("position_ids", None)
+    if attention_mask is not None and position_ids is None:
+        position_ids = attention_mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(attention_mask == 0, 1)
+        if past_key_values is not None:
+            position_ids = position_ids[:, -input_ids.shape[1] :]
+
+    if inputs_embeds is not None and (past_key_values is None or cache_length == 0):
+        model_inputs = {"inputs_embeds": inputs_embeds}
+    else:
+        model_inputs = {"input_ids": input_ids}
+
+    model_inputs.update(
+        {
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": kwargs.get("use_cache"),
+            "attention_mask": attention_mask,
+        }
+    )
+    return model_inputs
+
+
 def load_model_and_tokenizer(
     model_path: str,
     dtype: str = "auto",
@@ -143,6 +246,7 @@ def load_model_and_tokenizer(
         multimodal_model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
         if not hasattr(multimodal_model, "llm"):
             raise AttributeError(f"MiniCPM-V model from {model_path} does not expose an `llm` decoder.")
+        ensure_generation_compat(multimodal_model.llm)
         model = TextModelAdapter(text_model=multimodal_model.llm, source_model=multimodal_model)
         processor = None
     else:

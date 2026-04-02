@@ -18,6 +18,28 @@ from ..utils.device import resolve_device
 __all__ = ["auto_scale_block", "apply_scale"]
 
 
+def _is_llama_family_decoder(module) -> bool:
+    return (
+        hasattr(module, "self_attn")
+        and hasattr(module, "mlp")
+        and hasattr(module, "input_layernorm")
+        and hasattr(module, "post_attention_layernorm")
+        and hasattr(module.self_attn, "q_proj")
+        and hasattr(module.self_attn, "k_proj")
+        and hasattr(module.self_attn, "v_proj")
+        and hasattr(module.self_attn, "o_proj")
+        and hasattr(module.mlp, "gate_proj")
+        and hasattr(module.mlp, "up_proj")
+        and hasattr(module.mlp, "down_proj")
+    )
+
+
+def _is_norm_like(module) -> bool:
+    if isinstance(module, (nn.LayerNorm, LlamaRMSNorm, Qwen2RMSNorm, Qwen2_5_VLRMSNorm)):
+        return True
+    return hasattr(module, "weight") and module.__class__.__name__.endswith("RMSNorm")
+
+
 @torch.no_grad()
 def get_weight_scale(weight, q_group_size=-1):
     org_shape = weight.shape
@@ -212,7 +234,7 @@ def auto_scale_block(model, module, module_kwargs, w_bit, q_config, input_feat):
             )
         )
 
-    elif isinstance(module, (LlamaDecoderLayer, Qwen2DecoderLayer, Qwen2_5_VLDecoderLayer)):
+    elif isinstance(module, (LlamaDecoderLayer, Qwen2DecoderLayer, Qwen2_5_VLDecoderLayer)) or _is_llama_family_decoder(module):
         # attention input
         scales_list.append(
             _auto_get_scale(
@@ -460,7 +482,7 @@ def apply_scale(module, scales_list, input_feat_dict=None, device=None):
         if isinstance(prev_op, nn.Linear):
             assert len(layers) == 1
             scale_fc_fc(prev_op, layers[0], scales)
-        elif isinstance(prev_op, (nn.LayerNorm, LlamaRMSNorm, Qwen2RMSNorm, Qwen2_5_VLRMSNorm)):
+        elif _is_norm_like(prev_op):
             scale_ln_fcs(prev_op, layers, scales)
         elif isinstance(prev_op, (nn.GELU, BloomGelu, GELUActivation, nn.SiLU)):
             new_module = ScaledActivation(prev_op, scales)

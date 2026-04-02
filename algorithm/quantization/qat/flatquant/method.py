@@ -174,6 +174,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
             from flatquant.flat_utils import save_flat_matrices
             from flatquant.model_tools.llama31_utils import apply_flatquant_to_llama_31
             from flatquant.model_tools.llama_utils import apply_flatquant_to_llama
+            from flatquant.model_tools.minicpm_utils import apply_flatquant_to_minicpm
             from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
             from flatquant.train_utils import cali_flat_quant
 
@@ -182,6 +183,8 @@ class FlatQuantMethod(BaseQuantizationMethod):
             rope_type = rope_scaling.get("rope_type") if isinstance(rope_scaling, dict) else None
             if model_type == "llama":
                 apply_wrapper = apply_flatquant_to_llama_31 if rope_type == "llama3" else apply_flatquant_to_llama
+            elif model_type == "minicpmv":
+                apply_wrapper = apply_flatquant_to_minicpm
             elif model_type in {"qwen2", "qwen2_5_vl"}:
                 apply_wrapper = apply_flatquant_to_qwen
             else:

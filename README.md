@@ -56,6 +56,7 @@ mindpipe/
   - 单独剪枝 = 1 个 pruning stage
   - 量化+剪枝 / 剪枝+量化 = 2 个 stage
 - `evaluation/` 单独负责 PPL 和 lm-eval 两类评测。
+- 多模态 benchmark 评测说明见 [vlmevalkit_usage.md](vlmevalkit_usage.md)。
 - 根目录 `main.py` 是唯一 CLI 入口。
 
 ## 已完成内容

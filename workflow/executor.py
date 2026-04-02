@@ -101,9 +101,11 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     if final_output_dir is None:
         raise RuntimeError("Workflow produced no stages")
 
+    common_args["evaluation_output_dir"] = str(final_output_dir)
+    common_args["model_path"] = config.model_path
     metrics = run_evaluations(
         model=model,
-        tokenizer=tokenizer_bundle.tokenizer,
+        tokenizer_bundle=tokenizer_bundle,
         common_args=common_args,
     )
     metrics.update(config.result_metadata)
