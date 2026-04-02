@@ -6,6 +6,8 @@ from pathlib import Path
 
 import torch
 
+from ....common.device import backend_module
+from ....common.device import resolve_device
 from ....common.io import ensure_dir
 from ....common.runtime import prepend_python_path
 from ...base import BaseQuantizationMethod
@@ -22,8 +24,10 @@ class AWQMethod(BaseQuantizationMethod):
             "zero_point": not args.weight_symmetric,
             "q_group_size": args.weight_group_size,
         }
-        if str(args.device).startswith("cuda"):
-            torch.cuda.set_device(torch.device(args.device))
+        runtime_device = resolve_device(args.device)
+        runtime_backend = backend_module(runtime_device)
+        if runtime_backend is not None and hasattr(runtime_backend, "set_device"):
+            runtime_backend.set_device(runtime_device)
 
         with prepend_python_path(source_root):
             from awq.quantize.pre_quant import run_awq

@@ -57,9 +57,10 @@ def capture_layer_io(layer, layer_input):
         )
 
     # Process each sequence in the batch one by one to avoid OOM.
+    layer_device = next(layer.parameters()).device
     for seq_idx in range(layer_input.shape[0]):
         # Extract the current sequence across all dimensions.
-        seq = layer_input[seq_idx : seq_idx + 1].to("cuda")
+        seq = layer_input[seq_idx : seq_idx + 1].to(layer_device)
         # Perform a forward pass for the current sequence.
         layer(seq)
 

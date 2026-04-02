@@ -2,6 +2,7 @@ import time
 
 import torch
 import torch.nn as nn
+from algorithm.common.device import empty_cache
 
 from gptq import *
 from modelutils import *
@@ -60,7 +61,7 @@ def llama_sequential(model, dataloader, dev):
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
     model.model.norm = model.model.norm.cpu()
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -121,7 +122,7 @@ def llama_sequential(model, dataloader, dev):
         layers[i] = layer.cpu()
         del layer
         del gptq 
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
@@ -170,7 +171,7 @@ def llama_eval(model, testenc, dev):
 
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -197,7 +198,7 @@ def llama_eval(model, testenc, dev):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
         layers[i] = layer.cpu()
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
         inps, outs = outs, inps
 
     if model.model.norm is not None:
@@ -297,4 +298,3 @@ if __name__ == '__main__':
     if args.save:
         llama_pack3(model, quantizers)
         torch.save(model.state_dict(), args.save)
-

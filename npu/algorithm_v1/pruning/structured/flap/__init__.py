@@ -1,2 +1,0 @@
-"""FLAP method package."""
-

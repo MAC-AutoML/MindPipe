@@ -1,11 +1,13 @@
 import torch
 import torch.nn as nn
+from algorithm.common.device import empty_cache
+from algorithm.common.device import resolve_device
 
 # Import get_loaders function from data module within the same directory
 from .data import get_loaders 
 
 # Function to evaluate perplexity (ppl) on a specified model and tokenizer
-def eval_ppl(model, tokenizer, device=torch.device("cuda:0")):
+def eval_ppl(model, tokenizer, device=None):
     """
     Evaluate perplexity (ppl) on a specified model and tokenizer.
 
@@ -19,6 +21,7 @@ def eval_ppl(model, tokenizer, device=torch.device("cuda:0")):
     """
     # Set dataset
     dataset = "wikitext2"   # Dataset consisting of extracted sentences from Wikipedia articles
+    device = next(model.parameters()).device if device is None else resolve_device(device)
 
     # Print status
     print(f"evaluating on {dataset}")
@@ -91,7 +94,7 @@ def eval_ppl_wikitext(model, testenc, bs=1, device=None):
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))    # ppl = exp(∑(nlls) / (num_samples * sequence_length))
 
     # Empty CUDA cache to save memory
-    torch.cuda.empty_cache()
+    empty_cache(device if device is not None else next(model.parameters()).device)
 
     return ppl.item()
 

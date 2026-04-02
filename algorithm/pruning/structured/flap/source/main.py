@@ -2,6 +2,8 @@ import argparse
 import os 
 import numpy as np
 import torch
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import device_count
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from models.hf_llama.modeling_llama import LlamaForCausalLM
 
@@ -13,7 +15,7 @@ from lib.eval import eval_ppl
 print('torch', version('torch'))
 print('transformers', version('transformers'))
 print('accelerate', version('accelerate'))
-print('# of gpus: ', torch.cuda.device_count())
+print('# of accelerators: ', device_count(default_accelerator_device()))
 
 def get_llm(model, cache_dir="llm_weights"):
     # model = AutoModelForCausalLM.from_pretrained(
@@ -63,7 +65,7 @@ def main():
     # Build the model and tokenizer
     print(f"loading llm model {args.model}")
     model = get_llm(args.model, args.cache_dir)
-    device = torch.device("cuda:0")
+    device = default_accelerator_device()
     model.to(device)
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)

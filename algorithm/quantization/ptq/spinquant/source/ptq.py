@@ -10,6 +10,7 @@ from logging import Logger
 
 import torch
 import torch.distributed as dist
+from algorithm.common.device import distributed_backend
 from transformers import LlamaTokenizerFast
 import transformers
 from eval_utils.main import ptq_model
@@ -21,7 +22,10 @@ log: Logger = utils.get_logger("spinquant")
 
 
 def train() -> None:
-    dist.init_process_group(backend="nccl", timeout=datetime.timedelta(hours=8))
+    dist.init_process_group(
+        backend=distributed_backend(),
+        timeout=datetime.timedelta(hours=8),
+    )
     model_args, training_args, ptq_args = process_args_ptq()
     local_rank = utils.get_local_rank()
 
@@ -45,7 +49,7 @@ def train() -> None:
     )
     if process_word_embeddings:
         model.lm_head.weight.data = model.model.embed_tokens.weight.data.clone()
-    model.cuda()
+    model.to(utils.DEV)
 
     model = ptq_model(ptq_args, model, model_args)
     model.seqlen = training_args.model_max_length

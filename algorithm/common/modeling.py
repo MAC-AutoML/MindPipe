@@ -12,6 +12,9 @@ from transformers import AutoModelForCausalLM
 from transformers import AutoProcessor
 from transformers import AutoTokenizer
 
+from .device import empty_cache
+from .device import resolve_device
+
 
 @dataclass
 class TokenizerBundle:
@@ -123,7 +126,7 @@ def load_model_and_tokenizer(
         if hasattr(config, "_attn_implementation"):
             config._attn_implementation = "eager"
     model_kwargs = {
-        "dtype": resolve_dtype(dtype),
+        "torch_dtype": resolve_dtype(dtype),
         "config": config,
         "trust_remote_code": True,
         "low_cpu_mem_usage": True,
@@ -241,6 +244,7 @@ def capture_first_block_inputs(
     calibration_batches,
     device: str | torch.device,
 ):
+    device = resolve_device(device)
     use_cache = getattr(model.config, "use_cache", False)
     model.config.use_cache = False
     blocks = backbone.layers
@@ -290,6 +294,6 @@ def capture_first_block_inputs(
     blocks[0] = blocks[0].module
     blocks[0] = blocks[0].cpu()
     backbone.move_front_modules("cpu")
-    torch.cuda.empty_cache()
+    empty_cache(device)
     model.config.use_cache = use_cache
     return inputs, dict(cached_kwargs)

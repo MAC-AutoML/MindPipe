@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+from ....common.device import empty_cache
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.io import ensure_dir
 from ....common.io import model_slug
@@ -213,18 +214,8 @@ class FlatQuantMethod(BaseQuantizationMethod):
             weight_quantizer_name = "none"
             if source_args.w_bits < 16:
                 if source_args.gptq:
-                    try:
-                        quantizers = gptq_utils.gptq_fwrd(model, calibration_batches, args.device, source_args)
-                        weight_quantizer_name = "gptq"
-                    except RuntimeError as error:
-                        LOGGER.warning(
-                            "FlatQuant GPTQ weight quantization failed; fallback to RTN. Error: %s",
-                            error,
-                        )
-                        fallback_args = SimpleNamespace(**vars(source_args))
-                        fallback_args.w_groupsize = -1
-                        quantizers = gptq_utils.rtn_fwrd(model, args.device, fallback_args)
-                        weight_quantizer_name = "rtn_fallback"
+                    quantizers = gptq_utils.gptq_fwrd(model, calibration_batches, args.device, source_args)
+                    weight_quantizer_name = "gptq"
                 else:
                     quantizers = gptq_utils.rtn_fwrd(model, args.device, source_args)
                     weight_quantizer_name = "rtn"
@@ -236,7 +227,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
                     }
                     for name in quantizers
                 }
-                torch.cuda.empty_cache()
+                empty_cache(args.device)
 
         artifacts = {
             "source_root": str(source_root),

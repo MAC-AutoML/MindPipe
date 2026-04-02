@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..common.device import enable_device_compat
+from ..common.device import resolve_device_string
 from ..common.io import ensure_dir
 from ..common.io import model_slug
 from ..common.io import write_json
@@ -41,6 +43,7 @@ class BasePruningMethod(ABC):
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
 
     def run(self, args) -> PruningRunResult:
+        args.device = enable_device_compat(resolve_device_string(args.device))
         output_dir = self.resolve_output_dir(args)
         model, tokenizer_bundle = self.load_resources(args)
         model.seqlen = args.sequence_length

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from algorithm.common.device import empty_cache
 from .quantizer import pseudo_quantize_tensor
 import gc
 from ..utils.device import resolve_device
@@ -21,7 +22,8 @@ def auto_clip_layer(
     )
     input_feat = input_feat.view(-1, input_feat.shape[-1])
     input_feat = input_feat.reshape(1, input_feat.shape[0], -1, group_size)
-    input_feat = input_feat[:, 0 :: input_feat.shape[1] // n_sample_token]
+    sample_step = max(1, input_feat.shape[1] // max(1, n_sample_token))
+    input_feat = input_feat[:, 0::sample_step]
     w = w.reshape(w.shape[0], 1, -1, group_size)
 
     oc_batch_size = 256 if w.shape[0] % 256 == 0 else 64  # prevent OOM
@@ -60,7 +62,7 @@ def auto_clip_layer(
     del input_feat
     del org_out
     gc.collect()
-    torch.cuda.empty_cache()
+    empty_cache(w_all.device)
     return best_max_val.squeeze(1)
 
 

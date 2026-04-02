@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from algorithm.common.device import empty_cache
+
 
 class WrappedGPT:
     def __init__(self, layer, layer_id=0, layer_name="none"):
@@ -29,4 +31,4 @@ class WrappedGPT:
 
     def free(self):
         self.scaler_row = None
-        torch.cuda.empty_cache()
+        empty_cache(self.dev)

@@ -1,2 +1,0 @@
-"""Pruning task package."""
-

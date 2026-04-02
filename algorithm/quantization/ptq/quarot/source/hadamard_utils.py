@@ -3,6 +3,8 @@ import math
 
 import torch
 
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import preferred_rotation_dtype
 import fast_hadamard_transform
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py  
 
@@ -194,17 +196,19 @@ def matmul_hadUt(X):
 
 def random_hadamard_matrix(size, device):
     # See https://cornell-relaxml.github.io/quip-sharp/   , Section "Randomized Hadamard Transformation"
-    Q = torch.randint(low=0, high=2, size=(size,)).to(torch.float64)
+    rotation_dtype = preferred_rotation_dtype(device)
+    Q = torch.randint(low=0, high=2, size=(size,), device=device).to(rotation_dtype)
     Q = Q * 2 - 1
     Q = torch.diag(Q)
-    return matmul_hadU(Q).to(device)
+    return matmul_hadU(Q).to(device=device, dtype=rotation_dtype)
 
 def block_diag_hadamard_matrix(size, hadamard_size, device):
     hadamard_size = size if hadamard_size == -1 else hadamard_size
     assert size % hadamard_size == 0
-    Q = torch.ones(size=(hadamard_size,)).to(torch.float64)
+    rotation_dtype = preferred_rotation_dtype(device)
+    Q = torch.ones(size=(hadamard_size,), device=device, dtype=rotation_dtype)
     Q = torch.diag(Q)
-    diag_hadamard = [matmul_hadU(Q).to(device)] * (size // hadamard_size)
+    diag_hadamard = [matmul_hadU(Q).to(device=device, dtype=rotation_dtype)] * (size // hadamard_size)
     diag_hadamard = torch.block_diag(*diag_hadamard)
     return diag_hadamard
 
@@ -233,7 +237,7 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False):
     dtype = W_.dtype
     dev = W_.device
     init_shape = W_.shape
-    transform_device = torch.device("cuda") if torch.cuda.is_available() else dev
+    transform_device = default_accelerator_device() if dev.type == "cpu" else dev
     W_ = W_.float().to(transform_device)
     
     if had_dim == -1:

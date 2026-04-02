@@ -1,2 +1,0 @@
-"""QuaRot method package."""
-

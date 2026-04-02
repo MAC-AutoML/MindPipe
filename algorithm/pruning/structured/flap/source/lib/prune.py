@@ -1,5 +1,8 @@
 import torch 
 import torch.nn as nn 
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import empty_cache
+from algorithm.common.device import resolve_device
 from .layerwrapper import BiasGPT
 from .data import get_loaders 
 import math
@@ -475,7 +478,7 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             down_proj.weight.data = output_weight
         
     # Explicitly empty the CUDA cache to clean up some memory
-    torch.cuda.empty_cache()
+    empty_cache(device)
     
     
 def cal_remove_neuron(args, model):
@@ -493,7 +496,7 @@ def cal_remove_neuron(args, model):
         return int((remove_params - remove_head_params) / (hidden_size * 3))
 
 
-def prune_flap(args, model, tokenizer, device=torch.device("cuda:0")):
+def prune_flap(args, model, tokenizer, device=None):
     """
     Our FLAP Pruning.
     
@@ -503,6 +506,7 @@ def prune_flap(args, model, tokenizer, device=torch.device("cuda:0")):
         tokenizer (Tokenizer): Tokenizer associated with the model.
         device (torch.device, optional): Device to move tensors to. Defaults to CUDA device 0.
     """
+    device = default_accelerator_device() if device is None else resolve_device(device)
     use_cache = model.config.use_cache 
     model.config.use_cache = False 
     
@@ -552,12 +556,12 @@ def prune_flap(args, model, tokenizer, device=torch.device("cuda:0")):
                 if args.structure == "UL-UM":
                     W_metric = aggregate_attention_metric(layer, raw_attn_metric)
                     attn_count = W_metric.numel()
-                    thresh = torch.sort(W_metric.cuda())[0][int(args.pruning_ratio * attn_count)].cpu()
+                    thresh = torch.sort(W_metric)[0][int(args.pruning_ratio * attn_count)]
                     W_mask = (W_metric>=thresh)
                     attn_mask.append(W_mask)
                 elif args.structure == "UL-MM":
                     W_metric = aggregate_attention_metric(layer, raw_attn_metric)
-                    thresh = torch.sort(W_metric.cuda())[0][args.remove_heads // len(layers)].cpu()
+                    thresh = torch.sort(W_metric)[0][args.remove_heads // len(layers)]
                     W_mask = (W_metric>=thresh)
                     attn_mask.append(W_mask)
                 else:
@@ -566,11 +570,11 @@ def prune_flap(args, model, tokenizer, device=torch.device("cuda:0")):
             else:
                 W_metric = metrics[args.metrics](wrapped_layers, subset, name)
                 if args.structure == "UL-UM":
-                    thresh = torch.sort(W_metric.cuda())[0][int(W_metric.numel()*args.pruning_ratio)].cpu()
+                    thresh = torch.sort(W_metric)[0][int(W_metric.numel()*args.pruning_ratio)]
                     W_mask = (W_metric>=thresh)
                     mlp_mask.append(W_mask)
                 elif args.structure == "UL-MM":
-                    thresh = torch.sort(W_metric.cuda())[0][cal_remove_neuron(args, model)].cpu()
+                    thresh = torch.sort(W_metric)[0][cal_remove_neuron(args, model)]
                     W_mask = (W_metric>=thresh)
                     mlp_mask.append(W_mask)
                 else:
@@ -579,7 +583,7 @@ def prune_flap(args, model, tokenizer, device=torch.device("cuda:0")):
             wrapped_layers[name].free()
 
         inps, outs = outs, inps # Use the original output as input to the next layer
-        torch.cuda.empty_cache()
+        empty_cache(next(iter(subset.values())).weight.device if subset else device)
 
     standarlization = lambda x: (x - torch.mean(x, axis=1, keepdim=True)) / torch.std(x, axis=1, keepdim=True)
 
@@ -651,8 +655,8 @@ def prune_flap(args, model, tokenizer, device=torch.device("cuda:0")):
             compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], device, unstr=args.unstr)
                 
     model.config.use_cache = use_cache 
-    torch.cuda.empty_cache()
-def prune_magnitude_sp(args, model, tokenizer, device=torch.device("cuda:0")):
+    empty_cache(device)
+def prune_magnitude_sp(args, model, tokenizer, device=None):
     """
     Magnitude Pruning on structured pruning.
     
@@ -662,6 +666,7 @@ def prune_magnitude_sp(args, model, tokenizer, device=torch.device("cuda:0")):
         tokenizer (Tokenizer): Tokenizer associated with the model.
         device (torch.device, optional): Device to move tensors to. Defaults to CUDA device 0.
     """
+    device = default_accelerator_device() if device is None else resolve_device(device)
     layers = get_decoder_layers(model) 
 
     for i in range(len(layers)):
@@ -675,11 +680,11 @@ def prune_magnitude_sp(args, model, tokenizer, device=torch.device("cuda:0")):
             if name == 'self_attn.o_proj':
                 head_dim = get_attention_head_geometry(layer)[3]
                 W_metric = W_metric.reshape(-1, head_dim).sum(dim=1) # importance score of each head
-                thresh = torch.sort(W_metric.cuda())[0][int(args.pruning_ratio*layer.self_attn.num_heads)].cpu()
+                thresh = torch.sort(W_metric)[0][int(args.pruning_ratio*layer.self_attn.num_heads)]
                 W_mask = (W_metric>=thresh)
                 compress(layer, W_mask, None, None, None, device, bias=False, unstr=args.unstr)
             else:
-                thresh = torch.sort(W_metric.cuda())[0][int(W_metric.numel()*args.pruning_ratio)].cpu()
+                thresh = torch.sort(W_metric)[0][int(W_metric.numel()*args.pruning_ratio)]
                 W_mask = (W_metric>=thresh)
                 compress(layer, None, W_mask, None, None, device, bias=False, unstr=args.unstr)
             

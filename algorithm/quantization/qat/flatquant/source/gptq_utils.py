@@ -4,6 +4,9 @@ import tqdm
 import torch
 import torch.nn as nn
 import logging
+from algorithm.common.device import empty_cache
+from algorithm.common.device import maybe_offload_hessian_to_cpu
+from algorithm.common.device import synchronize
 
 from flatquant.backbone_utils import get_decoder_layers
 from flatquant.backbone_utils import move_front_modules
@@ -66,9 +69,7 @@ class GPTQ:
 
         H = self.H
         del self.H
-        offload_hessian_to_cpu = H.device.type == "cuda" and self.columns >= CPU_HESSIAN_OFFLOAD_COLUMNS
-        if offload_hessian_to_cpu:
-            H = H.cpu()
+        H = maybe_offload_hessian_to_cpu(H, "FlatQuant GPTQ", CPU_HESSIAN_OFFLOAD_COLUMNS)
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
         if dead.any():
@@ -151,8 +152,8 @@ class GPTQ:
             if i2 < self.columns:
                 W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:].to(self.dev))
 
-        if self.dev.type == "cuda":
-            torch.cuda.synchronize(self.dev)
+        if self.dev.type in {"cuda", "npu"}:
+            synchronize(self.dev)
 
         if actorder:
             Q = Q[:, invperm]
@@ -168,7 +169,7 @@ class GPTQ:
         self.H = None
         self.Losses = None
         self.Trace = None
-        torch.cuda.empty_cache()
+        empty_cache(self.dev)
         cleanup_memory(verbose=False)
         
         
@@ -219,7 +220,7 @@ def gptq_fwrd(model, dataloader, dev, args):
 
     layers[0] = layers[0].cpu()
     move_front_modules(model, "cpu")
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     outs = torch.zeros_like(inps)
     layer_kwargs = dict(cache['layer_kwargs'])
@@ -284,7 +285,7 @@ def gptq_fwrd(model, dataloader, dev, args):
         layers[i] = layer.cpu()
         del layer
         del gptq 
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
         inps, outs = outs, inps
 
@@ -302,7 +303,7 @@ def rtn_fwrd(model, dev, args):
     '''
     assert args.w_groupsize ==-1, "Groupsize not supported in RTN!"
     layers = get_decoder_layers(model)
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     quantizers = {}
     quantizable_names = {
@@ -339,7 +340,7 @@ def rtn_fwrd(model, dev, args):
             subset[name].weight.data = quantizer.quantize(W).to(w_dtype)
             quantizers['model.layers.%d.%s' % (i, name)] = quantizer.cpu()
         layers[i] = layer.cpu()
-        torch.cuda.empty_cache()
+        empty_cache(dev)
         del layer
             
     cleanup_memory(verbose=True)

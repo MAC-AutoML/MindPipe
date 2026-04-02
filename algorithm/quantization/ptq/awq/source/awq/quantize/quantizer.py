@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 import gc
+from algorithm.common.device import empty_cache
 from .qmodule import ScaledActivation
 from ..utils.module import set_op_by_name
 from ..utils.device import resolve_device
@@ -161,8 +162,8 @@ def real_quantize_model_weight(model, w_bit, q_config, init_only=False, device=N
                 module.cpu()
                 q_linear.to(runtime_device)
                 set_op_by_name(layer, name, q_linear)
-                torch.cuda.empty_cache()
+                empty_cache(runtime_device)
                 gc.collect()
 
-    torch.cuda.empty_cache()
+    empty_cache(runtime_device)
     gc.collect()

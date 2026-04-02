@@ -150,10 +150,10 @@ class SGDG(Optimizer):
                     param_state = self.state[p]
                     if "momentum_buffer" not in param_state:
                         param_state["momentum_buffer"] = torch.zeros(g.t().size())
-                        if p.is_cuda:
+                        if p.device.type != "cpu":
                             param_state["momentum_buffer"] = param_state[
                                 "momentum_buffer"
-                            ].cuda()
+                            ].to(p.device)
 
                     V = param_state["momentum_buffer"]
                     V = momentum * V - g.t()

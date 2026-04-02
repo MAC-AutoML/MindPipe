@@ -18,6 +18,7 @@ from tqdm import tqdm
 import numpy as np
 import functools
 
+from algorithm.common.device import empty_cache
 from ..utils.device import resolve_device
 
 
@@ -149,12 +150,12 @@ def get_smooth_scale(model_path, media, device=None):
     runtime_device = resolve_device(device)
     load_devices = [0]
     if runtime_device.type == "cuda":
-        load_devices = [runtime_device.index if runtime_device.index is not None else torch.cuda.current_device()]
+        load_devices = [runtime_device.index if runtime_device.index is not None else 0]
     # Load model
     model = llava.load(model_path, devices=load_devices)
     del model.llm
     del model.mm_projector
-    torch.cuda.empty_cache()
+    empty_cache(runtime_device)
     model = model.to(runtime_device).eval()
     prompt = []
     if media is not None:

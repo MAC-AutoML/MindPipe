@@ -1,2 +1,0 @@
-"""SparseGPT method package."""
-

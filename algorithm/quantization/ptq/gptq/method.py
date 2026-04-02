@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from ....common.device import empty_cache
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
@@ -95,7 +96,7 @@ class GPTQMethod(BaseQuantizationMethod):
                         }
                         gptq_state.free()
                     del gptq_states
-                    torch.cuda.empty_cache()
+                    empty_cache(args.device)
 
                 for sample_index in range(args.calibration_samples):
                     with torch.no_grad():
@@ -105,7 +106,7 @@ class GPTQMethod(BaseQuantizationMethod):
 
                 backbone.layers[layer_index] = block.cpu()
                 del block
-                torch.cuda.empty_cache()
+                empty_cache(args.device)
                 input_states, output_states = output_states, input_states
 
         return {

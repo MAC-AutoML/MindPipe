@@ -5,6 +5,9 @@ import torch
 import torch.nn as nn
 import transformers
 
+from algorithm.common.device import empty_cache
+from algorithm.common.device import maybe_offload_hessian_to_cpu
+from algorithm.common.device import synchronize
 from quant import *
 
 
@@ -64,9 +67,7 @@ class SparseGPT:
 
         H = self.H
         del self.H
-        offload_hessian_to_cpu = H.device.type == "cuda" and self.columns >= CPU_HESSIAN_OFFLOAD_COLUMNS
-        if offload_hessian_to_cpu:
-            H = H.cpu()
+        H = maybe_offload_hessian_to_cpu(H, "SparseGPT", CPU_HESSIAN_OFFLOAD_COLUMNS)
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
         if dead.any():
@@ -140,8 +141,8 @@ class SparseGPT:
                 print(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
                 print(torch.sum(Losses))
 
-        if self.dev.type == "cuda":
-            torch.cuda.synchronize(self.dev)
+        if self.dev.type in {"cuda", "npu"}:
+            synchronize(self.dev)
         print('time %.2f' % (time.time() - tick))
         print('error', torch.sum(Losses).item())
 
@@ -156,4 +157,4 @@ class SparseGPT:
             self.inp1 = None
             self.out1 = None
         self.H = None
-        torch.cuda.empty_cache()
+        empty_cache(self.dev)

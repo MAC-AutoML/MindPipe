@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 
+from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import empty_cache
+from algorithm.common.device import resolve_device
 from .data import get_loaders
 from .layerwrapper import WrappedGPT
 
@@ -252,10 +255,11 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
                 down_proj.bias.data = output_bias
             down_proj.weight.data = output_weight
 
-    torch.cuda.empty_cache()
+    empty_cache(device)
 
 
-def prune_wanda_sp(args, model, tokenizer, device=torch.device("cuda:0")):
+def prune_wanda_sp(args, model, tokenizer, device=None):
+    device = default_accelerator_device() if device is None else resolve_device(device)
     use_cache = model.config.use_cache
     model.config.use_cache = False
 
@@ -299,12 +303,12 @@ def prune_wanda_sp(args, model, tokenizer, device=torch.device("cuda:0")):
 
             if name == "self_attn.o_proj":
                 W_metric = aggregate_attention_metric(layer, W_metric.mean(axis=0))
-                thresh = torch.sort(W_metric.cuda())[0][int(args.pruning_ratio * W_metric.numel())].cpu()
+                thresh = torch.sort(W_metric)[0][int(args.pruning_ratio * W_metric.numel())]
                 W_mask = W_metric >= thresh
                 compress(layer, W_mask, None, None, None, device, bias=False, unstr=args.unstr)
             else:
                 W_metric = W_metric.mean(axis=0)
-                thresh = torch.sort(W_metric.cuda())[0][int(W_metric.numel() * args.pruning_ratio)].cpu()
+                thresh = torch.sort(W_metric)[0][int(W_metric.numel() * args.pruning_ratio)]
                 W_mask = W_metric >= thresh
                 compress(layer, None, W_mask, None, None, device, bias=False, unstr=args.unstr)
 
@@ -314,7 +318,7 @@ def prune_wanda_sp(args, model, tokenizer, device=torch.device("cuda:0")):
             with torch.no_grad():
                 outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
         inps, outs = outs, inps
-        torch.cuda.empty_cache()
+        empty_cache(next(iter(subset.values())).weight.device if subset else device)
 
     model.config.use_cache = use_cache
-    torch.cuda.empty_cache()
+    empty_cache(device)

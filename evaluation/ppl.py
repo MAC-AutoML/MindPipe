@@ -8,6 +8,7 @@ import time
 import torch
 
 from algorithm.common.datasets import get_evaluation_tokens
+from algorithm.common.device import resolve_device
 
 
 @torch.inference_mode()
@@ -20,6 +21,7 @@ def evaluate_perplexity(
     max_eval_chunks: int | None,
     device: str,
 ):
+    resolved_device = resolve_device(device)
     evaluation_tokens = get_evaluation_tokens(
         tokenizer=tokenizer,
         dataset_name=dataset_name,
@@ -31,7 +33,7 @@ def evaluate_perplexity(
     if max_eval_chunks is not None:
         total_chunks = min(total_chunks, max_eval_chunks)
 
-    model.to(device)
+    model.to(resolved_device)
     model.eval()
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
@@ -45,7 +47,7 @@ def evaluate_perplexity(
         batch = token_ids[
             :,
             chunk_start * sequence_length : chunk_end * sequence_length,
-        ].to(device)
+        ].to(resolved_device)
         batch = batch.reshape(chunk_end - chunk_start, sequence_length)
         outputs = model(input_ids=batch, use_cache=False)
         logits = torch.nan_to_num(outputs.logits.float(), nan=0.0, posinf=1e4, neginf=-1e4)
