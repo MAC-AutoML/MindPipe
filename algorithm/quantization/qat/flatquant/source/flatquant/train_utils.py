@@ -105,7 +105,7 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
                 break
             try:
                 sample = batch[0]
-                model(sample.to(dev))
+                model(sample.to(dev), use_cache=False)
             except ValueError:
                 pass
     layer_kwargs = dict(cache["layer_kwargs"])

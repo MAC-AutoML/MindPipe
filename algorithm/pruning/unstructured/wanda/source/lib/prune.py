@@ -56,10 +56,15 @@ def _build_layer_forward_kwargs(model, layer, hidden_states, attention_mask, pos
     kwargs = {"attention_mask": attention_mask, "position_ids": position_ids}
     if cache_position is not None:
         kwargs["cache_position"] = cache_position
+    model_type = getattr(model.config, "model_type", None)
+    if model_type == "minicpmv":
+        kwargs.pop("cache_position", None)
+        kwargs["use_cache"] = False
+        return kwargs
     decoder_root = _get_decoder_root(model)
     layer_rotary_embedding = getattr(getattr(layer, "self_attn", None), "rotary_emb", None)
     decoder_rotary_embedding = getattr(decoder_root, "rotary_emb", None)
-    if getattr(model.config, "model_type", None) == "qwen2_5_vl":
+    if model_type == "qwen2_5_vl":
         rotary_embedding = layer_rotary_embedding or decoder_rotary_embedding
     else:
         rotary_embedding = decoder_rotary_embedding or layer_rotary_embedding
@@ -67,7 +72,7 @@ def _build_layer_forward_kwargs(model, layer, hidden_states, attention_mask, pos
     if rotary_embedding is not None and rotary_device is not None and rotary_device != hidden_states.device:
         rotary_embedding = rotary_embedding.to(hidden_states.device)
     rotary_position_ids = position_ids
-    if getattr(model.config, "model_type", None) == "qwen2_5_vl":
+    if model_type == "qwen2_5_vl":
         rotary_position_ids = _build_qwen2_5_vl_position_ids(hidden_states, position_ids, cache_position)
         if position_ids is None or (position_ids.ndim == 3 and position_ids.shape[0] == 3):
             kwargs["position_ids"] = None
@@ -166,7 +171,7 @@ def prepare_calibration_input(model, dataloader, device):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(device))
+            model(batch[0].to(device), use_cache=False)
         except ValueError:
             pass 
     layers[0] = layers[0].module
@@ -375,7 +380,7 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(dev))
+            model(batch[0].to(dev), use_cache=False)
         except ValueError:
             pass
     layers[0] = layers[0].module
@@ -505,7 +510,7 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(dev))
+            model(batch[0].to(dev), use_cache=False)
         except ValueError:
             pass
     layers[0] = layers[0].module

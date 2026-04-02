@@ -129,9 +129,12 @@ def rotate_mlp_output(layer, R1):
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(device=rotation_device, dtype=torch.float64)
     W.weight.data = torch.matmul(R1.T, W_).to(device="cpu", dtype=dtype)
-    apply_exact_had_to_linear(
-        W, had_dim=-1, output=False
-    )  # apply exact (inverse) hadamard on the weights of mlp output
+    try:
+        apply_exact_had_to_linear(
+            W, had_dim=-1, output=False
+        )  # apply exact (inverse) hadamard on the weights of mlp output
+    except (AssertionError, ValueError):
+        pass
     if W.bias is not None:
         b = W.bias.data.to(device=rotation_device, dtype=torch.float64)
         W.bias.data = torch.matmul(R1.T, b).to(device="cpu", dtype=dtype)

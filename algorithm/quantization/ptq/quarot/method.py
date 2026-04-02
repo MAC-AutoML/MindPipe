@@ -24,6 +24,17 @@ from ...base import BaseQuantizationMethod
 class QuaRotMethod(BaseQuantizationMethod):
     name = "quarot"
 
+    @staticmethod
+    def _is_minicpm_like(model) -> bool:
+        return getattr(getattr(model, "config", None), "model_type", None) == "minicpmv"
+
+    @staticmethod
+    def _try_get_hadK(hadamard_utils, size: int):
+        try:
+            return hadamard_utils.get_hadK(size)
+        except (AssertionError, ValueError):
+            return None, None
+
     def load_resources(self, args):
         force_eager = not self._should_use_runtime_path_for_args(args)
         return load_model_and_tokenizer(args.model_path, dtype=args.dtype, force_eager=force_eager)
@@ -91,7 +102,7 @@ class QuaRotMethod(BaseQuantizationMethod):
             raise KeyError(f"Missing {function_name} in {function_object.__module__}.")
         function_object.__globals__[function_name] = getattr(source_module, function_name)
 
-    def _patch_model_utils(self, model_utils):
+    def _patch_model_utils(self, model_utils, model):
         from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
         from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
@@ -101,54 +112,53 @@ class QuaRotMethod(BaseQuantizationMethod):
         def _is_qwen_like(model) -> bool:
             return isinstance(model, qwen_model_types)
 
+        def _is_llama_like(model) -> bool:
+            return _is_qwen_like(model) or self._is_minicpm_like(model) or isinstance(model, model_utils.LLAMA_MODEL)
+
         def model_type_extractor(model):
-            if _is_qwen_like(model):
+            if _is_llama_like(model):
                 return model_utils.LLAMA_MODEL
             if isinstance(model, model_utils.OPT_MODEL):
                 return model_utils.OPT_MODEL
-            if isinstance(model, model_utils.LLAMA_MODEL):
-                return model_utils.LLAMA_MODEL
             raise ValueError(f"Unknown model type {model}")
 
         def get_model_type(model):
-            if _is_qwen_like(model):
+            if _is_llama_like(model):
                 return model_utils.LLAMA_MODEL
             if isinstance(model, model_utils.OPT_MODEL):
                 return model_utils.OPT_MODEL
-            if isinstance(model, model_utils.LLAMA_MODEL):
-                return model_utils.LLAMA_MODEL
             raise ValueError(f"Unknown model type {model}")
 
         def get_rope_function_name(model):
-            if _is_qwen_like(model) or isinstance(model, model_utils.LLAMA_MODEL):
+            if _is_llama_like(model):
                 return "apply_rotary_pos_emb"
             raise NotImplementedError
 
         def get_layers(model):
-            if _is_qwen_like(model):
+            if _is_llama_like(model):
                 backbone = get_text_backbone(model)
                 return backbone.layers
             return model_utils.get_layers.__wrapped__(model)  # type: ignore[attr-defined]
 
         def get_embeddings(model, model_type):
-            if _is_qwen_like(model):
+            if _is_llama_like(model):
                 backbone = get_text_backbone(model)
                 return [backbone.root.embed_tokens]
             return model_utils.get_embeddings.__wrapped__(model, model_type)  # type: ignore[attr-defined]
 
         def get_transformer_layers(model, model_type):
-            if _is_qwen_like(model):
+            if _is_llama_like(model):
                 backbone = get_text_backbone(model)
                 return list(backbone.layers)
             return model_utils.get_transformer_layers.__wrapped__(model, model_type)  # type: ignore[attr-defined]
 
         def get_lm_head(model, model_type):
-            if _is_qwen_like(model):
+            if _is_llama_like(model):
                 return model.lm_head
             return model_utils.get_lm_head.__wrapped__(model, model_type)  # type: ignore[attr-defined]
 
         def get_pre_head_layernorm(model, model_type):
-            if _is_qwen_like(model):
+            if _is_llama_like(model):
                 backbone = get_text_backbone(model)
                 return backbone.root.norm
             return model_utils.get_pre_head_layernorm.__wrapped__(model, model_type)  # type: ignore[attr-defined]
@@ -161,7 +171,12 @@ class QuaRotMethod(BaseQuantizationMethod):
         model_utils.get_transformer_layers = functools.wraps(model_utils.get_transformer_layers)(get_transformer_layers)
         model_utils.get_lm_head = functools.wraps(model_utils.get_lm_head)(get_lm_head)
         model_utils.get_pre_head_layernorm = functools.wraps(model_utils.get_pre_head_layernorm)(get_pre_head_layernorm)
-        return (Qwen2RMSNorm,)
+        extra_norm_types = [Qwen2RMSNorm]
+        try:
+            extra_norm_types.append(get_text_backbone(model).layers[0].input_layernorm.__class__)
+        except Exception:
+            pass
+        return tuple(dict.fromkeys(extra_norm_types))
 
     def _fuse_layer_norms(self, model, model_utils, rotation_utils, extra_norm_types):
         import transformers
@@ -204,11 +219,12 @@ class QuaRotMethod(BaseQuantizationMethod):
         if source_args.rotate:
             for layer_name, qlayer in qlayers.items():
                 if "down_proj" in layer_name:
-                    had_k, k_value = hadamard_utils.get_hadK(model.config.intermediate_size)
-                    qlayer.online_full_had = True
-                    qlayer.had_K = had_k
-                    qlayer.K = k_value
-                    qlayer.fp32_had = source_args.fp32_had
+                    had_k, k_value = self._try_get_hadK(hadamard_utils, model.config.intermediate_size)
+                    if k_value is not None:
+                        qlayer.online_full_had = True
+                        qlayer.had_K = had_k
+                        qlayer.K = k_value
+                        qlayer.fp32_had = source_args.fp32_had
                 if "o_proj" in layer_name:
                     had_k, k_value = hadamard_utils.get_hadK(model.config.num_attention_heads)
                     qlayer.online_partial_had = True
@@ -710,7 +726,7 @@ class QuaRotMethod(BaseQuantizationMethod):
             import utils as ref_utils
 
             ref_utils.DEV = torch.device(args.device)
-            extra_norm_types = self._patch_model_utils(model_utils)
+            extra_norm_types = self._patch_model_utils(model_utils, model)
             self._bind_rotation_device(rotation_utils, args.device)
 
             if source_args.rotate:

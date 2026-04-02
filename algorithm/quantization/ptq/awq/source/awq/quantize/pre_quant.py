@@ -184,11 +184,11 @@ def run_awq(
     model_input_device = get_model_input_device(model)
     try:
         if model.__class__.__name__ == "LlavaLlamaModel":
-            model.llm(samples.to(model_input_device))
+            model.llm(samples.to(model_input_device), use_cache=False)
         elif model.__class__.__name__ == "InternVL3":
-            model.language_model(samples.to(model_input_device))
+            model.language_model(samples.to(model_input_device), use_cache=False)
         else:
-            model(samples.to(model_input_device))
+            model(samples.to(model_input_device), use_cache=False)
     except ValueError:  # work with early exit
         pass
     del samples

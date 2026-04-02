@@ -22,6 +22,13 @@ from ...base import BaseQuantizationMethod
 class SpinQuantMethod(BaseQuantizationMethod):
     name = "spinquant"
 
+    @staticmethod
+    def _try_get_hadK(hadamard_utils, size: int):
+        try:
+            return hadamard_utils.get_hadK(size)
+        except (AssertionError, ValueError):
+            return None, None
+
     def load_resources(self, args):
         return load_model_and_tokenizer(args.model_path, dtype=args.dtype, force_eager=False)
 
@@ -291,11 +298,12 @@ class SpinQuantMethod(BaseQuantizationMethod):
         if source_args.rotate:
             for layer_name, qlayer in qlayers.items():
                 if "down_proj" in layer_name:
-                    had_k, k_value = hadamard_utils.get_hadK(backbone_root.config.intermediate_size)
-                    qlayer.online_full_had = True
-                    qlayer.had_K = had_k
-                    qlayer.K = k_value
-                    qlayer.fp32_had = source_args.fp32_had
+                    had_k, k_value = self._try_get_hadK(hadamard_utils, backbone_root.config.intermediate_size)
+                    if k_value is not None:
+                        qlayer.online_full_had = True
+                        qlayer.had_K = had_k
+                        qlayer.K = k_value
+                        qlayer.fp32_had = source_args.fp32_had
 
         if source_args.a_bits < 16 or source_args.v_bits < 16:
             act_qlayers = quant_utils.find_qlayers(backbone_root, layers=[quant_utils.ActQuantWrapper])
