@@ -38,7 +38,7 @@ LOG_ROOT = STATUS_ROOT / "logs"
 QUANTIZATION_DEFAULTS = {
     "awq": {
         "calibration_dataset": "pileval",
-        "calibration_samples": 8,
+        "calibration_samples": 128,
         "weight_method": "gptq",
         "group_size": 128,
         "weight_group_size": 128,
@@ -53,7 +53,7 @@ QUANTIZATION_DEFAULTS = {
     },
     "gptq": {
         "calibration_dataset": "pileval",
-        "calibration_samples": 4,
+        "calibration_samples": 128,
         "weight_method": "gptq",
         "damp_percent": 0.05,
         "group_size": 128,
@@ -68,7 +68,7 @@ QUANTIZATION_DEFAULTS = {
     },
     "quarot": {
         "calibration_dataset": "pileval",
-        "calibration_samples": 4,
+        "calibration_samples": 128,
         "weight_method": "gptq",
         "rotation_mode": "hadamard",
         "group_size": -1,
@@ -83,7 +83,7 @@ QUANTIZATION_DEFAULTS = {
     },
     "spinquant": {
         "calibration_dataset": "pileval",
-        "calibration_samples": 4,
+        "calibration_samples": 128,
         "weight_method": "gptq",
         "rotation_mode": "hadamard",
         "group_size": 128,
@@ -113,19 +113,19 @@ QUANTIZATION_DEFAULTS = {
 PRUNING_DEFAULTS = {
     "wanda": {
         "calibration_dataset": "c4",
-        "calibration_samples": 4,
+        "calibration_samples": 128,
         "structure_pattern": "unstructured",
     },
     "sparsegpt": {
         "calibration_dataset": "c4",
-        "calibration_samples": 4,
+        "calibration_samples": 128,
         "structure_pattern": "unstructured",
         "block_size": 64,
-        "damp_percent": 0.05,
+        "damp_percent": 0.01,
     },
     "flap": {
         "calibration_dataset": "c4",
-        "calibration_samples": 4,
+        "calibration_samples": 128,
         "structure_pattern": "AL-AM",
         "flap_metrics": "WIFV",
         "flap_remove_heads": 8,
@@ -468,7 +468,7 @@ def _build_workflow_args(results_root: Path, metrics_path: Path, payload: dict[s
         "--pruning_calibration_dataset",
         payload.get("pruning_calibration_dataset", pruning_stage.get("calibration_dataset") if pruning_stage else pruning_defaults.get("calibration_dataset", "c4")),
         "--quantization_calibration_samples",
-        str(payload.get("quantization_calibration_samples", quant_stage.get("calibration_samples") if quant_stage else quant_defaults.get("calibration_samples", 4))),
+        str(payload.get("quantization_calibration_samples", quant_stage.get("calibration_samples") if quant_stage else quant_defaults.get("calibration_samples", 128))),
         "--pruning_calibration_samples",
         str(payload.get("pruning_calibration_samples", pruning_stage.get("calibration_samples") if pruning_stage else pruning_defaults.get("calibration_samples", 128))),
         "--weight_bits",
