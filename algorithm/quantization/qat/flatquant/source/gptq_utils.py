@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import logging
 from algorithm.common.device import empty_cache
-from algorithm.common.device import maybe_offload_hessian_to_cpu
 from algorithm.common.device import synchronize
 
 from flatquant.backbone_utils import get_decoder_layers
@@ -13,10 +12,6 @@ from flatquant.backbone_utils import move_front_modules
 from flatquant.backbone_utils import unwrap_layer_output
 from flatquant.utils import cleanup_memory
 from flatquant.quant_utils import WeightQuantizer
-
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
-CPU_HESSIAN_OFFLOAD_COLUMNS = 16384
 
 
 def find_qlayers(module, layers=[torch.nn.Linear, ], name=''):
@@ -69,7 +64,6 @@ class GPTQ:
 
         H = self.H
         del self.H
-        H = maybe_offload_hessian_to_cpu(H, "FlatQuant GPTQ", CPU_HESSIAN_OFFLOAD_COLUMNS)
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
         if dead.any():

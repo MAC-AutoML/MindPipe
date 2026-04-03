@@ -19,11 +19,8 @@ import torch.nn as nn
 import tqdm
 
 from algorithm.common.device import empty_cache
-from algorithm.common.device import maybe_offload_hessian_to_cpu
 from algorithm.common.device import synchronize
 from utils import quant_utils, utils
-
-CPU_HESSIAN_OFFLOAD_COLUMNS = 16384
 
 
 class GPTQ:
@@ -70,7 +67,6 @@ class GPTQ:
 
         H = self.H
         del self.H
-        H = maybe_offload_hessian_to_cpu(H, "SpinQuant GPTQ", CPU_HESSIAN_OFFLOAD_COLUMNS)
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
         if dead.any():

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from algorithm.common.device import empty_cache
-from algorithm.common.device import enable_device_compat
 from algorithm.common.device import resolve_device_string
 from algorithm.common.io import ensure_dir
 from algorithm.common.io import write_json
@@ -78,7 +77,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
 
     common_args = copy.deepcopy(config.common_args)
     resolved_device = resolve_device_string(common_args.get("device", "auto"))
-    common_args["device"] = enable_device_compat(resolved_device)
+    common_args["device"] = resolved_device
 
     dtype = config.common_args.get("dtype", "auto")
     model, tokenizer_bundle = load_model_and_tokenizer(config.model_path, dtype=dtype)

@@ -15,7 +15,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from fast_hadamard_transform import hadamard_transform
+from algorithm.common.hadamard import hadamard_transform
 from torch.distributed.fsdp import (
     FullStateDictConfig,
 )
@@ -29,9 +29,6 @@ from algorithm.common.device import empty_cache
 from algorithm.common.device import manual_seed_all
 from algorithm.common.device import memory_reserved
 
-# These flags disable using TensorFloat-32 tensor cores (to avoid numerical issues)
-# torch.backends.cuda.matmul.allow_tf32 = False
-# torch.backends.cudnn.allow_tf32 = False
 DEV = default_accelerator_device()
 
 

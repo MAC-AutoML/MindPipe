@@ -8,7 +8,7 @@ import quant_utils
 from algorithm.common.device import empty_cache
 from algorithm.common.device import preferred_rotation_dtype
 from hadamard_utils import random_hadamard_matrix, apply_exact_had_to_linear, is_pow2
-from fast_hadamard_transform import hadamard_transform
+from algorithm.common.hadamard import hadamard_transform
 
 def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]) -> None:
     """
@@ -178,7 +178,7 @@ def rotate_mlp_output(layer, Q, model_type):
     W_ = W.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
     W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
     try:
-        apply_exact_had_to_linear(W, had_dim=-1, output=False) #apply exact (inverse) hadamard on the weights of mlp output
+        apply_exact_had_to_linear(W, had_dim=-1, output=False, device=utils.DEV) #apply exact (inverse) hadamard on the weights of mlp output
     except (AssertionError, ValueError):
         pass
     if W.bias is not None:
@@ -191,7 +191,7 @@ def matmul_hadU_cuda_had(X, hadK, transpose=False):
     It reshapes X and applies Walsh-Hadamard transform to the last dimension. 
     Then, it will multiply the retult by another hadamard matrix.
     '''
-    from fast_hadamard_transform import hadamard_transform
+    from algorithm.common.hadamard import hadamard_transform
     from hadamard_utils import get_had172
     n = X.shape[-1]
     K = hadK.shape[-1]
@@ -205,7 +205,7 @@ def matmul_hadU_cuda_had(X, hadK, transpose=False):
         X.shape) 
 
 def rotate_faster_down_proj(layer, model_type, hardK):
-    from fast_hadamard_transform import hadamard_transform
+    from algorithm.common.hadamard import hadamard_transform
     if model_type == model_utils.LLAMA_MODEL:
         W = layer.mlp.down_proj
     else:
@@ -233,8 +233,8 @@ def rotate_ov_proj(layer, model_type, head_num, head_dim):
     else:
         raise ValueError(f'Unknown model type {model_type}')
     
-    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)
-    apply_exact_had_to_linear(o_proj, had_dim=-1, output=False)
+    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, device=utils.DEV)
+    apply_exact_had_to_linear(o_proj, had_dim=-1, output=False, device=utils.DEV)
 
 
 @torch.inference_mode()

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import torch
 
 from ....common.device import empty_cache
+from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
@@ -22,6 +23,7 @@ from ...base import BaseQuantizationMethod
 
 class SpinQuantMethod(BaseQuantizationMethod):
     name = "spinquant"
+    npu_ready = False  # Hadamard fallback 需在 NPU 上验证
 
     @staticmethod
     def _try_get_hadK(hadamard_utils, size: int):
@@ -376,6 +378,9 @@ class SpinQuantMethod(BaseQuantizationMethod):
             from utils import utils as ref_utils
 
             ref_utils.DEV = torch.device(args.device)
+            if ref_utils.DEV.type == "cuda":
+                torch.backends.cuda.matmul.allow_tf32 = False
+                torch.backends.cudnn.allow_tf32 = False
             self._bind_rotation_device(rotation_utils, args.device)
 
             effective_rotation_checkpoint = source_args.optimized_rotation_path

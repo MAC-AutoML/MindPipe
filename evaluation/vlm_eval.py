@@ -302,8 +302,8 @@ def _build_minicpm_wrapper(
                 model_dtype = next(self.model.parameters()).dtype
             except Exception:
                 model_dtype = torch.bfloat16
-            if model_device.type == "cuda":
-                return torch.autocast(device_type="cuda", dtype=model_dtype)
+            if model_device.type in ("cuda", "npu"):
+                return torch.autocast(device_type=model_device.type, dtype=model_dtype)
             return contextlib.nullcontext()
 
         def _generate_legacy(self, prompt: str, images: list[Image.Image], max_new_tokens: int):

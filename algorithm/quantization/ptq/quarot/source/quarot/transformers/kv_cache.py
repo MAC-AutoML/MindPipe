@@ -4,7 +4,7 @@ import math
 import torch
 from .. import _CUDA
 import functools
-from fast_hadamard_transform import hadamard_transform
+from algorithm.common.hadamard import hadamard_transform
 from quarot.functional.quantization import get_minq_maxq
 
 @torch.jit.script

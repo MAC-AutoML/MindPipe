@@ -1,5 +1,5 @@
 import torch, math
-import fast_hadamard_transform
+from algorithm.common.hadamard import hadamard_transform
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py  
 
 def get_hadK(n, transpose=False):
@@ -132,11 +132,11 @@ def block_diag_hadamard_matrix(size, hadamard_size, device):
 def matmul_hadU_cuda(X, hadK, K):
     n = X.shape[-1]
     if K == 1:
-        return fast_hadamard_transform.hadamard_transform(X.contiguous(), 1.0/torch.tensor(n).sqrt()) 
+        return hadamard_transform(X.contiguous(), 1.0/torch.tensor(n).sqrt())
     # if transpose:
     #     hadK = hadK.T.contiguous()
     input = X.view(-1, K, n // K)
-    input = fast_hadamard_transform.hadamard_transform(input.contiguous(), 1.0/torch.tensor(n).sqrt())
+    input = hadamard_transform(input.contiguous(), 1.0/torch.tensor(n).sqrt())
     input = hadK.to(input.device).to(input.dtype) @ input
     return input.reshape(X.shape)
 
@@ -156,7 +156,7 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False):
     dtype = W_.dtype
     dev = W_.device
     init_shape = W_.shape
-    W_ = W_.float().cuda()
+    W_ = W_.float().to(dev)
     
     if had_dim == -1:
         if output:
@@ -170,13 +170,13 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False):
         if output:
             W_ = W_.t()
             transposed_shape = W_.shape
-            W_ = fast_hadamard_transform.hadamard_transform(
+            W_ = hadamard_transform(
                 W_.reshape(-1, transposed_shape[-1]//had_dim, had_dim), 
                 scale=1/math.sqrt(had_dim)
                 ).reshape(transposed_shape).t()
         else:
             init_shape = W_.shape
-            W_ = fast_hadamard_transform.hadamard_transform(
+            W_ = hadamard_transform(
                 W_.reshape(-1, init_shape[-1]//had_dim, had_dim), 
                 scale=1/math.sqrt(had_dim)
                 ).reshape(init_shape)

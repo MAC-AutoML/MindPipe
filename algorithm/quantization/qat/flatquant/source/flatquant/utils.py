@@ -4,7 +4,6 @@ import torch
 import transformers
 
 import logging
-from algorithm.common.device import default_accelerator_device
 from algorithm.common.device import device_count
 from algorithm.common.device import empty_cache
 from algorithm.common.device import manual_seed_all
@@ -13,10 +12,7 @@ from algorithm.common.device import memory_reserved
 from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
 
-# These flags disable using TensorFloat-32 tensor cores (to avoid numerical issues)
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
-DEV = default_accelerator_device()
+DEV = None
 
 
 def skip(*args, **kwargs):
@@ -71,6 +67,7 @@ def seed_everything(seed=0) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     manual_seed_all(seed, DEV)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
+    if DEV.type == "cuda":
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = True
     transformers.set_seed(seed)

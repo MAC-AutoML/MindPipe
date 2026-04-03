@@ -8,6 +8,8 @@ import torch
 import torch.nn as nn
 import transformers
 
+from algorithm.common.device import empty_cache
+
 from flatquant.backbone_utils import build_batched_layer_kwargs
 from flatquant.backbone_utils import get_decoder_layers
 from flatquant.backbone_utils import move_front_modules
@@ -70,7 +72,8 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
         traincast = nullcontext
     else:
         dtype = next(iter(model.parameters())).dtype
-        traincast = functools.partial(torch.amp.autocast, device_type="cuda", dtype=dtype)
+        _device_type = torch.device(dev).type
+        traincast = functools.partial(torch.amp.autocast, device_type=_device_type, dtype=dtype)
 
     # move embedding layer and first layer to target device
     layers = get_decoder_layers(model)
@@ -116,7 +119,7 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
     layers[0] = layers[0].cpu()
     move_front_modules(model, "cpu")
     # raise ValueError("Only support for llama-2/Llama-3/qwen-2 now")
-    torch.cuda.empty_cache()
+    empty_cache(dev)
 
     # same input of first layer for fp model and quant model
     fp_inps = inps   # take output of fp model as input
@@ -229,10 +232,10 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
             if name in dtype_dict.keys():
                 param.data = param.to(dtype_dict[name])
         del layer
-        torch.cuda.empty_cache()
+        empty_cache(dev)
 
     del inps, fp_inps, fp_outs
     gc.collect()
-    torch.cuda.empty_cache()
+    empty_cache(dev)
     model.config.use_cache = use_cache
     return model

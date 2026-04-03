@@ -116,13 +116,13 @@ def move_embed(model, device):
         raise NotImplementedError(type(model))
 
 
-def get_model_input_device(model):
+def get_model_input_device(model, device=None):
     input_embeddings = None
     if hasattr(model, "get_input_embeddings"):
         input_embeddings = model.get_input_embeddings()
     if input_embeddings is not None and hasattr(input_embeddings, "weight"):
         return input_embeddings.weight.device
-    return resolve_device()
+    return resolve_device(device)
 
 
 @torch.no_grad()
@@ -182,7 +182,7 @@ def run_awq(
 
     # patch layer 0 to catch input and kwargs
     layers[0] = Catcher(layers[0])
-    model_input_device = get_model_input_device(model)
+    model_input_device = get_model_input_device(model, device=runtime_device)
     try:
         if model.__class__.__name__ == "LlavaLlamaModel":
             model.llm(samples.to(model_input_device), use_cache=False)

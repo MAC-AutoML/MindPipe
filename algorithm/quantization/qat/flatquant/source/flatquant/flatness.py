@@ -119,15 +119,15 @@ def get_flatness(args, logger, transform_type=None):
         elif transform_type == "hadamard":
             hidden_dim = x.shape[-1]
             if hadamard_utils.is_pow2(hidden_dim):
-                had = hadamard_utils.get_had_pow2(hidden_dim).cuda()
-                x_had = x.cuda() @ had
-                w_had = w.cuda() @ had
+                had = hadamard_utils.get_had_pow2(hidden_dim).to(x.device)
+                x_had = x @ had
+                w_had = w @ had
             else:
                 had_right, k = hadamard_utils.get_hadK(hidden_dim)
-                had_right = had_right.cuda() / math.sqrt(k)
-                had_left = hadamard_utils.get_had_pow2(hidden_dim // k).cuda()
-                x_had = flat_utils.kronecker_matmul(x.cuda(), had_left, had_right)
-                w_had = flat_utils.kronecker_matmul(w.cuda(), had_left, had_right)
+                had_right = had_right.to(x.device) / math.sqrt(k)
+                had_left = hadamard_utils.get_had_pow2(hidden_dim // k).to(x.device)
+                x_had = flat_utils.kronecker_matmul(x, had_left, had_right)
+                w_had = flat_utils.kronecker_matmul(w, had_left, had_right)
             x_had_flatness = LA.norm(x_had.cpu().numpy(), axis=0)
             w_had_flatness = LA.norm(w_had.cpu().numpy(), axis=0)
             flatness[name] = {

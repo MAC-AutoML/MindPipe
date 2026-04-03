@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..common.device import enable_device_compat
+from ..common.device import resolve_device
 from ..common.device import resolve_device_string
 from ..common.io import ensure_dir
 from ..common.io import model_slug
@@ -33,6 +33,8 @@ class QuantizationRunResult:
 
 class BaseQuantizationMethod(ABC):
     name = "base"
+    npu_ready = True  # Override to False in subclasses that lack NPU support
+    npu_ready: bool = True  # Override to False in subclasses that lack NPU support
 
     def load_resources(self, args):
         return load_model_and_tokenizer(args.model_path, dtype=args.dtype)
@@ -47,7 +49,12 @@ class BaseQuantizationMethod(ABC):
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
 
     def run(self, args) -> QuantizationRunResult:
-        args.device = enable_device_compat(resolve_device_string(args.device))
+        args.device = resolve_device_string(args.device)
+        resolved = resolve_device(args.device)
+        if resolved.type == "npu" and not self.npu_ready:
+            raise RuntimeError(
+                f"Algorithm '{self.name}' is not yet NPU-ready. Please use --device cuda:0 to run."
+            )
         output_dir = self.resolve_output_dir(args)
         LOGGER.info("Loading model from %s", args.model_path)
         model, tokenizer_bundle = self.load_resources(args)

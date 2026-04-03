@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import torch
 
 from ....common.device import empty_cache
+from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
@@ -24,6 +25,7 @@ from ...base import BaseQuantizationMethod
 
 class QuaRotMethod(BaseQuantizationMethod):
     name = "quarot"
+    npu_ready = False  # Hadamard fallback 需在 NPU 上验证
 
     @staticmethod
     def _is_minicpm_like(model) -> bool:
@@ -380,7 +382,7 @@ class QuaRotMethod(BaseQuantizationMethod):
                     q_matrix.T,
                     block.self_attn.o_proj.bias.data.double(),
                 ).to(block.self_attn.o_proj.bias.dtype)
-            quarot_runtime.functional.apply_exact_had_to_linear(block.self_attn.o_proj, had_dim=-1, output=False)
+            quarot_runtime.functional.apply_exact_had_to_linear(block.self_attn.o_proj, had_dim=-1, output=False, device=args.device)
 
             for linear in (block.mlp.gate_proj, block.mlp.up_proj):
                 linear.weight.data = torch.matmul(linear.weight.data.double(), q_matrix).to(linear.weight.dtype)
@@ -394,7 +396,7 @@ class QuaRotMethod(BaseQuantizationMethod):
                     q_matrix.T,
                     block.mlp.down_proj.bias.data.double(),
                 ).to(block.mlp.down_proj.bias.dtype)
-            quarot_runtime.functional.apply_exact_had_to_linear(block.mlp.down_proj, had_dim=-1, output=False)
+            quarot_runtime.functional.apply_exact_had_to_linear(block.mlp.down_proj, had_dim=-1, output=False, device=args.device)
 
             backbone.layers[layer_index] = block.cpu()
             del block
@@ -727,6 +729,9 @@ class QuaRotMethod(BaseQuantizationMethod):
             import utils as ref_utils
 
             ref_utils.DEV = torch.device(args.device)
+            if ref_utils.DEV.type == "cuda":
+                torch.backends.cuda.matmul.allow_tf32 = False
+                torch.backends.cudnn.allow_tf32 = False
             extra_norm_types = self._patch_model_utils(model_utils, model)
             self._bind_rotation_device(rotation_utils, args.device)
 

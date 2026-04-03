@@ -26,9 +26,6 @@ supported_models = [
             ]
 supported_datasets = ['wikitext2', 'ptb', 'c4']
 
-# These flags disable using TensorFloat-32 tensor cores (to avoid numerical issues)
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
 DEV = default_accelerator_device()
 
 def llama_down_proj_groupsize(model, groupsize):

@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = task["parser_builder"]().parse_args(argv[1:])
     setup_logging(args.log_level)
-    set_global_seed(args.seed)
+    set_global_seed(args.seed, device=args.device)
     result = run_workflow(task["config_builder"](args))
     print(json.dumps(_build_result_payload(task_name, args, result), ensure_ascii=False, indent=2))
     return 0

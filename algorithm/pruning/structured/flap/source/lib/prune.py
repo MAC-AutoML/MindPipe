@@ -1,6 +1,5 @@
 import torch 
 import torch.nn as nn 
-from algorithm.common.device import default_accelerator_device
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from .layerwrapper import BiasGPT
@@ -506,7 +505,7 @@ def prune_flap(args, model, tokenizer, device=None):
         tokenizer (Tokenizer): Tokenizer associated with the model.
         device (torch.device, optional): Device to move tensors to. Defaults to CUDA device 0.
     """
-    device = default_accelerator_device() if device is None else resolve_device(device)
+    device = resolve_device(device)
     use_cache = model.config.use_cache 
     model.config.use_cache = False 
     
@@ -666,7 +665,7 @@ def prune_magnitude_sp(args, model, tokenizer, device=None):
         tokenizer (Tokenizer): Tokenizer associated with the model.
         device (torch.device, optional): Device to move tensors to. Defaults to CUDA device 0.
     """
-    device = default_accelerator_device() if device is None else resolve_device(device)
+    device = resolve_device(device)
     layers = get_decoder_layers(model) 
 
     for i in range(len(layers)):

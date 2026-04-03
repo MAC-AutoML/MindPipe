@@ -15,8 +15,8 @@ import torch
 import tqdm
 
 from algorithm.common.device import empty_cache
-from algorithm.common.device import default_accelerator_device
 from algorithm.common.device import preferred_rotation_dtype
+from algorithm.common.device import resolve_device
 from utils import monkeypatch, quant_utils, utils
 from utils.hadamard_utils import (
     apply_exact_had_to_linear,
@@ -75,7 +75,7 @@ def random_orthogonal_matrix(size, device):
 
 
 def get_orthogonal_matrix(size, mode, device=None):
-    device = default_accelerator_device() if device is None else device
+    device = resolve_device(device)
     if mode == "random":
         return random_orthogonal_matrix(size, device)
     elif mode == "hadamard":
@@ -140,7 +140,7 @@ def rotate_mlp_output(layer, R1):
     W.weight.data = torch.matmul(R1.T, W_).to(device="cpu", dtype=dtype)
     try:
         apply_exact_had_to_linear(
-            W, had_dim=-1, output=False
+            W, had_dim=-1, output=False, device=rotation_device
         )  # apply exact (inverse) hadamard on the weights of mlp output
     except (AssertionError, ValueError):
         pass
@@ -163,8 +163,8 @@ def rotate_ov_proj(layer, head_num, head_dim, R2=None):
     v_proj = layer.self_attn.v_proj
     o_proj = layer.self_attn.o_proj
 
-    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, R2=R2)
-    apply_exact_had_to_linear(o_proj, had_dim=head_dim, output=False, R2=R2)
+    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, R2=R2, device=utils.DEV)
+    apply_exact_had_to_linear(o_proj, had_dim=head_dim, output=False, R2=R2, device=utils.DEV)
 
 
 @torch.inference_mode()

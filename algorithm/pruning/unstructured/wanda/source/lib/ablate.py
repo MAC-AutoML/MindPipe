@@ -5,13 +5,9 @@ import torch
 import torch.nn as nn
 import transformers
 from algorithm.common.device import empty_cache
-from algorithm.common.device import maybe_offload_hessian_to_cpu
 from algorithm.common.device import synchronize
 
 from .backend import sparsity_threshold
-
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
 
 class AblateGPT:
 
@@ -91,7 +87,6 @@ class AblateGPT:
 
         H = self.H
         del self.H
-        H = maybe_offload_hessian_to_cpu(H, "Wanda AblateGPT")
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
         if dead.any():

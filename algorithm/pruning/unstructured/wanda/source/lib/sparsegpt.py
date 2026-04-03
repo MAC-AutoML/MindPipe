@@ -6,11 +6,7 @@ import torch.nn as nn
 import transformers
 
 from algorithm.common.device import empty_cache
-from algorithm.common.device import maybe_offload_hessian_to_cpu
 from algorithm.common.device import synchronize
-
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
 
 ## SparseGPT: https://github.com/IST-DASLab/sparsegpt/tree/f5c25005a61f96a0933ca2f95705a963585aafaa
 class SparseGPT:
@@ -55,7 +51,6 @@ class SparseGPT:
 
         H = self.H
         del self.H
-        H = maybe_offload_hessian_to_cpu(H, "Wanda SparseGPT")
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
         if dead.any():

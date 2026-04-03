@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from ....common.device import empty_cache
+from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
@@ -45,6 +46,10 @@ class SparseGPTMethod(BasePruningMethod):
     name = "sparsegpt"
 
     def apply_pruning(self, model, tokenizer_bundle, args) -> dict[str, object]:
+        resolved = resolve_device(args.device)
+        if resolved.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
         source_root = Path(__file__).resolve().parent / "source"
         calibration_batches, _ = get_calibration_and_evaluation_data(
             tokenizer=tokenizer_bundle.tokenizer,

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ....common.device import empty_cache
+from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.io import ensure_dir
 from ....common.io import model_slug
@@ -44,6 +45,7 @@ def _infer_direct_inv_from_checkpoint(checkpoint_root: str | None, checkpoint_na
 
 class FlatQuantMethod(BaseQuantizationMethod):
     name = "flatquant"
+    npu_ready = False  # Hadamard + autocast + .cuda() 改动需在 NPU 上验证
 
     def resolve_output_dir(self, args) -> Path:
         model_name = model_slug(args.model_path)
@@ -168,6 +170,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
             import torch
 
             import gptq_utils
+            import flatquant.utils as ref_utils
             from flatquant.flat_utils import load_flat_matrices
             from flatquant.flat_utils import load_flat_parameters
             from flatquant.flat_utils import reparameterize_model
@@ -177,6 +180,12 @@ class FlatQuantMethod(BaseQuantizationMethod):
             from flatquant.model_tools.minicpm_utils import apply_flatquant_to_minicpm
             from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
             from flatquant.train_utils import cali_flat_quant
+
+            resolved_dev = resolve_device(args.device)
+            ref_utils.DEV = resolved_dev
+            if resolved_dev.type == "cuda":
+                torch.backends.cuda.matmul.allow_tf32 = False
+                torch.backends.cudnn.allow_tf32 = False
 
             model_type = getattr(model.config, "model_type", None)
             rope_scaling = getattr(model.config, "rope_scaling", None) or {}

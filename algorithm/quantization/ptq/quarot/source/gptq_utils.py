@@ -7,12 +7,7 @@ import utils
 import quant_utils
 import logging
 from algorithm.common.device import empty_cache
-from algorithm.common.device import maybe_offload_hessian_to_cpu
 from algorithm.common.device import synchronize
-
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
-CPU_HESSIAN_OFFLOAD_COLUMNS = 16384
 
 
 class GPTQ:
@@ -54,7 +49,6 @@ class GPTQ:
 
         H = self.H
         del self.H
-        H = maybe_offload_hessian_to_cpu(H, "QuaRot GPTQ", CPU_HESSIAN_OFFLOAD_COLUMNS)
         dead = torch.diag(H) == 0
         H[dead, dead] = 1
         if dead.any():

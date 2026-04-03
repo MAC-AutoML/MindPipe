@@ -3,9 +3,9 @@ import math
 
 import torch
 
-from algorithm.common.device import default_accelerator_device
+from algorithm.common.device import resolve_device
 from algorithm.common.device import preferred_rotation_dtype
-import fast_hadamard_transform
+from algorithm.common.hadamard import hadamard_transform as _hadamard_dispatch
 
 
 def get_hadK(n, transpose=False):
@@ -76,7 +76,7 @@ def get_had_pow2(n, norm=True):
 
 
 def _hadamard_transform(x: torch.Tensor, scale: float):
-    return fast_hadamard_transform.hadamard_transform(x.contiguous(), scale=scale)
+    return _hadamard_dispatch(x.contiguous(), scale=scale)
 
 
 def _is_prime(n: int) -> bool:
@@ -192,7 +192,7 @@ def matmul_hadUt_cuda(X, hadK, K):
     return matmul_hadU_cuda(X, hadK, K)
 
 
-def apply_exact_had_to_linear(module, had_dim=-1, output=False):
+def apply_exact_had_to_linear(module, had_dim=-1, output=False, device=None):
     assert isinstance(module, torch.nn.Linear)
     in_features, out_features = module.in_features, module.out_features
 
@@ -202,7 +202,7 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False):
     W_ = module.weight.data
     dtype = W_.dtype
     dev = W_.device
-    transform_device = default_accelerator_device() if dev.type == "cpu" else dev
+    transform_device = resolve_device(device) if dev.type == "cpu" else dev
     W_ = W_.float().to(transform_device)
 
     if had_dim == -1:

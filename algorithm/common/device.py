@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import re
-import warnings
 from typing import Any
 
 import torch
@@ -12,9 +11,6 @@ import torch
 
 _ACCELERATOR_PATTERN = re.compile(r"^(cuda|npu)(?::(\d+))?$", re.IGNORECASE)
 _TORCH_NPU_IMPORT_ATTEMPTED = False
-_NPU_COMPAT_ENABLED = False
-_DEFAULT_ACCELERATOR_DEVICE: torch.device | None = None
-_PENDING_ADAPTATION_NOTICES: set[str] = set()
 
 
 def _ensure_torch_npu_loaded() -> bool:
@@ -199,36 +195,6 @@ def preferred_rotation_dtype(device: str | torch.device | None) -> torch.dtype:
     return torch.float32 if is_npu_device(device) else torch.float64
 
 
-def _warn_pending_cpu_offload(feature: str, source_device: torch.device, operation: str) -> None:
-    notice_key = f"{feature}:{source_device}:{operation}"
-    if notice_key in _PENDING_ADAPTATION_NOTICES:
-        return
-    _PENDING_ADAPTATION_NOTICES.add(notice_key)
-    warnings.warn(
-        f"[pending-adaptation] {feature}: {operation} is explicitly offloaded from {source_device} to CPU; "
-        "native NPU support is still pending.",
-        RuntimeWarning,
-        stacklevel=3,
-    )
-
-
-def maybe_offload_hessian_to_cpu(
-    hessian: torch.Tensor,
-    feature: str,
-    cuda_threshold: int | None = None,
-) -> torch.Tensor:
-    if hessian.device.type == "npu":
-        _warn_pending_cpu_offload(feature, hessian.device, "Hessian Cholesky solve")
-        return hessian.cpu()
-    if (
-        cuda_threshold is not None
-        and hessian.device.type == "cuda"
-        and hessian.shape[-1] >= cuda_threshold
-    ):
-        return hessian.cpu()
-    return hessian
-
-
 def distributed_backend(device: str | torch.device | None = None) -> str:
     device_type = _device_type(device)
     if device_type == "npu":
@@ -236,51 +202,3 @@ def distributed_backend(device: str | torch.device | None = None) -> str:
     if device_type == "cuda":
         return "nccl"
     return "gloo"
-
-
-def enable_device_compat(device: str | torch.device | None) -> str:
-    global _DEFAULT_ACCELERATOR_DEVICE, _NPU_COMPAT_ENABLED
-    resolved_device = resolve_device(device)
-    if resolved_device.type != "npu":
-        return str(resolved_device)
-
-    _require_backend("npu")
-    _DEFAULT_ACCELERATOR_DEVICE = resolved_device
-    if _NPU_COMPAT_ENABLED:
-        return str(resolved_device)
-
-    def tensor_cuda(self, device=None, non_blocking=False, memory_format=torch.preserve_format):
-        target_device = _DEFAULT_ACCELERATOR_DEVICE if device is None else resolve_device(device)
-        return self.to(
-            target_device,
-            non_blocking=non_blocking,
-            memory_format=memory_format,
-        )
-
-    def module_cuda(self, device=None):
-        target_device = _DEFAULT_ACCELERATOR_DEVICE if device is None else resolve_device(device)
-        return self.to(target_device)
-
-    torch.Tensor.cuda = tensor_cuda
-    torch.nn.Module.cuda = module_cuda
-
-    torch.cuda.empty_cache = lambda: empty_cache(_DEFAULT_ACCELERATOR_DEVICE)
-    torch.cuda.synchronize = lambda device=None: synchronize(
-        _DEFAULT_ACCELERATOR_DEVICE if device is None else resolve_device(device)
-    )
-    torch.cuda.current_device = lambda: torch.npu.current_device()
-    torch.cuda.device_count = lambda: torch.npu.device_count()
-    torch.cuda.memory_reserved = lambda device=None: memory_reserved(
-        _DEFAULT_ACCELERATOR_DEVICE if device is None else resolve_device(device)
-    )
-    torch.cuda.memory_allocated = lambda device=None: int(
-        torch.npu.memory_allocated(_DEFAULT_ACCELERATOR_DEVICE if device is None else resolve_device(device))
-    )
-    torch.cuda.set_device = lambda device=None: torch.npu.set_device(
-        _DEFAULT_ACCELERATOR_DEVICE if device is None else resolve_device(device)
-    )
-    torch.cuda.manual_seed = lambda seed: manual_seed_all(seed, _DEFAULT_ACCELERATOR_DEVICE)
-    torch.cuda.manual_seed_all = lambda seed: manual_seed_all(seed, _DEFAULT_ACCELERATOR_DEVICE)
-
-    _NPU_COMPAT_ENABLED = True
-    return str(resolved_device)

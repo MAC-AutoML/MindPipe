@@ -3,7 +3,7 @@ import transformers
 import torch
 import utils
 import hadamard_utils
-import fast_hadamard_transform
+from algorithm.common.hadamard import hadamard_transform
 
 def get_minq_maxq(bits, sym):
     if sym:
@@ -232,7 +232,7 @@ class ActQuantWrapper(torch.nn.Module):
                 
             init_shape = x.shape
             if self.K == 1:
-                x = fast_hadamard_transform.hadamard_transform(x.reshape(-1, init_shape[-1]//self.had_dim, self.had_dim).transpose(1, 2),
+                x = hadamard_transform(x.reshape(-1, init_shape[-1]//self.had_dim, self.had_dim).transpose(1, 2),
                                                                scale=1/math.sqrt(init_shape[-1]//self.had_dim)).transpose(1, 2)
             else:
                 x = (self.had_K.to(x.dtype) @ x.reshape(-1, init_shape[-1]//self.had_dim, self.had_dim)) / math.sqrt(init_shape[-1]//self.had_dim)

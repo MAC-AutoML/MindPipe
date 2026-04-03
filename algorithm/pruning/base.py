@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..common.device import enable_device_compat
+from ..common.device import resolve_device
 from ..common.device import resolve_device_string
 from ..common.io import ensure_dir
 from ..common.io import model_slug
@@ -29,6 +29,7 @@ class PruningRunResult:
 
 class BasePruningMethod(ABC):
     name = "base"
+    npu_ready = True  # Override to False in subclasses that lack NPU support
 
     def load_resources(self, args):
         return load_model_and_tokenizer(args.model_path, dtype=args.dtype)
@@ -43,7 +44,12 @@ class BasePruningMethod(ABC):
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
 
     def run(self, args) -> PruningRunResult:
-        args.device = enable_device_compat(resolve_device_string(args.device))
+        args.device = resolve_device_string(args.device)
+        resolved = resolve_device(args.device)
+        if resolved.type == "npu" and not self.npu_ready:
+            raise RuntimeError(
+                f"算法 '{self.name}' 尚未完成 NPU 适配，请使用 --device cuda:0 运行。"
+            )
         output_dir = self.resolve_output_dir(args)
         model, tokenizer_bundle = self.load_resources(args)
         model.seqlen = args.sequence_length

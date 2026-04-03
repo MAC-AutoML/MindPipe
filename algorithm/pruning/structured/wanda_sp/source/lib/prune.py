@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-from algorithm.common.device import default_accelerator_device
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from .data import get_loaders
@@ -259,7 +258,7 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
 
 
 def prune_wanda_sp(args, model, tokenizer, device=None):
-    device = default_accelerator_device() if device is None else resolve_device(device)
+    device = resolve_device(device)
     use_cache = model.config.use_cache
     model.config.use_cache = False
 

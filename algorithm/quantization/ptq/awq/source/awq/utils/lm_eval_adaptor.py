@@ -64,7 +64,7 @@ class LMEvalAdaptor(BaseLM):
 
     @property
     def device(self):
-        return "cuda"
+        return self.model.device
 
     def tok_encode(self, string: str):
         return self.tokenizer.encode(string, add_special_tokens=False)

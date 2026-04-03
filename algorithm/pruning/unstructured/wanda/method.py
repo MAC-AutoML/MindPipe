@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import torch
+
 from pathlib import Path
 
 from ...base import BasePruningMethod
+from ....common.device import resolve_device
 from ....common.runtime import prepend_python_path
 
 
@@ -12,6 +15,10 @@ class WandaMethod(BasePruningMethod):
     name = "wanda"
 
     def apply_pruning(self, model, tokenizer_bundle, args) -> dict[str, object]:
+        resolved = resolve_device(args.device)
+        if resolved.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
         source_root = Path(__file__).resolve().parent / "source"
         with prepend_python_path(source_root):
             from lib.prune import check_sparsity

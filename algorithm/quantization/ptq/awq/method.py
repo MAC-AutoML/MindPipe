@@ -25,6 +25,9 @@ class AWQMethod(BaseQuantizationMethod):
             "q_group_size": args.weight_group_size,
         }
         runtime_device = resolve_device(args.device)
+        if runtime_device.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
         runtime_backend = backend_module(runtime_device)
         if runtime_backend is not None and hasattr(runtime_backend, "set_device"):
             runtime_backend.set_device(runtime_device)
