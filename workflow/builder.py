@@ -137,6 +137,7 @@ def build_pruning_parser() -> argparse.ArgumentParser:
     parser.add_argument("--flap_remove_heads", type=int, default=8)
     parser.add_argument("--pseudo_pruning", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_pruned_model", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--data_path", default=str(Path("/mnt/42_store/lcw/data2/Huawei/datasets")))
     return parser
 
 

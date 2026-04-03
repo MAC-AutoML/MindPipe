@@ -48,7 +48,10 @@ class FLAPMethod(BasePruningMethod):
         model.eval()
 
         with prepend_python_path(source_root):
+            from lib import data as _flap_data
             from lib.prune import prune_flap
+
+            _flap_data.DATA_ROOT = Path(args.data_path)
 
             prune_flap(source_args, model, tokenizer_bundle.tokenizer, args.device)
             observed_sparsity = _check_sparsity(model)
