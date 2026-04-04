@@ -9,13 +9,6 @@ import numpy as np
 import torch
 from datasets import load_dataset
 
-
-DATA_ROOT = Path("/mnt/42_store/lcw/data2/Huawei/datasets")
-WIKITEXT2_DIR = DATA_ROOT / "wikitext2"
-C4_DIR = DATA_ROOT / "c4"
-PILEVAL_DIR = DATA_ROOT / "pileval"
-
-
 class EncodedText:
     def __init__(self, input_ids: torch.Tensor):
         self.input_ids = input_ids
@@ -27,11 +20,12 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def _load_local_wikitext(split_name: str):
+def _load_local_wikitext(split_name: str, data_path: Path):
+    wikitext2_dir = data_path / "wikitext2"
     split_to_file = {
-        "train": WIKITEXT2_DIR / "wiki.train.raw",
-        "test": WIKITEXT2_DIR / "wiki.test.raw",
-        "validation": WIKITEXT2_DIR / "wiki.valid.raw",
+        "train": wikitext2_dir / "wiki.train.raw",
+        "test": wikitext2_dir / "wiki.test.raw",
+        "validation": wikitext2_dir / "wiki.valid.raw",
     }
     file_path = split_to_file[split_name]
     if not file_path.exists():
@@ -39,15 +33,16 @@ def _load_local_wikitext(split_name: str):
     return load_dataset("text", data_files=str(file_path), split="train")
 
 
-def _load_local_c4(split_name: str):
+def _load_local_c4(split_name: str, data_path: Path):
+    c4_dir = data_path / "c4"
     split_to_candidates = {
         "train": [
-            C4_DIR / "c4-train.00000-of-01024.json.gz",
-            C4_DIR / "en" / "c4-train.00000-of-01024.json.gz",
+            c4_dir / "c4-train.00000-of-01024.json.gz",
+            c4_dir / "en" / "c4-train.00000-of-01024.json.gz",
         ],
         "validation": [
-            C4_DIR / "c4-validation.00000-of-00008.json.gz",
-            C4_DIR / "en" / "c4-validation.00000-of-00008.json.gz",
+            c4_dir / "c4-validation.00000-of-00008.json.gz",
+            c4_dir / "en" / "c4-validation.00000-of-00008.json.gz",
         ],
     }
     for candidate in split_to_candidates[split_name]:
@@ -56,8 +51,8 @@ def _load_local_c4(split_name: str):
     return None
 
 
-def _load_local_pileval():
-    file_path = PILEVAL_DIR / "val.jsonl"
+def _load_local_pileval(data_path: Path):
+    file_path = data_path / "pileval" / "val.jsonl"
     if not file_path.exists():
         return None
     return load_dataset("json", data_files={"train": str(file_path)}, split="train")
@@ -77,9 +72,9 @@ def _sample_train_chunks(encoded, sample_count: int, seed: int, sequence_length:
     return calibration_batches
 
 
-def _load_wikitext2(tokenizer, sequence_length: int, sample_count: int, seed: int):
-    train_split = _load_local_wikitext("train")
-    test_split = _load_local_wikitext("test")
+def _load_wikitext2(tokenizer, sequence_length: int, sample_count: int, seed: int, data_path: Path):
+    train_split = _load_local_wikitext("train", data_path)
+    test_split = _load_local_wikitext("test", data_path)
     if train_split is None or test_split is None:
         train_split = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
         test_split = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
@@ -88,9 +83,9 @@ def _load_wikitext2(tokenizer, sequence_length: int, sample_count: int, seed: in
     return _sample_train_chunks(train_encoded, sample_count, seed, sequence_length), EncodedText(test_encoded.input_ids)
 
 
-def _load_c4(tokenizer, sequence_length: int, sample_count: int, seed: int):
-    train_split = _load_local_c4("train")
-    validation_split = _load_local_c4("validation")
+def _load_c4(tokenizer, sequence_length: int, sample_count: int, seed: int, data_path: Path):
+    train_split = _load_local_c4("train", data_path)
+    validation_split = _load_local_c4("validation", data_path)
     if train_split is None:
         train_split = load_dataset(
             "allenai/c4",
@@ -132,10 +127,10 @@ def _load_c4(tokenizer, sequence_length: int, sample_count: int, seed: int):
     return calibration_batches, EncodedText(torch.hstack(evaluation_slices))
 
 
-def _load_pileval(tokenizer, sequence_length: int, sample_count: int, seed: int):
-    pileval = _load_local_pileval()
+def _load_pileval(tokenizer, sequence_length: int, sample_count: int, seed: int, data_path: Path):
+    pileval = _load_local_pileval(data_path)
     if pileval is None:
-        raise FileNotFoundError(f"Pileval dataset not found under {PILEVAL_DIR}")
+        raise FileNotFoundError(f"Pileval dataset not found under {data_path / 'pileval'}")
 
     random.seed(seed)
     calibration_batches = []
@@ -160,24 +155,33 @@ def get_calibration_and_evaluation_data(
     sequence_length: int,
     sample_count: int,
     seed: int,
+    data_path: str | Path,
 ):
+    data_path = Path(data_path)
     normalized_name = dataset_name.lower()
     if normalized_name == "wikitext2":
-        return _load_wikitext2(tokenizer, sequence_length, sample_count, seed)
+        return _load_wikitext2(tokenizer, sequence_length, sample_count, seed, data_path)
     if normalized_name == "c4":
-        return _load_c4(tokenizer, sequence_length, sample_count, seed)
+        return _load_c4(tokenizer, sequence_length, sample_count, seed, data_path)
     if normalized_name == "pileval":
-        return _load_pileval(tokenizer, sequence_length, sample_count, seed)
+        return _load_pileval(tokenizer, sequence_length, sample_count, seed, data_path)
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 
-def get_evaluation_tokens(tokenizer, dataset_name: str, sequence_length: int, seed: int):
+def get_evaluation_tokens(
+    tokenizer,
+    dataset_name: str,
+    sequence_length: int,
+    seed: int,
+    data_path: str | Path,
+):
     _, evaluation_tokens = get_calibration_and_evaluation_data(
         tokenizer=tokenizer,
         dataset_name=dataset_name,
         sequence_length=sequence_length,
         sample_count=1,
         seed=seed,
+        data_path=data_path,
     )
     if evaluation_tokens is None:
         raise ValueError(f"Dataset {dataset_name} does not provide evaluation tokens")

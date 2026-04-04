@@ -46,6 +46,7 @@ class WandaSPMethod(BasePruningMethod):
             unstr=args.pseudo_pruning,
             eval=False,
             save_model=None,
+            data_path=args.data_path,
         )
 
         model.seqlen = args.sequence_length
@@ -53,10 +54,7 @@ class WandaSPMethod(BasePruningMethod):
         model.eval()
 
         with prepend_python_path(source_root):
-            from lib import data as _wanda_sp_data
             from lib.prune import prune_wanda_sp
-
-            _wanda_sp_data.DATA_ROOT = Path(args.data_path)
 
             prune_wanda_sp(source_args, model, tokenizer_bundle.tokenizer, args.device)
             observed_sparsity = _check_sparsity(model)

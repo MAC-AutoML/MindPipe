@@ -6,24 +6,21 @@ import random
 from datasets import load_dataset
 
 
-DATA_ROOT = Path("/mnt/42_store/lcw/data2/Huawei/datasets")
-C4_DIR = DATA_ROOT / "c4"
-
-
 class TokenizerWrapper:
     def __init__(self, input_ids):
         self.input_ids = input_ids
 
 
-def _load_local_c4(split_name):
+def _load_local_c4(split_name, data_path):
+    c4_dir = Path(data_path) / "c4"
     split_to_candidates = {
         "train": [
-            C4_DIR / "c4-train.00000-of-01024.json.gz",
-            C4_DIR / "en" / "c4-train.00000-of-01024.json.gz",
+            c4_dir / "c4-train.00000-of-01024.json.gz",
+            c4_dir / "en" / "c4-train.00000-of-01024.json.gz",
         ],
         "validation": [
-            C4_DIR / "c4-validation.00000-of-00008.json.gz",
-            C4_DIR / "en" / "c4-validation.00000-of-00008.json.gz",
+            c4_dir / "c4-validation.00000-of-00008.json.gz",
+            c4_dir / "en" / "c4-validation.00000-of-00008.json.gz",
         ],
     }
     for candidate in split_to_candidates[split_name]:
@@ -32,9 +29,9 @@ def _load_local_c4(split_name):
     return None
 
 
-def get_c4(nsamples, seed, seqlen, tokenizer):
-    traindata = _load_local_c4("train")
-    valdata = _load_local_c4("validation")
+def get_c4(nsamples, seed, seqlen, tokenizer, data_path):
+    traindata = _load_local_c4("train", data_path)
+    valdata = _load_local_c4("validation", data_path)
     local_train_available = traindata is not None
     if traindata is None:
         traindata = load_dataset(
@@ -74,7 +71,7 @@ def get_c4(nsamples, seed, seqlen, tokenizer):
     return trainloader, TokenizerWrapper(valenc)
 
 
-def get_loaders(name="c4", nsamples=128, seed=0, seqlen=2048, tokenizer=None):
+def get_loaders(name="c4", nsamples=128, seed=0, seqlen=2048, tokenizer=None, data_path=None):
     if "c4" not in name:
         raise ValueError(f"Structured Wanda only supports c4 calibration, got: {name}")
-    return get_c4(nsamples, seed, seqlen, tokenizer)
+    return get_c4(nsamples, seed, seqlen, tokenizer, data_path)

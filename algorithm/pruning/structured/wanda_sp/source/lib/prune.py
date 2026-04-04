@@ -263,7 +263,7 @@ def prune_wanda_sp(args, model, tokenizer, device=None):
     model.config.use_cache = False
 
     print("loading calibdation data")
-    dataloader, _ = get_loaders("c4", nsamples=args.nsamples, seed=args.seed, seqlen=model.seqlen, tokenizer=tokenizer)
+    dataloader, _ = get_loaders("c4", nsamples=args.nsamples, seed=args.seed, seqlen=model.seqlen, tokenizer=tokenizer, data_path=getattr(args, 'data_path', None))
     print("dataset loading complete")
 
     with torch.no_grad():

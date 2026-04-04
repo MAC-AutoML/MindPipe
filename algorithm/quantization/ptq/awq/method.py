@@ -47,6 +47,7 @@ class AWQMethod(BaseQuantizationMethod):
                     seqlen=args.sequence_length,
                     calib_data=args.calibration_dataset,
                     device=args.device,
+                    data_path=args.data_path,
                 )
                 torch.save(awq_state, awq_state_path)
 

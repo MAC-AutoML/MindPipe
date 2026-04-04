@@ -164,6 +164,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
             sequence_length=args.sequence_length,
             sample_count=args.calibration_samples,
             seed=args.seed,
+            data_path=args.data_path,
         )
 
         with prepend_python_path(source_root):

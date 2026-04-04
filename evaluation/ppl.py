@@ -20,6 +20,7 @@ def evaluate_perplexity(
     batch_size: int,
     max_eval_chunks: int | None,
     device: str,
+    data_path: str = None,
 ):
     resolved_device = resolve_device(device)
     evaluation_tokens = get_evaluation_tokens(
@@ -27,6 +28,7 @@ def evaluate_perplexity(
         dataset_name=dataset_name,
         sequence_length=sequence_length,
         seed=0,
+        data_path=data_path,
     )
     token_ids = evaluation_tokens.input_ids
     total_chunks = token_ids.numel() // sequence_length

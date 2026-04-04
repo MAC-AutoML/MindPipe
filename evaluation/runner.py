@@ -22,6 +22,7 @@ def run_evaluations(model, tokenizer=None, tokenizer_bundle=None, common_args: d
             batch_size=int(common_args["batch_size"]),
             max_eval_chunks=common_args["max_eval_chunks"],
             device=common_args["device"],
+            data_path=common_args.get("data_path"),
         )
     if common_args.get("eval_zero_shot", False):
         metrics["zero_shot"] = evaluate_zero_shot(

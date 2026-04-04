@@ -7,8 +7,6 @@ import torch
 from datasets import load_dataset
 
 
-DATA_ROOT = Path("/mnt/42_store/lcw/data2/Huawei/datasets")
-
 # Set seed for reproducibility
 def set_seed(seed):
     np.random.seed(seed)
@@ -20,10 +18,11 @@ class TokenizerWrapper:
         self.input_ids = input_ids
 
 # Load and process wikitext2 dataset
-def get_wikitext2(nsamples, seed, seqlen, tokenizer):
+def get_wikitext2(nsamples, seed, seqlen, tokenizer, data_path):
+    data_path = Path(data_path)
     # Load train and test datasets
-    train_path = DATA_ROOT / "wikitext2" / "wiki.train.raw"
-    test_path = DATA_ROOT / "wikitext2" / "wiki.test.raw"
+    train_path = data_path / "wikitext2" / "wiki.train.raw"
+    test_path = data_path / "wikitext2" / "wiki.test.raw"
     if train_path.exists() and test_path.exists():
         traindata = load_dataset("text", data_files={"train": str(train_path)}, split="train")
         testdata = load_dataset("text", data_files={"test": str(test_path)}, split="test")
@@ -48,10 +47,11 @@ def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     return trainloader, testenc
 
 # Load and process c4 dataset
-def get_c4(nsamples, seed, seqlen, tokenizer):
+def get_c4(nsamples, seed, seqlen, tokenizer, data_path):
+    data_path = Path(data_path)
     # Load train and validation datasets
-    train_path = DATA_ROOT / "c4" / "c4-train.00000-of-01024.json.gz"
-    val_path = DATA_ROOT / "c4" / "c4-validation.00000-of-00008.json.gz"
+    train_path = data_path / "c4" / "c4-train.00000-of-01024.json.gz"
+    val_path = data_path / "c4" / "c4-validation.00000-of-00008.json.gz"
     if train_path.exists():
         traindata = load_dataset("json", data_files={"train": str(train_path)}, split="train")
     else:
@@ -84,8 +84,8 @@ def get_c4(nsamples, seed, seqlen, tokenizer):
     return trainloader, valenc
 
 # Function to select the appropriate loader based on dataset name
-def get_loaders(name, nsamples=128, seed=0, seqlen=2048, tokenizer=None):
+def get_loaders(name, nsamples=128, seed=0, seqlen=2048, tokenizer=None, data_path=None):
     if 'wikitext2' in name:
-        return get_wikitext2(nsamples, seed, seqlen, tokenizer)
+        return get_wikitext2(nsamples, seed, seqlen, tokenizer, data_path)
     if "c4" in name:
-        return get_c4(nsamples, seed, seqlen, tokenizer)
+        return get_c4(nsamples, seed, seqlen, tokenizer, data_path)

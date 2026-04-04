@@ -6,7 +6,6 @@ from pathlib import Path
 
 import torch
 
-from ....common import datasets as _common_datasets
 from ....common.device import empty_cache
 from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
@@ -47,7 +46,6 @@ class SparseGPTMethod(BasePruningMethod):
     name = "sparsegpt"
 
     def apply_pruning(self, model, tokenizer_bundle, args) -> dict[str, object]:
-        _common_datasets.DATA_ROOT = Path(args.data_path)
         resolved = resolve_device(args.device)
         if resolved.type == "cuda":
             torch.backends.cuda.matmul.allow_tf32 = False
@@ -59,6 +57,7 @@ class SparseGPTMethod(BasePruningMethod):
             sequence_length=args.sequence_length,
             sample_count=args.calibration_samples,
             seed=args.seed,
+            data_path=args.data_path,
         )
         backbone = get_text_backbone(model)
         input_states, layer_kwargs = capture_first_block_inputs(

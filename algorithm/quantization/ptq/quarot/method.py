@@ -672,6 +672,7 @@ class QuaRotMethod(BaseQuantizationMethod):
             sequence_length=args.sequence_length,
             sample_count=args.calibration_samples,
             seed=args.seed,
+            data_path=args.data_path,
         )
         backbone = get_text_backbone(model)
 

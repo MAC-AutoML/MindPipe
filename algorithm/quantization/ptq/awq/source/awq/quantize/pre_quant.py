@@ -138,6 +138,7 @@ def run_awq(
     # some configs for ablation study
     calib_data="pileval",
     device=None,
+    data_path=None,
 ):
     from ..utils.calib_data import get_calib_dataset
     from ..utils.module import append_str_prefix, get_op_name
@@ -151,7 +152,8 @@ def run_awq(
     layers = get_blocks(model)
 
     samples = get_calib_dataset(
-        data=calib_data, tokenizer=enc, n_samples=n_samples, block_size=seqlen
+        data=calib_data, tokenizer=enc, n_samples=n_samples, block_size=seqlen,
+        data_path=data_path,
     )
     samples = torch.cat(samples, dim=0)
 

@@ -21,11 +21,8 @@ class WandaMethod(BasePruningMethod):
             torch.backends.cudnn.allow_tf32 = False
         source_root = Path(__file__).resolve().parent / "source"
         with prepend_python_path(source_root):
-            from lib import data as _wanda_data
             from lib.prune import check_sparsity
             from lib.prune import prune_wanda
-
-            _wanda_data.DATA_ROOT = Path(args.data_path)
 
             prune_n = 0
             prune_m = 0

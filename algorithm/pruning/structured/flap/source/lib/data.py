@@ -7,16 +7,12 @@ import torch
 from datasets import load_dataset
 
 
-DATA_ROOT = Path("/mnt/42_store/lcw/data2/Huawei/datasets")
-WIKITEXT2_DIR = DATA_ROOT / "wikitext2"
-C4_DIR = DATA_ROOT / "c4"
-
-
-def _load_local_wikitext(split_name):
+def _load_local_wikitext(split_name, data_path):
+    wikitext2_dir = Path(data_path) / "wikitext2"
     split_to_file = {
-        "train": WIKITEXT2_DIR / "wiki.train.raw",
-        "test": WIKITEXT2_DIR / "wiki.test.raw",
-        "validation": WIKITEXT2_DIR / "wiki.valid.raw",
+        "train": wikitext2_dir / "wiki.train.raw",
+        "test": wikitext2_dir / "wiki.test.raw",
+        "validation": wikitext2_dir / "wiki.valid.raw",
     }
     file_path = split_to_file[split_name]
     if not file_path.exists():
@@ -24,15 +20,16 @@ def _load_local_wikitext(split_name):
     return load_dataset("text", data_files=str(file_path), split="train")
 
 
-def _load_local_c4(split_name):
+def _load_local_c4(split_name, data_path):
+    c4_dir = Path(data_path) / "c4"
     split_to_candidates = {
         "train": [
-            C4_DIR / "c4-train.00000-of-01024.json.gz",
-            C4_DIR / "en" / "c4-train.00000-of-01024.json.gz",
+            c4_dir / "c4-train.00000-of-01024.json.gz",
+            c4_dir / "en" / "c4-train.00000-of-01024.json.gz",
         ],
         "validation": [
-            C4_DIR / "c4-validation.00000-of-00008.json.gz",
-            C4_DIR / "en" / "c4-validation.00000-of-00008.json.gz",
+            c4_dir / "c4-validation.00000-of-00008.json.gz",
+            c4_dir / "en" / "c4-validation.00000-of-00008.json.gz",
         ],
     }
     for candidate in split_to_candidates[split_name]:
@@ -42,49 +39,22 @@ def _load_local_c4(split_name):
 
 # Set random seed for reproducibility
 def set_seed(seed):
-    """
-    Set the random seed for NumPy and PyTorch for reproducibility.
-    
-    Args:
-        seed (int): The random seed.
-    """
     np.random.seed(seed)
     torch.random.manual_seed(seed)
 
 # Wrapper class for tokenized input IDs
 class TokenizerWrapper:
-    """
-    Wrapper class for tokenized input IDs.
-
-    Args:
-        input_ids (tensor): The tokenized input IDs from the tokenizer.
-    """
     def __init__(self, input_ids):
         self.input_ids = input_ids
 
 # Load and process PTB (Penn Treebank) dataset
-def get_ptb(nsamples, seed, seqlen, tokenizer):
-    """
-    Load and process PTB (Penn Treebank) dataset.
-    
-    Args:
-        nsamples (int): Number of samples to extract.
-        seed (int): Random seed for reproducibility.
-        seqlen (int): Sequence length for each sample.
-        tokenizer (Tokenizer): Tokenizer to use for text encoding.
-
-    Returns:
-        tuple: A tuple containing trainloader (list of input and target pairs) and encoded test set.
-    """
-    # Load train and test datasets
+def get_ptb(nsamples, seed, seqlen, tokenizer, data_path=None):
     traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train')
     testdata = load_dataset('ptb_text_only', 'penn_treebank', split='validation')
-    
-    # Encode datasets
+
     trainenc = tokenizer(" ".join(traindata['text']), return_tensors='pt')
     testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
 
-    # Generate samples from training set using random seed and specified sequence length
     random.seed(seed)
     trainloader = []
     for _ in range(nsamples):
@@ -97,31 +67,16 @@ def get_ptb(nsamples, seed, seqlen, tokenizer):
     return trainloader, testenc
 
 # Load and process wikitext2 dataset
-def get_wikitext2(nsamples, seed, seqlen, tokenizer):
-    """
-    Load and process the Wikitext-2 dataset.
-
-    Args:
-        nsamples (int): Number of samples to generate from the training set.
-        seed (int): Random seed for reproducibility.
-        seqlen (int): Sequence length for generated samples.
-        tokenizer (Tokenizer): Tokenizer instance for encoding texts.
-
-    Returns:
-        tuple: A tuple containing trainloader (list of input and target pairs) and encoded test dataset.
-    """
-    # Load train and test datasets
-    traindata = _load_local_wikitext("train")
-    testdata = _load_local_wikitext("test")
+def get_wikitext2(nsamples, seed, seqlen, tokenizer, data_path):
+    traindata = _load_local_wikitext("train", data_path)
+    testdata = _load_local_wikitext("test", data_path)
     if traindata is None or testdata is None:
         traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
         testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
-    
-    # Encode datasets
+
     trainenc = tokenizer(" ".join(traindata['text']), return_tensors='pt')
     testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
 
-    # Generate samples from training set using random seed and specified sequence length
     random.seed(seed)
     trainloader = []
     for _ in range(nsamples):
@@ -134,28 +89,14 @@ def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     return trainloader, testenc
 
 # Load and process C4 (Common Crawl) dataset
-def get_c4(nsamples, seed, seqlen, tokenizer):
-    """
-    Load and process the C4 (Common Crawl) dataset.
-
-    Args:
-        nsamples (int): Number of samples to generate from the training set.
-        seed (int): Random seed for reproducibility.
-        seqlen (int): Sequence length for generated samples.
-        tokenizer (Tokenizer): Tokenizer instance for encoding texts.
-
-    Returns:
-        tuple: A tuple containing trainloader (list of input and target pairs) and encoded validation dataset.
-    """
-    # Load train and validation datasets
-    traindata = _load_local_c4("train")
-    valdata = _load_local_c4("validation")
+def get_c4(nsamples, seed, seqlen, tokenizer, data_path):
+    traindata = _load_local_c4("train", data_path)
+    valdata = _load_local_c4("validation", data_path)
     if traindata is None:
         traindata = load_dataset('allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train')
     if valdata is None:
         valdata = load_dataset('allenai/c4', 'allenai--c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation')
-    
-    # Generate samples from training set using random seed and specified sequence length
+
     random.seed(seed)
     trainloader = []
     for _ in range(nsamples):
@@ -171,39 +112,16 @@ def get_c4(nsamples, seed, seqlen, tokenizer):
         tar[:, :-1] = -100
         trainloader.append((inp, tar))
 
-    # Prepare validation dataset
     valenc = tokenizer(' '.join(valdata[:1100]['text']), return_tensors='pt')
     valenc = valenc.input_ids[:, :(256 * seqlen)]
     valenc = TokenizerWrapper(valenc)
     return trainloader, valenc
 
 # Function to select the appropriate loader based on dataset name
-def get_loaders(name='wikitext2', nsamples=128, seed=0, seqlen=2048, tokenizer=None):
-    """
-    Select the appropriate loader based on dataset name.
-
-    Args:
-        name (str): The name of the dataset ('wikitext2', 'c4', or 'ptb').
-        nsamples (int): Number of samples to generate from the training set.
-        seed (int): Random seed for reproducibility.
-        seqlen (int): Sequence length for generated samples.
-        tokenizer (Tokenizer): Tokenizer instance for encoding texts.
-
-    Returns:
-        tuple: A tuple containing trainloader (list of input and target pairs) and encoded validation/test set.
-    """
-    # Determine which dataset to use based on 'name' parameter and return corresponding loader
+def get_loaders(name='wikitext2', nsamples=128, seed=0, seqlen=2048, tokenizer=None, data_path=None):
     if 'wikitext2' in name:
-        return get_wikitext2(nsamples, seed, seqlen, tokenizer)
+        return get_wikitext2(nsamples, seed, seqlen, tokenizer, data_path)
     elif "c4" in name:
-        return get_c4(nsamples, seed, seqlen, tokenizer)
+        return get_c4(nsamples, seed, seqlen, tokenizer, data_path)
     elif "ptb" in name:
-        return get_ptb(nsamples, seed, seqlen, tokenizer)
-    
-if __name__ == "__main__": 
-    get_loaders('wikitext2', seed=0, seqlen=2048, tokenizer=None)
-
-# Note:
-# This script is designed to load and process various text datasets for training language models.
-# It includes functions to load PTB (Penn Treebank), Wikitext-2, and C4 (Common Crawl) datasets.
-# Each loading function returns a trainloader (list of input and target pairs) and encoded validation/test set.
+        return get_ptb(nsamples, seed, seqlen, tokenizer, data_path)

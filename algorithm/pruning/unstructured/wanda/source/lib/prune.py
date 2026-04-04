@@ -238,7 +238,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
     model.config.use_cache = False 
 
     print("loading calibdation data")
-    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer)
+    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
     print("dataset loading complete")
     with torch.no_grad():
         inps, outs, attention_mask, position_ids, cache_position = prepare_calibration_input(model, dataloader, device)
@@ -353,7 +353,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
 def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     ## SparseGPT code available at: https://github.com/IST-DASLab/sparsegpt/tree/f5c25005a61f96a0933ca2f95705a963585aafaa
     print('Starting ...')
-    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer)
+    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
 
     use_cache = model.config.use_cache
     model.config.use_cache = False
@@ -486,7 +486,7 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     ## SparseGPT code available at: https://github.com/IST-DASLab/sparsegpt/tree/f5c25005a61f96a0933ca2f95705a963585aafaa
     print('Starting ...')
-    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer)
+    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
 
     use_cache = model.config.use_cache
     model.config.use_cache = False

@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from algorithm.common import datasets as _common_datasets
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device_string
 from algorithm.common.io import ensure_dir
@@ -75,13 +74,6 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
 
 def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     validate_workflow_config(config)
-
-    data_path = config.common_args.get("data_path")
-    if data_path:
-        _common_datasets.DATA_ROOT = Path(data_path)
-        _common_datasets.WIKITEXT2_DIR = _common_datasets.DATA_ROOT / "wikitext2"
-        _common_datasets.C4_DIR = _common_datasets.DATA_ROOT / "c4"
-        _common_datasets.PILEVAL_DIR = _common_datasets.DATA_ROOT / "pileval"
 
     common_args = copy.deepcopy(config.common_args)
     resolved_device = resolve_device_string(common_args.get("device", "auto"))

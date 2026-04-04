@@ -1,0 +1,66 @@
+{
+  "perplexity": 8.68817136843113,
+  "evaluation_dataset": "wikitext2",
+  "sequence_length": 2048,
+  "evaluated_chunks": 64,
+  "batch_size": 1,
+  "elapsed_seconds": 14.266939129680395,
+  "tokens_per_second": 9182.628369630873,
+  "zero_shot": {
+    "tasks": [
+      "arc_challenge",
+      "arc_easy",
+      "boolq",
+      "hellaswag",
+      "openbookqa",
+      "rte",
+      "winogrande"
+    ],
+    "num_fewshot": 0,
+    "batch_size": 1,
+    "limit": null,
+    "results": {
+      "arc_challenge": {
+        "metric": "acc_norm,none",
+        "value": 0.4744
+      },
+      "arc_easy": {
+        "metric": "acc_norm,none",
+        "value": 0.7151
+      },
+      "boolq": {
+        "metric": "acc,none",
+        "value": 0.8373
+      },
+      "hellaswag": {
+        "metric": "acc_norm,none",
+        "value": 0.7329
+      },
+      "openbookqa": {
+        "metric": "acc_norm,none",
+        "value": 0.426
+      },
+      "rte": {
+        "metric": "acc,none",
+        "value": 0.7906
+      },
+      "winogrande": {
+        "metric": "acc,none",
+        "value": 0.6914
+      }
+    },
+    "acc_avg": 0.6668,
+    "elapsed_seconds": 4213.728801178746
+  },
+  "model_path": "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct",
+  "pruning_algorithm": "wanda",
+  "sparsity_ratio": 0.5,
+  "device": "cuda:3",
+  "dtype": "float16",
+  "artifacts": {
+    "source_root": "/mnt/42_store/lcw/data2/Huawei/MindPipe/algorithm/pruning/unstructured/wanda/source",
+    "target_sparsity_ratio": 0.5,
+    "observed_sparsity_ratio": 0.5,
+    "structure_pattern": "unstructured"
+  }
+}
