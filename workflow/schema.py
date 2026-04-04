@@ -23,7 +23,7 @@ class WorkflowConfig:
     output_dir: Path | None = None
     result_metadata: dict[str, Any] = field(default_factory=dict)
     flatten_single_stage: bool = False
-    save_composed_model: bool = False
+    save_model: bool = False
 
 
 @dataclass

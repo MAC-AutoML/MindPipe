@@ -14,12 +14,11 @@ BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
 SPARSITY_RATIO="${SPARSITY_RATIO:-0.5}"
 STRUCTURE_PATTERN="${STRUCTURE_PATTERN:-unstructured}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/results/pruning}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/results/pruning}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  pruning
-  --algorithm wanda
+  --pruning wanda
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -31,7 +30,7 @@ CMD=(
   --max_eval_chunks "$MAX_EVAL_CHUNKS"
   --sparsity_ratio "$SPARSITY_RATIO"
   --structure_pattern "$STRUCTURE_PATTERN"
-  --output_root "$OUTPUT_ROOT"
+  --output_dir "$OUTPUT_DIR"
 )
 
 printf 'Running:'

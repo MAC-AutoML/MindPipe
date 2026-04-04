@@ -15,12 +15,11 @@ MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
 WEIGHT_BITS="${WEIGHT_BITS:-16}"
 GROUP_SIZE="${GROUP_SIZE:-128}"
 DAMP_PERCENT="${DAMP_PERCENT:-0.05}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/my_results/quantization}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/my_results/quantization}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  quantization
-  --algorithm gptq
+  --quantization gptq
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -33,7 +32,7 @@ CMD=(
   --weight_bits "$WEIGHT_BITS"
   --group_size "$GROUP_SIZE"
   --damp_percent "$DAMP_PERCENT"
-  --output_root "$OUTPUT_ROOT"
+  --output_dir "$OUTPUT_DIR"
 )
 
 if [[ -n "${HF_TOKEN:-}" ]]; then

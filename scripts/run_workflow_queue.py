@@ -85,7 +85,7 @@ class JobSpec:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Launch workflow experiments on idle GPUs.")
     parser.add_argument("--model_path", default=DEFAULT_MODEL_PATH)
-    parser.add_argument("--output_root", default=str(DEFAULT_OUTPUT_ROOT))
+    parser.add_argument("--output_dir", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--log_root", default=str(DEFAULT_LOG_ROOT))
     parser.add_argument("--quantization_algorithms", default=",".join(DEFAULT_QUANTIZATION_ALGORITHMS))
     parser.add_argument("--pruning_algorithms", default=",".join(DEFAULT_PRUNING_ALGORITHMS))
@@ -271,7 +271,7 @@ def resolve_metrics_path(args, job: JobSpec) -> Path:
         f"_seq{settings['sequence_length']}"
     )
     return (
-        Path(args.output_root)
+        Path(args.output_dir)
         / Path(args.model_path.rstrip("/")).name
         / job.execution_order
         / f"{job.quantization_algorithm}__{job.pruning_algorithm}"
@@ -294,20 +294,19 @@ def build_command(args, job: JobSpec, gpu_index: int) -> list[str]:
         "python",
         "-u",
         str(ENTRYPOINT),
-        "workflow",
         "--model_path",
         args.model_path,
-        "--output_root",
-        args.output_root,
+        "--output_dir",
+        args.output_dir,
         "--device",
         f"cuda:{gpu_index}",
         "--log_level",
         settings["log_level"],
         "--dtype",
         settings["dtype"],
-        "--quantization_algorithm",
+        "--quantization",
         job.quantization_algorithm,
-        "--pruning_algorithm",
+        "--pruning",
         job.pruning_algorithm,
         "--execution_order",
         job.execution_order,
@@ -385,7 +384,7 @@ def load_metrics(metrics_path: Path) -> dict | None:
 
 def main() -> int:
     args = build_parser().parse_args()
-    output_root = Path(args.output_root)
+    output_root = Path(args.output_dir)
     log_root = Path(args.log_root)
     output_root.mkdir(parents=True, exist_ok=True)
     log_root.mkdir(parents=True, exist_ok=True)

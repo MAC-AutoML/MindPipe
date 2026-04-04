@@ -56,7 +56,7 @@ def collect_gpu_status() -> list[dict]:
 
 
 def collect_running_jobs(model_path: str) -> list[dict]:
-    pattern = f"{REPO_ROOT / 'main.py'} workflow --model_path {model_path}"
+    pattern = f"{REPO_ROOT / 'main.py'} --model_path {model_path}"
     completed = subprocess.run(
         ["pgrep", "-af", pattern],
         capture_output=True,

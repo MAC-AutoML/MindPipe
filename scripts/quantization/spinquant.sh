@@ -20,12 +20,11 @@ VALUE_BITS="${VALUE_BITS:-16}"
 GROUP_SIZE="${GROUP_SIZE:-128}"
 WEIGHT_METHOD="${WEIGHT_METHOD:-gptq}"
 ROTATION_MODE="${ROTATION_MODE:-hadamard}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/results/quantization}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/results/quantization}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  quantization
-  --algorithm spinquant
+  --quantization spinquant
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -43,7 +42,7 @@ CMD=(
   --group_size "$GROUP_SIZE"
   --weight_method "$WEIGHT_METHOD"
   --rotation_mode "$ROTATION_MODE"
-  --output_root "$OUTPUT_ROOT"
+  --output_dir "$OUTPUT_DIR"
 )
 
 if [[ -n "${ROTATION_CHECKPOINT:-}" ]]; then

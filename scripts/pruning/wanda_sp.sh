@@ -14,12 +14,11 @@ BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
 SPARSITY_RATIO="${SPARSITY_RATIO:-0.2}"
 PSEUDO_PRUNING="${PSEUDO_PRUNING:-true}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/results/pruning}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/results/pruning}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  pruning
-  --algorithm wanda_sp
+  --pruning wanda_sp
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -30,14 +29,10 @@ CMD=(
   --batch_size "$BATCH_SIZE"
   --max_eval_chunks "$MAX_EVAL_CHUNKS"
   --sparsity_ratio "$SPARSITY_RATIO"
-  --output_root "$OUTPUT_ROOT"
+  --output_dir "$OUTPUT_DIR"
 )
 
-if [[ "$PSEUDO_PRUNING" == "true" ]]; then
-  CMD+=(--pseudo_pruning)
-else
-  CMD+=(--no-pseudo_pruning)
-fi
+CMD+=(--pseudo_pruning "$PSEUDO_PRUNING")
 
 printf 'Running:'
 printf ' %q' "${CMD[@]}"

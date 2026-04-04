@@ -12,12 +12,11 @@ SEQUENCE_LENGTH="${SEQUENCE_LENGTH:-2048}"
 FLATQUANT_EPOCHS="${FLATQUANT_EPOCHS:-15}"
 FLATQUANT_CALIBRATION_BATCH_SIZE="${FLATQUANT_CALIBRATION_BATCH_SIZE:-4}"
 FLATQUANT_LR="${FLATQUANT_LR:-5e-3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/my_results/quantization}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/my_results/quantization}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  quantization
-  --algorithm flatquant
+  --quantization flatquant
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -38,13 +37,13 @@ CMD=(
   --value_bits 4
   --kv_group_size 128
   --weight_method rtn
-  --flatquant_cali_trans
-  --flatquant_add_diag
-  --flatquant_lwc
-  --flatquant_lac
-  --flatquant_direct_inv
-  --flatquant_deactive_amp
-  --output_root "$OUTPUT_ROOT"
+  --flatquant_cali_trans true
+  --flatquant_add_diag true
+  --flatquant_lwc true
+  --flatquant_lac true
+  --flatquant_direct_inv true
+  --flatquant_deactive_amp true
+  --output_dir "$OUTPUT_DIR"
 )
 
 if [[ -n "${HF_TOKEN:-}" ]]; then

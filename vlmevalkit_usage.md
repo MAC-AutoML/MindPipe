@@ -29,8 +29,7 @@
 
 ```bash
 python main.py \
-  quantization \
-  --algorithm awq \
+  --quantization awq \
   --model_path <your_model_path> \
   --device cuda:0 \
   --dtype auto \
@@ -42,7 +41,7 @@ python main.py \
   --max_eval_chunks 4 \
   --weight_bits 4 \
   --group_size 128 \
-  --eval_vlm \
+  --eval_vlm true \
   --vlm_datasets OCRBench MMStar \
   --vlm_judge exact_matching
 ```

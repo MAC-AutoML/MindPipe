@@ -17,12 +17,11 @@ STRUCTURE_PATTERN="${STRUCTURE_PATTERN:-AL-AM}"
 FLAP_METRICS="${FLAP_METRICS:-WIFV}"
 FLAP_REMOVE_HEADS="${FLAP_REMOVE_HEADS:-8}"
 PSEUDO_PRUNING="${PSEUDO_PRUNING:-true}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/results/pruning}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/results/pruning}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  pruning
-  --algorithm flap
+  --pruning flap
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -36,14 +35,10 @@ CMD=(
   --structure_pattern "$STRUCTURE_PATTERN"
   --flap_metrics "$FLAP_METRICS"
   --flap_remove_heads "$FLAP_REMOVE_HEADS"
-  --output_root "$OUTPUT_ROOT"
+  --output_dir "$OUTPUT_DIR"
 )
 
-if [[ "$PSEUDO_PRUNING" == "true" ]]; then
-  CMD+=(--pseudo_pruning)
-else
-  CMD+=(--no-pseudo_pruning)
-fi
+CMD+=(--pseudo_pruning "$PSEUDO_PRUNING")
 
 printf 'Running:'
 printf ' %q' "${CMD[@]}"

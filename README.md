@@ -86,47 +86,58 @@ conda activate mindpipe
 ### 量化
 
 ```bash
-python main.py quantization \
-  --algorithm awq \
+python main.py \
+  --quantization awq \
   --model_path /path/to/model \
   --device cuda:0 \
   --dtype float16 \
   --calibration_dataset pileval \
   --evaluation_dataset wikitext2 \
   --calibration_samples 128 \
-  --sequence_length 512 \
+  --sequence_length 2048 \
   --weight_bits 4 \
   --group_size 128 \
-  --output_root ./results/quantization
+  --output_dir ./results/quantization
 ```
 
 ### 剪枝
 
 ```bash
-python main.py pruning \
-  --algorithm wanda \
+python main.py \
+  --pruning wanda \
   --model_path /path/to/model \
   --device cuda:0 \
   --dtype float16 \
   --calibration_samples 128 \
-  --sequence_length 512 \
+  --sequence_length 2048 \
   --sparsity_ratio 0.5 \
-  --output_root ./results/pruning
+  --output_dir ./results/pruning
 ```
 
-### 组合 Workflow
+### 剪枝 + 量化
 
 ```bash
-python main.py workflow \
-  --quantization_algorithm quarot \
-  --pruning_algorithm wanda_sp \
-  --execution_order quantization_then_pruning \
+python main.py \
+  --pruning wanda_sp \
+  --quantization gptq \
+  --execution_order pruning_then_quantization \
   --model_path /path/to/model \
   --device cuda:0 \
   --dtype float16 \
   --weight_bits 4 \
   --sparsity_ratio 0.2 \
-  --output_root ./results/workflow
+  --output_dir ./results/workflow
+```
+
+### 仅评测
+
+```bash
+python main.py \
+  --model_path ./results/pruning/qwen2.5-7b/wanda/.../saved_model \
+  --device cuda:0 \
+  --eval_ppl true \
+  --eval_zero_shot true \
+  --output_dir ./results/evaluate
 ```
 
 ## GPU / NPU 设备适配
@@ -142,13 +153,13 @@ MindPipe 通过 `algorithm/common/device.py` 提供 GPU/NPU 统一抽象层，�
 
 ```bash
 # GPU
-python main.py quantization --algorithm gptq --device cuda:0 ...
+python main.py --quantization gptq --model_path /path/to/model --device cuda:0 ...
 
 # NPU（需安装 torch_npu）
-python main.py quantization --algorithm gptq --device npu:0 ...
+python main.py --quantization gptq --model_path /path/to/model --device npu:0 ...
 
 # 自动检测
-python main.py quantization --algorithm gptq --device auto ...
+python main.py --quantization gptq --model_path /path/to/model --device auto ...
 ```
 
 ### NPU fail-fast
@@ -171,25 +182,23 @@ RuntimeError: Algorithm 'quarot' is not yet NPU-ready. Please use --device cuda:
 ## 架构设计
 
 ```
-CLI (main.py)
-  │  python main.py quantization --algorithm gptq ...
+CLI (main.py)  — 统一入口，无子命令
+  │  python main.py --pruning wanda ...
+  │  python main.py --quantization gptq ...
+  │  python main.py --pruning wanda --quantization gptq ...
+  │  python main.py --model_path <saved> --eval_ppl true ...
   ▼
 workflow/builder.py → WorkflowConfig
-  │  解析参数、构建阶段配置
+  │  根据 --pruning / --quantization 是否传入动态构建 stages
   ▼
 workflow/executor.py
   │  加载模型 → 逐阶段执行 → 评测 → 保存结果
   ▼
 algorithm/*/method.py
-  │  各算法的统一入口（load_resources → apply → artifacts）
-  │  with prepend_python_path(source_root):
-  │      import source_modules  # 第三方源码
-  │      注入 hadamard dispatch
-  ▼
-source/  (第三方算法源码，尽量不修改)
+  │  各算法的统一入口（apply_pruning / apply_fake_quantization）
   ▼
 evaluation/runner.py
-  │  PPL / Zero-shot / VLM 评测
+  │  PPL / Zero-shot / VLM 评测（通过 --eval_ppl / --eval_zero_shot / --eval_vlm 控制）
   ▼
 results/<model>/<algorithm>/metrics.json
 ```
@@ -218,7 +227,7 @@ results/<model>/<algorithm>/metrics.json
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--algorithm` | 必填 | `awq` / `gptq` / `quarot` / `spinquant` / `flatquant` |
+| `--quantization` | None | `awq` / `gptq` / `quarot` / `spinquant` / `flatquant` |
 | `--weight_bits` | 4 | 权重比特数 |
 | `--activation_bits` | 16 | 激活比特数 |
 | `--key_bits` / `--value_bits` | 16 | KV Cache 比特数 |
@@ -230,29 +239,90 @@ results/<model>/<algorithm>/metrics.json
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--algorithm` | 必填 | `wanda` / `sparsegpt` / `wanda_sp` / `flap` |
+| `--pruning` | None | `wanda` / `sparsegpt` / `wanda_sp` / `flap` |
 | `--sparsity_ratio` | 0.5 | 稀疏率 |
 | `--structure_pattern` | `unstructured` | 剪枝结构模式 |
 | `--damp_percent` | 0.01 | Hessian 阻尼系数 |
 
+### 组合参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--execution_order` | `pruning_then_quantization` | 两阶段执行顺序 |
+
+### 保存 / 评测参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--save_model` | False | 保存压缩后的模型 |
+| `--eval_ppl` | True | PPL 评测 |
+| `--eval_zero_shot` | False | Zero-shot 评测 |
+| `--eval_vlm` | False | 多模态评测 |
+
 ## 评测
 
-所有算法执行完毕后自动运行 PPL 评测。可选开启 zero-shot 和多模态评测：
+评测与压缩是平级功能，通过参数控制：
 
 ```bash
-# PPL（默认自动运行）
-# 结果写入 metrics.json 的 "ppl" 字段
+# 压缩 + 评测（默认）
+python main.py --model_path /path/to/model --pruning wanda --sparsity_ratio 0.5
 
-# Zero-shot 评测（可选）
---eval_zero_shot --zero_shot_tasks arc_challenge hellaswag
+# 仅压缩，跳过评测
+python main.py --model_path /path/to/model --pruning wanda --sparsity_ratio 0.5 --eval_ppl false
 
-# 多模态评测（可选，需配置 VLMEvalKit）
---eval_vlm --vlm_datasets MMMU
+# 仅评测已保存的模型（不传压缩方法）
+python main.py \
+  --model_path ./results/pruning/.../saved_model \
+  --eval_ppl true \
+  --eval_zero_shot true \
+  --output_dir ./results/evaluate
+
+# 评测原始未压缩模型
+python main.py \
+  --model_path /path/to/original/model \
+  --eval_ppl true \
+  --eval_zero_shot true \
+  --output_dir ./results/evaluate_baseline
 ```
+
+> **TODO**:
+> 1. QuaRot / SpinQuant 等带 ActQuantWrapper 和 Hadamard 变换的量化方法暂不支持单独评测，
+>    因为 `AutoModelForCausalLM.from_pretrained()` 无法恢复自定义 wrapper 结构。
+>    后续需为各量化方法实现 `prepare_structure()` 接口，在加载时重建 wrapper 再灌入 state_dict。
+> 2. `--save_model` 时自动写入 `method_info.json` 记录压缩方法、参数等信息，
+>    以便加载时自动识别并选择正确的加载逻辑（标准 HF 加载 vs 重建 wrapper）。
+>    目前仅对伪剪枝 / AWQ / GPTQ 有效（标准结构，可直接 `from_pretrained`）。
+>
+>    方案：save 时自动写入元数据文件：
+>
+>    ```
+>    saved_model/
+>    ├── config.json
+>    ├── model.safetensors
+>    ├── method_info.json        ← 新增，记录压缩方法
+>    └── ...
+>    ```
+>
+>    `method_info.json` 内容示例：
+>
+>    ```json
+>    {
+>      "method": "quarot",
+>      "stages": [
+>        {"type": "quantization", "algorithm": "quarot", "weight_bits": 4, ...}
+>      ]
+>    }
+>    ```
+>
+>    load 时：
+>    - 读到 `method_info.json` → 按记录的方法重建 wrapper → 灌入 state_dict
+>    - 没有 `method_info.json` → 当标准 HF 模型加载（剪枝 / AWQ / GPTQ 的情况）
+>
+>    这样用户不用手动指定，路径一传就自动识别。
 
 ## 结果输出
 
-每次运行在 `output_root` 下生成目录结构：
+每次运行在 `output_dir` 下生成目录结构：
 
 ```text
 results/

@@ -1,8 +1,9 @@
-"""Workflow config builders and parser helpers."""
+"""Unified run command: parser + config builder."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 from pathlib import Path
 
@@ -20,9 +21,22 @@ from workflow.schema import WorkflowStage
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_ROOT = REPO_ROOT / "results"
+
+def _bool_flag(value):
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "y", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        f"Invalid boolean value: {value!r}. Use one of true/false, 1/0, yes/no."
+    )
+
 EXECUTION_ORDER_CHOICES = (
-    "quantization_then_pruning",
     "pruning_then_quantization",
+    "quantization_then_pruning",
 )
 VALID_STAGE_TYPES = {"quantization", "pruning"}
 DEFAULT_VLMEVALKIT_ROOT = os.environ.get(
@@ -31,9 +45,25 @@ DEFAULT_VLMEVALKIT_ROOT = os.environ.get(
 )
 
 
+# ── 参数分组 ──
+
+def _add_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model_path", required=True)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--dtype", default="bfloat16", choices=["auto", "float16", "bfloat16"])
+    parser.add_argument("--log_level", default="INFO")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--hf_token", default=None)
+    parser.add_argument("--output_dir", default=str(RESULTS_ROOT / "run"))
+    parser.add_argument("--sequence_length", type=int, default=2048)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--max_eval_chunks", type=int, default=64)
+    parser.add_argument("--data_path", default=str(Path("/mnt/42_store/lcw/data2/Huawei/datasets")))
+
+
 def _add_eval_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--eval_ppl", type=lambda v: v.lower() not in ("false", "0", "no"), default=True)
-    parser.add_argument("--eval_zero_shot", type=lambda v: v.lower() not in ("false", "0", "no"), default=False)
+    parser.add_argument("--eval_ppl", type=_bool_flag, default=True)
+    parser.add_argument("--eval_zero_shot", type=_bool_flag, default=False)
     parser.add_argument("--zero_shot_tasks", nargs="+", default=list(DEFAULT_ZERO_SHOT_TASKS))
     parser.add_argument("--zero_shot_num_fewshot", type=int, default=0)
     parser.add_argument("--zero_shot_batch_size", type=int, default=1)
@@ -41,36 +71,31 @@ def _add_eval_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--eval_vlm", type=lambda v: v.lower() not in ("false", "0", "no"), default=False)
+    parser.add_argument("--eval_vlm", type=_bool_flag, default=False)
     parser.add_argument("--vlm_datasets", nargs="+", default=[])
     parser.add_argument("--vlm_mode", default="all", choices=["all", "infer", "eval"])
     parser.add_argument("--vlm_work_dir", default=None)
     parser.add_argument("--vlm_eval_kit_root", default=DEFAULT_VLMEVALKIT_ROOT)
     parser.add_argument("--vlm_judge", default=None)
     parser.add_argument("--vlm_api_nproc", type=int, default=4)
-    parser.add_argument("--vlm_verbose", type=lambda v: v.lower() not in ("false", "0", "no"), default=False)
-    parser.add_argument("--vlm_ignore_failed", type=lambda v: v.lower() not in ("false", "0", "no"), default=False)
+    parser.add_argument("--vlm_verbose", type=_bool_flag, default=False)
+    parser.add_argument("--vlm_ignore_failed", type=_bool_flag, default=False)
     parser.add_argument("--vlm_pred_format", default="xlsx", choices=["xlsx", "tsv", "json"])
 
 
-def build_quantization_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Unified fake-quant launcher.")
-    parser.add_argument("--algorithm", required=True, choices=sorted(QUANTIZATION_METHOD_REGISTRY))
-    parser.add_argument("--model_path", required=True)
-    parser.add_argument("--output_root", default=str(RESULTS_ROOT / "quantization"))
-    parser.add_argument("--device", default="auto")
-    parser.add_argument("--dtype", default="bfloat16", choices=["auto", "float16", "bfloat16"])
-    parser.add_argument("--log_level", default="INFO")
-    parser.add_argument("--hf_token", default=None)
-    parser.add_argument("--calibration_dataset", default="pileval", choices=["wikitext2", "c4", "pileval"])
-    parser.add_argument("--evaluation_dataset", default="wikitext2", choices=["wikitext2", "c4"])
-    parser.add_argument("--calibration_samples", type=int, default=128)
-    parser.add_argument("--sequence_length", type=int, default=2048)
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--max_eval_chunks", type=int, default=64)
-    _add_eval_args(parser)
-    _add_vlm_eval_args(parser)
-    parser.add_argument("--seed", type=int, default=0)
+def _add_pruning_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--pruning", default=None, choices=sorted(PRUNING_METHOD_REGISTRY))
+    parser.add_argument("--sparsity_ratio", type=float, default=0.5)
+    parser.add_argument("--structure_pattern", default="unstructured")
+    parser.add_argument("--block_size", type=int, default=128)
+    parser.add_argument("--use_variant", type=_bool_flag, default=False)
+    parser.add_argument("--flap_metrics", default="WIFV", choices=["IFV", "WIFV", "WIFN"])
+    parser.add_argument("--flap_remove_heads", type=int, default=8)
+    parser.add_argument("--pseudo_pruning", type=_bool_flag, default=True)
+
+
+def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--quantization", default=None, choices=sorted(QUANTIZATION_METHOD_REGISTRY))
     parser.add_argument("--weight_bits", type=int, default=4)
     parser.add_argument("--activation_bits", type=int, default=16)
     parser.add_argument("--query_bits", type=int, default=16)
@@ -80,333 +105,182 @@ def build_quantization_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight_group_size", type=int, default=None)
     parser.add_argument("--activation_group_size", type=int, default=None)
     parser.add_argument("--kv_group_size", type=int, default=None)
-    parser.add_argument("--weight_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--activation_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--query_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--key_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--value_symmetric", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--weight_symmetric", type=_bool_flag, default=True)
+    parser.add_argument("--activation_symmetric", type=_bool_flag, default=True)
+    parser.add_argument("--query_symmetric", type=_bool_flag, default=True)
+    parser.add_argument("--key_symmetric", type=_bool_flag, default=True)
+    parser.add_argument("--value_symmetric", type=_bool_flag, default=True)
     parser.add_argument("--weight_method", default="gptq", choices=["gptq", "rtn"])
-    parser.add_argument("--damp_percent", type=float, default=0.01)
-    parser.add_argument("--use_activation_order", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use_activation_order", type=_bool_flag, default=False)
+    # FlatQuant
     parser.add_argument("--flatquant_epochs", type=int, default=15)
     parser.add_argument("--flatquant_calibration_batch_size", type=int, default=4)
     parser.add_argument("--flatquant_lr", type=float, default=1e-5)
-    parser.add_argument("--flatquant_cali_trans", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_add_diag", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_lwc", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_lac", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--flatquant_cali_trans", type=_bool_flag, default=False)
+    parser.add_argument("--flatquant_add_diag", type=_bool_flag, default=False)
+    parser.add_argument("--flatquant_lwc", type=_bool_flag, default=False)
+    parser.add_argument("--flatquant_lac", type=_bool_flag, default=False)
     parser.add_argument("--flatquant_diag_init", default="sq_style", choices=["sq_style", "one_style"])
     parser.add_argument("--flatquant_diag_alpha", type=float, default=0.3)
-    parser.add_argument("--flatquant_warmup", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_deactive_amp", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_direct_inv", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_separate_vtrans", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--flatquant_warmup", type=_bool_flag, default=False)
+    parser.add_argument("--flatquant_deactive_amp", type=_bool_flag, default=False)
+    parser.add_argument("--flatquant_direct_inv", type=_bool_flag, default=False)
+    parser.add_argument("--flatquant_separate_vtrans", type=_bool_flag, default=False)
     parser.add_argument("--flatquant_resume_from", default=None)
     parser.add_argument("--flatquant_reload_matrix_from", default=None)
-    parser.add_argument("--flatquant_save_matrix", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--static_groups", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--awq_search", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--flatquant_save_matrix", type=_bool_flag, default=False)
+    parser.add_argument("--static_groups", type=_bool_flag, default=False)
+    # AWQ
+    parser.add_argument("--awq_search", type=_bool_flag, default=True)
+    # QuaRot / SpinQuant
     parser.add_argument("--rotation_mode", default="hadamard", choices=["hadamard", "random"])
     parser.add_argument("--rotation_checkpoint", default=None)
-    parser.add_argument("--save_fake_model", action=argparse.BooleanOptionalAction, default=False)
-    return parser
 
 
-def build_pruning_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Unified pruning launcher.")
-    parser.add_argument("--algorithm", required=True, choices=sorted(PRUNING_METHOD_REGISTRY))
-    parser.add_argument("--model_path", required=True)
-    parser.add_argument("--output_root", default=str(RESULTS_ROOT / "pruning"))
-    parser.add_argument("--device", default="auto")
-    parser.add_argument("--dtype", default="bfloat16", choices=["auto", "float16", "bfloat16"])
-    parser.add_argument("--log_level", default="INFO")
-    parser.add_argument("--evaluation_dataset", default="wikitext2", choices=["wikitext2", "c4"])
+def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--execution_order", default="pruning_then_quantization", choices=EXECUTION_ORDER_CHOICES)
+    # 单独指定时覆盖公共的 calibration 参数
+    parser.add_argument("--pruning_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval"])
+    parser.add_argument("--quantization_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval"])
+    parser.add_argument("--pruning_calibration_samples", type=int, default=None)
+    parser.add_argument("--quantization_calibration_samples", type=int, default=None)
+    parser.add_argument("--pruning_damp_percent", type=float, default=None)
+    parser.add_argument("--quantization_damp_percent", type=float, default=None)
+
+
+def _add_io_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--calibration_dataset", default="c4", choices=["wikitext2", "c4", "pileval"])
-    parser.add_argument("--calibration_samples", type=int, default=128)
-    parser.add_argument("--sequence_length", type=int, default=2048)
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--max_eval_chunks", type=int, default=64)
-    _add_eval_args(parser)
-    _add_vlm_eval_args(parser)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--sparsity_ratio", type=float, default=0.5)
-    parser.add_argument("--structure_pattern", default="unstructured")
-    parser.add_argument("--block_size", type=int, default=128)
-    parser.add_argument("--damp_percent", type=float, default=0.01)
-    parser.add_argument("--use_variant", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flap_metrics", default="WIFV", choices=["IFV", "WIFV", "WIFN"])
-    parser.add_argument("--flap_remove_heads", type=int, default=8)
-    parser.add_argument("--pseudo_pruning", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--save_pruned_model", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--data_path", default=str(Path("/mnt/42_store/lcw/data2/Huawei/datasets")))
-    return parser
-
-
-def build_workflow_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Unified quantization-pruning workflow launcher.")
-    parser.add_argument("--quantization_algorithm", required=True, choices=sorted(QUANTIZATION_METHOD_REGISTRY))
-    parser.add_argument("--pruning_algorithm", required=True, choices=sorted(PRUNING_METHOD_REGISTRY))
-    parser.add_argument("--execution_order", required=True, choices=EXECUTION_ORDER_CHOICES)
-    parser.add_argument("--model_path", required=True)
-    parser.add_argument("--output_root", default=str(RESULTS_ROOT / "workflow"))
-    parser.add_argument("--device", default="auto")
-    parser.add_argument("--dtype", default="bfloat16", choices=["auto", "float16", "bfloat16"])
-    parser.add_argument("--log_level", default="INFO")
-    parser.add_argument("--hf_token", default=None)
     parser.add_argument("--evaluation_dataset", default="wikitext2", choices=["wikitext2", "c4"])
-    parser.add_argument("--quantization_calibration_dataset", default="pileval", choices=["wikitext2", "c4", "pileval"])
-    parser.add_argument("--pruning_calibration_dataset", default="c4", choices=["wikitext2", "c4", "pileval"])
-    parser.add_argument("--quantization_calibration_samples", type=int, default=128)
-    parser.add_argument("--pruning_calibration_samples", type=int, default=128)
-    parser.add_argument("--sequence_length", type=int, default=2048)
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--max_eval_chunks", type=int, default=64)
+    parser.add_argument("--calibration_samples", type=int, default=128)
+    parser.add_argument("--damp_percent", type=float, default=0.01)
+    parser.add_argument("--save_model", type=_bool_flag, default=False)
+
+
+# ── 唯一 parser ──
+
+def build_run_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="MindPipe unified runner.")
+    _add_common_args(parser)
+    _add_io_args(parser)
     _add_eval_args(parser)
     _add_vlm_eval_args(parser)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--weight_bits", type=int, default=4)
-    parser.add_argument("--activation_bits", type=int, default=16)
-    parser.add_argument("--query_bits", type=int, default=16)
-    parser.add_argument("--key_bits", type=int, default=16)
-    parser.add_argument("--value_bits", type=int, default=16)
-    parser.add_argument("--group_size", type=int, default=128)
-    parser.add_argument("--weight_group_size", type=int, default=None)
-    parser.add_argument("--activation_group_size", type=int, default=None)
-    parser.add_argument("--kv_group_size", type=int, default=None)
-    parser.add_argument("--weight_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--activation_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--query_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--key_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--value_symmetric", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--weight_method", default="gptq", choices=["gptq", "rtn"])
-    parser.add_argument("--quantization_damp_percent", type=float, default=0.05)
-    parser.add_argument("--pruning_damp_percent", type=float, default=0.01)
-    parser.add_argument("--use_activation_order", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_epochs", type=int, default=15)
-    parser.add_argument("--flatquant_calibration_batch_size", type=int, default=4)
-    parser.add_argument("--flatquant_lr", type=float, default=1e-5)
-    parser.add_argument("--flatquant_cali_trans", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_add_diag", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_lwc", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_lac", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_diag_init", default="sq_style", choices=["sq_style", "one_style"])
-    parser.add_argument("--flatquant_diag_alpha", type=float, default=0.3)
-    parser.add_argument("--flatquant_warmup", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_deactive_amp", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_direct_inv", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_separate_vtrans", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flatquant_resume_from", default=None)
-    parser.add_argument("--flatquant_reload_matrix_from", default=None)
-    parser.add_argument("--flatquant_save_matrix", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--static_groups", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--awq_search", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--rotation_mode", default="hadamard", choices=["hadamard", "random"])
-    parser.add_argument("--rotation_checkpoint", default=None)
-    parser.add_argument("--sparsity_ratio", type=float, default=0.5)
-    parser.add_argument("--structure_pattern", default="unstructured")
-    parser.add_argument("--block_size", type=int, default=128)
-    parser.add_argument("--use_variant", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--flap_metrics", default="WIFV", choices=["IFV", "WIFV", "WIFN"])
-    parser.add_argument("--flap_remove_heads", type=int, default=8)
-    parser.add_argument("--pseudo_pruning", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--save_composed_model", action=argparse.BooleanOptionalAction, default=False)
+    _add_pruning_args(parser)
+    _add_quantization_args(parser)
+    _add_workflow_args(parser)
     return parser
 
 
-def _build_quantization_run_spec(args) -> str:
-    run_spec = f"{args.quantization_algorithm}_w{args.weight_bits}a{args.activation_bits}"
-    if args.quantization_algorithm == "flatquant":
-        run_spec += f"_q{args.query_bits}k{args.key_bits}v{args.value_bits}"
-    return run_spec
+# ── config builder ──
 
+def build_run_config(args) -> WorkflowConfig:
+    has_pruning = args.pruning is not None
+    has_quantization = args.quantization is not None
 
-def _build_pruning_run_spec(args) -> str:
-    run_spec = f"{args.pruning_algorithm}_s{args.sparsity_ratio}"
-    if args.pruning_algorithm == "flap":
-        run_spec += f"_{args.flap_metrics}_h{args.flap_remove_heads}"
-    return run_spec
+    # 校验
+    if not has_pruning and not has_quantization and args.eval_ppl is False and args.eval_zero_shot is False and args.eval_vlm is False:
+        raise ValueError("At least one of --pruning, --quantization, or an evaluation flag must be specified.")
 
-
-def resolve_workflow_output_dir(args) -> Path:
     model_name = model_slug(args.model_path)
-    quantization_run_spec = _build_quantization_run_spec(args)
-    pruning_run_spec = _build_pruning_run_spec(args)
-    run_spec = f"{quantization_run_spec}__{pruning_run_spec}_seq{args.sequence_length}"
-    return ensure_dir(
-        Path(args.output_root)
-        / model_name
-        / args.execution_order
-        / f"{args.quantization_algorithm}__{args.pruning_algorithm}"
-        / run_spec
-    )
+    base_common_args = vars(args).copy()
 
-
-def build_quantization_config(args) -> WorkflowConfig:
-    normalize_quantization_args(args)
-    method = get_quantization_method(args.algorithm)
-    return WorkflowConfig(
-        model_path=args.model_path,
-        common_args=vars(args).copy(),
-        stages=[WorkflowStage(stage_type="quantization", algorithm_name=args.algorithm)],
-        output_dir=method.resolve_output_dir(args),
-        result_metadata={
-            "algorithm_name": args.algorithm,
-        },
-        flatten_single_stage=True,
-        save_composed_model=args.save_fake_model,
-    )
-
-
-def build_pruning_config(args) -> WorkflowConfig:
-    method = get_pruning_method(args.algorithm)
-    return WorkflowConfig(
-        model_path=args.model_path,
-        common_args=vars(args).copy(),
-        stages=[WorkflowStage(stage_type="pruning", algorithm_name=args.algorithm)],
-        output_dir=method.resolve_output_dir(args),
-        result_metadata={
-            "algorithm_name": args.algorithm,
-            "sparsity_ratio": args.sparsity_ratio,
-        },
-        flatten_single_stage=True,
-        save_composed_model=args.save_pruned_model,
-    )
-
-
-def build_workflow_config(args) -> WorkflowConfig:
-    output_dir = resolve_workflow_output_dir(args)
-    base_common_args = {
+    stages: list[WorkflowStage] = []
+    result_metadata: dict = {
         "model_path": args.model_path,
-        "device": args.device,
-        "dtype": args.dtype,
-        "log_level": args.log_level,
-        "hf_token": args.hf_token,
-        "evaluation_dataset": args.evaluation_dataset,
-        "evaluation_output_dir": str(output_dir),
-        "sequence_length": args.sequence_length,
-        "batch_size": args.batch_size,
-        "max_eval_chunks": args.max_eval_chunks,
-        "eval_ppl": args.eval_ppl,
-        "eval_zero_shot": args.eval_zero_shot,
-        "zero_shot_tasks": args.zero_shot_tasks,
-        "zero_shot_num_fewshot": args.zero_shot_num_fewshot,
-        "zero_shot_batch_size": args.zero_shot_batch_size,
-        "zero_shot_limit": args.zero_shot_limit,
-        "eval_vlm": args.eval_vlm,
-        "vlm_datasets": args.vlm_datasets,
-        "vlm_mode": args.vlm_mode,
-        "vlm_work_dir": args.vlm_work_dir,
-        "vlm_eval_kit_root": args.vlm_eval_kit_root,
-        "vlm_judge": args.vlm_judge,
-        "vlm_api_nproc": args.vlm_api_nproc,
-        "vlm_verbose": args.vlm_verbose,
-        "vlm_ignore_failed": args.vlm_ignore_failed,
-        "vlm_pred_format": args.vlm_pred_format,
-        "seed": args.seed,
-        "weight_bits": args.weight_bits,
-        "activation_bits": args.activation_bits,
-        "query_bits": args.query_bits,
-        "key_bits": args.key_bits,
-        "value_bits": args.value_bits,
-        "group_size": args.group_size,
-        "weight_group_size": args.weight_group_size,
-        "activation_group_size": args.activation_group_size,
-        "kv_group_size": args.kv_group_size,
-        "weight_symmetric": args.weight_symmetric,
-        "activation_symmetric": args.activation_symmetric,
-        "query_symmetric": args.query_symmetric,
-        "key_symmetric": args.key_symmetric,
-        "value_symmetric": args.value_symmetric,
-        "weight_method": args.weight_method,
-        "use_activation_order": args.use_activation_order,
-        "flatquant_epochs": args.flatquant_epochs,
-        "flatquant_calibration_batch_size": args.flatquant_calibration_batch_size,
-        "flatquant_lr": args.flatquant_lr,
-        "flatquant_cali_trans": args.flatquant_cali_trans,
-        "flatquant_add_diag": args.flatquant_add_diag,
-        "flatquant_lwc": args.flatquant_lwc,
-        "flatquant_lac": args.flatquant_lac,
-        "flatquant_diag_init": args.flatquant_diag_init,
-        "flatquant_diag_alpha": args.flatquant_diag_alpha,
-        "flatquant_warmup": args.flatquant_warmup,
-        "flatquant_deactive_amp": args.flatquant_deactive_amp,
-        "flatquant_direct_inv": args.flatquant_direct_inv,
-        "flatquant_separate_vtrans": args.flatquant_separate_vtrans,
-        "flatquant_resume_from": args.flatquant_resume_from,
-        "flatquant_reload_matrix_from": args.flatquant_reload_matrix_from,
-        "flatquant_save_matrix": args.flatquant_save_matrix,
-        "static_groups": args.static_groups,
-        "awq_search": args.awq_search,
-        "rotation_mode": args.rotation_mode,
-        "rotation_checkpoint": args.rotation_checkpoint,
-        "sparsity_ratio": args.sparsity_ratio,
-        "structure_pattern": args.structure_pattern,
-        "block_size": args.block_size,
-        "use_variant": args.use_variant,
-        "flap_metrics": args.flap_metrics,
-        "flap_remove_heads": args.flap_remove_heads,
-        "pseudo_pruning": args.pseudo_pruning,
     }
-    normalized_common_args = argparse.Namespace(**base_common_args)
-    normalize_quantization_args(normalized_common_args)
-    base_common_args = vars(normalized_common_args)
-    stage_output_root = ensure_dir(output_dir / "stages")
-    quantization_stage = WorkflowStage(
-        stage_type="quantization",
-        algorithm_name=args.quantization_algorithm,
-        parameters={
-            "output_root": str(stage_output_root),
-            "calibration_dataset": args.quantization_calibration_dataset,
-            "calibration_samples": args.quantization_calibration_samples,
-            "damp_percent": args.quantization_damp_percent,
-        },
-    )
-    pruning_stage = WorkflowStage(
-        stage_type="pruning",
-        algorithm_name=args.pruning_algorithm,
-        parameters={
-            "output_root": str(stage_output_root),
-            "calibration_dataset": args.pruning_calibration_dataset,
-            "calibration_samples": args.pruning_calibration_samples,
-            "damp_percent": args.pruning_damp_percent,
-        },
-    )
-    stages = [quantization_stage, pruning_stage]
-    if args.execution_order == "pruning_then_quantization":
-        stages = [pruning_stage, quantization_stage]
+
+    if has_pruning:
+        prune_calib = args.pruning_calibration_dataset or args.calibration_dataset
+        prune_samples = args.pruning_calibration_samples or args.calibration_samples
+        prune_damp = args.pruning_damp_percent if args.pruning_damp_percent is not None else args.damp_percent
+
+        pruning_method = get_pruning_method(args.pruning)
+        pruning_args_dict = copy.deepcopy(base_common_args)
+        pruning_args_dict.update({
+            "model_path": args.model_path,
+            "algorithm": args.pruning,
+            "calibration_dataset": prune_calib,
+            "calibration_samples": prune_samples,
+            "damp_percent": prune_damp,
+            "output_root": args.output_dir,
+        })
+        pruning_ns = argparse.Namespace(**pruning_args_dict)
+
+        stages.append(WorkflowStage(
+            stage_type="pruning",
+            algorithm_name=args.pruning,
+            parameters={
+                "output_root": args.output_dir,
+                "calibration_dataset": prune_calib,
+                "calibration_samples": prune_samples,
+                "damp_percent": prune_damp,
+            },
+        ))
+        result_metadata["pruning_algorithm"] = args.pruning
+        result_metadata["sparsity_ratio"] = args.sparsity_ratio
+
+    if has_quantization:
+        quant_calib = args.quantization_calibration_dataset or ("pileval" if args.quantization in ("awq", "gptq", "flatquant") else args.calibration_dataset)
+        quant_samples = args.quantization_calibration_samples or args.calibration_samples
+        quant_damp = args.quantization_damp_percent if args.quantization_damp_percent is not None else args.damp_percent
+
+        stages.append(WorkflowStage(
+            stage_type="quantization",
+            algorithm_name=args.quantization,
+            parameters={
+                "output_root": args.output_dir,
+                "calibration_dataset": quant_calib,
+                "calibration_samples": quant_samples,
+                "damp_percent": quant_damp,
+            },
+        ))
+        result_metadata["quantization_algorithm"] = args.quantization
+        result_metadata["weight_bits"] = args.weight_bits
+        result_metadata["activation_bits"] = args.activation_bits
+
+    # 执行顺序
+    if has_pruning and has_quantization:
+        if args.execution_order == "quantization_then_pruning":
+            stages.reverse()
+        result_metadata["execution_order"] = args.execution_order
+
+    # 确定 output_dir
+    if len(stages) == 1:
+        # 单阶段：使用算法自己的 resolve_output_dir
+        first_method = (get_pruning_method if stages[0].stage_type == "pruning" else get_quantization_method)(stages[0].algorithm_name)
+        first_stage_args = argparse.Namespace(**{**base_common_args, **stages[0].parameters, "model_path": args.model_path})
+        output_dir = first_method.resolve_output_dir(first_stage_args)
+    elif len(stages) > 1:
+        # 多阶段：构建组合目录 <output_dir>/<model>/<execution_order>/<algo1>__<algo2>/<run_spec>
+        algo_parts = "__".join(s.algorithm_name for s in stages)
+        run_spec_parts = []
+        for s in stages:
+            if s.stage_type == "pruning":
+                run_spec_parts.append(f"{s.algorithm_name}_s{args.sparsity_ratio}")
+            else:
+                run_spec_parts.append(f"{s.algorithm_name}_w{args.weight_bits}a{args.activation_bits}")
+        run_spec = "_".join(run_spec_parts) + f"_seq{args.sequence_length}"
+        output_dir = ensure_dir(Path(args.output_dir) / model_name / args.execution_order / algo_parts / run_spec)
+    else:
+        # 仅评测
+        output_dir = ensure_dir(Path(args.output_dir) / model_name / "evaluate")
+
+    flatten = len(stages) == 1
+
     return WorkflowConfig(
         model_path=args.model_path,
         common_args=base_common_args,
         stages=stages,
         output_dir=output_dir,
-        result_metadata={
-            "execution_order": args.execution_order,
-            "quantization_algorithm": args.quantization_algorithm,
-            "pruning_algorithm": args.pruning_algorithm,
-            "weight_bits": args.weight_bits,
-            "activation_bits": args.activation_bits,
-            "query_bits": args.query_bits,
-            "key_bits": args.key_bits,
-            "value_bits": args.value_bits,
-            "weight_method": args.weight_method,
-            "sparsity_ratio": args.sparsity_ratio,
-            "structure_pattern": args.structure_pattern,
-            "quantization_calibration_dataset": args.quantization_calibration_dataset,
-            "pruning_calibration_dataset": args.pruning_calibration_dataset,
-            "quantization_calibration_samples": args.quantization_calibration_samples,
-            "pruning_calibration_samples": args.pruning_calibration_samples,
-            "flap_metrics": args.flap_metrics,
-            "flap_remove_heads": args.flap_remove_heads,
-            "pseudo_pruning": args.pseudo_pruning,
-        },
-        save_composed_model=args.save_composed_model,
+        result_metadata=result_metadata,
+        flatten_single_stage=flatten,
+        save_model=args.save_model,
     )
 
 
 def validate_workflow_config(config: WorkflowConfig) -> None:
-    if not config.stages:
-        raise ValueError("Workflow must contain at least one stage")
-    if not config.flatten_single_stage and config.output_dir is None:
+    if not config.stages and config.output_dir is None:
+        raise ValueError("Evaluate-only mode requires --output_dir")
+    if not config.flatten_single_stage and len(config.stages) > 1 and config.output_dir is None:
         raise ValueError("Multi-stage workflow requires an explicit output_dir")
     for stage in config.stages:
         if stage.stage_type not in VALID_STAGE_TYPES:

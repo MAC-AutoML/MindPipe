@@ -92,6 +92,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     sequence_length = int(common_args["sequence_length"])
     model.seqlen = sequence_length
 
+    # ── 压缩阶段（可为空 = 仅评测） ──
     stage_records: list[dict[str, Any]] = []
     final_output_dir: Path | None = None
     for stage in config.stages:
@@ -105,9 +106,14 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         gc.collect()
         empty_cache(common_args["device"])
 
+    # 仅评测模式：没有 stage 时，output_dir 由 config 或默认值决定
     if final_output_dir is None:
-        raise RuntimeError("Workflow produced no stages")
+        if config.output_dir is not None:
+            final_output_dir = ensure_dir(config.output_dir)
+        else:
+            final_output_dir = ensure_dir(Path("results/evaluate"))
 
+    # ── 评测阶段（可通过 --eval_ppl false 跳过） ──
     common_args["evaluation_output_dir"] = str(final_output_dir)
     common_args["model_path"] = config.model_path
     metrics = run_evaluations(
@@ -125,15 +131,17 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     )
 
     artifacts: dict[str, Any]
-    if config.flatten_single_stage and len(stage_records) == 1:
+    if not stage_records:
+        artifacts = {}
+    elif config.flatten_single_stage and len(stage_records) == 1:
         artifacts = stage_records[0]["artifacts"]
     else:
         artifacts = {"stages": stage_records}
-    if config.save_composed_model:
-        model_dir = ensure_dir(final_output_dir / "composed_model")
+    if config.save_model:
+        model_dir = ensure_dir(final_output_dir / "saved_model")
         model.save_pretrained(model_dir)
         tokenizer_bundle.save_pretrained(str(model_dir))
-        artifacts["composed_model_dir"] = str(model_dir)
+        artifacts["saved_model_dir"] = str(model_dir)
 
     metrics_path = write_json(final_output_dir / "metrics.json", {**metrics, "artifacts": artifacts})
     return WorkflowRunResult(

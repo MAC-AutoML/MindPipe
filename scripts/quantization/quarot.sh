@@ -23,12 +23,11 @@ ACTIVATION_GROUP_SIZE="${ACTIVATION_GROUP_SIZE:--1}"
 KV_GROUP_SIZE="${KV_GROUP_SIZE:--1}"
 WEIGHT_METHOD="${WEIGHT_METHOD:-gptq}"
 ROTATION_MODE="${ROTATION_MODE:-hadamard}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/results/quantization}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/results/quantization}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  quantization
-  --algorithm quarot
+  --quantization quarot
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -49,8 +48,8 @@ CMD=(
   --kv_group_size "$KV_GROUP_SIZE"
   --weight_method "$WEIGHT_METHOD"
   --rotation_mode "$ROTATION_MODE"
-  --weight_symmetric
-  --output_root "$OUTPUT_ROOT"
+  --weight_symmetric true
+  --output_dir "$OUTPUT_DIR"
 )
 
 if [[ -n "${ROTATION_CHECKPOINT:-}" ]]; then

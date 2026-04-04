@@ -12,15 +12,14 @@ CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-128}"
 SEQUENCE_LENGTH="${SEQUENCE_LENGTH:-2048}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
-WEIGHT_BITS="${WEIGHT_BITS:-2}" 
+WEIGHT_BITS="${WEIGHT_BITS:-2}"
 GROUP_SIZE="${GROUP_SIZE:-128}"
 AWQ_SEARCH="${AWQ_SEARCH:-true}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/my_results/quantization}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/my_results/quantization}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  quantization
-  --algorithm awq
+  --quantization awq
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -32,15 +31,11 @@ CMD=(
   --max_eval_chunks "$MAX_EVAL_CHUNKS"
   --weight_bits "$WEIGHT_BITS"
   --group_size "$GROUP_SIZE"
-  --output_root "$OUTPUT_ROOT"
-  --no-weight_symmetric
+  --output_dir "$OUTPUT_DIR"
+  --weight_symmetric false
 )
 
-if [[ "$AWQ_SEARCH" == "true" ]]; then
-  CMD+=(--awq_search)
-else
-  CMD+=(--no-awq_search)
-fi
+CMD+=(--awq_search "$AWQ_SEARCH")
 
 if [[ -n "${HF_TOKEN:-}" ]]; then
   CMD+=(--hf_token "$HF_TOKEN")

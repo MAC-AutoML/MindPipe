@@ -309,7 +309,7 @@ def _build_quantization_args(results_root: Path, metrics_path: Path, payload: di
         algorithm_name,
         "--model_path",
         payload["model_path"],
-        "--output_root",
+        "--output_dir",
         str(output_root),
         "--dtype",
         payload["dtype"],
@@ -395,7 +395,7 @@ def _build_pruning_args(results_root: Path, metrics_path: Path, payload: dict[st
         algorithm_name,
         "--model_path",
         payload["model_path"],
-        "--output_root",
+        "--output_dir",
         str(output_root),
         "--dtype",
         payload["dtype"],
@@ -441,15 +441,15 @@ def _build_workflow_args(results_root: Path, metrics_path: Path, payload: dict[s
     pruning_defaults = PRUNING_DEFAULTS.get(pruning_algorithm, {})
 
     cli_args = [
-        "--quantization_algorithm",
+        "--quantization",
         quantization_algorithm,
-        "--pruning_algorithm",
+        "--pruning",
         pruning_algorithm,
         "--execution_order",
         payload["execution_order"],
         "--model_path",
         payload["model_path"],
-        "--output_root",
+        "--output_dir",
         str(output_root),
         "--dtype",
         payload["dtype"],
@@ -618,14 +618,25 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _command_for_job(job: ReplayJob, device: str, args: argparse.Namespace, zero_shot_batch_size: int) -> list[str]:
+    # Determine the flag name based on task type
+    algo_flag = "--quantization" if job.task_type == "quantization" else "--pruning"
+    # Find and replace --algorithm <name> with --<quantization|pruning> <name>
+    cli_args = list(job.cli_args)
+    algo_idx = cli_args.index("--algorithm")
+    algo_name = cli_args[algo_idx + 1]
+    cli_args[algo_idx:algo_idx + 2] = [algo_flag, algo_name]
+    # Replace --output_root with --output_dir
+    for i, arg in enumerate(cli_args):
+        if arg == "--output_root":
+            cli_args[i] = "--output_dir"
     return [
         os.environ.get("PYTHON", os.sys.executable),
         str(MAIN_PATH),
-        job.task_type,
-        *job.cli_args,
+        *cli_args,
         "--device",
         device,
         "--eval_zero_shot",
+        "true",
         "--zero_shot_tasks",
         *args.tasks,
         "--zero_shot_num_fewshot",

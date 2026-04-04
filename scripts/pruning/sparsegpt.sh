@@ -16,12 +16,11 @@ SPARSITY_RATIO="${SPARSITY_RATIO:-0.5}"
 STRUCTURE_PATTERN="${STRUCTURE_PATTERN:-unstructured}"
 BLOCK_SIZE="${BLOCK_SIZE:-64}"
 DAMP_PERCENT="${DAMP_PERCENT:-0.01}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/results/pruning}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/results/pruning}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
-  pruning
-  --algorithm sparsegpt
+  --pruning sparsegpt
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
@@ -35,7 +34,7 @@ CMD=(
   --structure_pattern "$STRUCTURE_PATTERN"
   --block_size "$BLOCK_SIZE"
   --damp_percent "$DAMP_PERCENT"
-  --output_root "$OUTPUT_ROOT"
+  --output_dir "$OUTPUT_DIR"
 )
 
 printf 'Running:'
