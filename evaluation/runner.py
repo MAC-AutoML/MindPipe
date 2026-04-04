@@ -12,15 +12,17 @@ def run_evaluations(model, tokenizer=None, tokenizer_bundle=None, common_args: d
     if tokenizer_bundle is None:
         tokenizer_bundle = tokenizer
     resolved_tokenizer = getattr(tokenizer_bundle, "tokenizer", tokenizer_bundle)
-    metrics = evaluate_perplexity(
-        model=model,
-        tokenizer=resolved_tokenizer,
-        dataset_name=common_args["evaluation_dataset"],
-        sequence_length=int(common_args["sequence_length"]),
-        batch_size=int(common_args["batch_size"]),
-        max_eval_chunks=common_args["max_eval_chunks"],
-        device=common_args["device"],
-    )
+    metrics = {}
+    if common_args.get("eval_ppl", True):
+        metrics = evaluate_perplexity(
+            model=model,
+            tokenizer=resolved_tokenizer,
+            dataset_name=common_args["evaluation_dataset"],
+            sequence_length=int(common_args["sequence_length"]),
+            batch_size=int(common_args["batch_size"]),
+            max_eval_chunks=common_args["max_eval_chunks"],
+            device=common_args["device"],
+        )
     if common_args.get("eval_zero_shot", False):
         metrics["zero_shot"] = evaluate_zero_shot(
             model=model,

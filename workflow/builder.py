@@ -31,8 +31,9 @@ DEFAULT_VLMEVALKIT_ROOT = os.environ.get(
 )
 
 
-def _add_zero_shot_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--eval_zero_shot", action=argparse.BooleanOptionalAction, default=False)
+def _add_eval_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--eval_ppl", type=lambda v: v.lower() not in ("false", "0", "no"), default=True)
+    parser.add_argument("--eval_zero_shot", type=lambda v: v.lower() not in ("false", "0", "no"), default=False)
     parser.add_argument("--zero_shot_tasks", nargs="+", default=list(DEFAULT_ZERO_SHOT_TASKS))
     parser.add_argument("--zero_shot_num_fewshot", type=int, default=0)
     parser.add_argument("--zero_shot_batch_size", type=int, default=1)
@@ -40,15 +41,15 @@ def _add_zero_shot_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--eval_vlm", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--eval_vlm", type=lambda v: v.lower() not in ("false", "0", "no"), default=False)
     parser.add_argument("--vlm_datasets", nargs="+", default=[])
     parser.add_argument("--vlm_mode", default="all", choices=["all", "infer", "eval"])
     parser.add_argument("--vlm_work_dir", default=None)
     parser.add_argument("--vlm_eval_kit_root", default=DEFAULT_VLMEVALKIT_ROOT)
     parser.add_argument("--vlm_judge", default=None)
     parser.add_argument("--vlm_api_nproc", type=int, default=4)
-    parser.add_argument("--vlm_verbose", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--vlm_ignore_failed", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--vlm_verbose", type=lambda v: v.lower() not in ("false", "0", "no"), default=False)
+    parser.add_argument("--vlm_ignore_failed", type=lambda v: v.lower() not in ("false", "0", "no"), default=False)
     parser.add_argument("--vlm_pred_format", default="xlsx", choices=["xlsx", "tsv", "json"])
 
 
@@ -67,7 +68,7 @@ def build_quantization_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sequence_length", type=int, default=2048)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_eval_chunks", type=int, default=64)
-    _add_zero_shot_args(parser)
+    _add_eval_args(parser)
     _add_vlm_eval_args(parser)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--weight_bits", type=int, default=4)
@@ -125,7 +126,7 @@ def build_pruning_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sequence_length", type=int, default=2048)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_eval_chunks", type=int, default=64)
-    _add_zero_shot_args(parser)
+    _add_eval_args(parser)
     _add_vlm_eval_args(parser)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--sparsity_ratio", type=float, default=0.5)
@@ -160,7 +161,7 @@ def build_workflow_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sequence_length", type=int, default=2048)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_eval_chunks", type=int, default=64)
-    _add_zero_shot_args(parser)
+    _add_eval_args(parser)
     _add_vlm_eval_args(parser)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--weight_bits", type=int, default=4)
@@ -285,6 +286,7 @@ def build_workflow_config(args) -> WorkflowConfig:
         "sequence_length": args.sequence_length,
         "batch_size": args.batch_size,
         "max_eval_chunks": args.max_eval_chunks,
+        "eval_ppl": args.eval_ppl,
         "eval_zero_shot": args.eval_zero_shot,
         "zero_shot_tasks": args.zero_shot_tasks,
         "zero_shot_num_fewshot": args.zero_shot_num_fewshot,
