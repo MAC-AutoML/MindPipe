@@ -3,19 +3,31 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct}"
-DEVICE="${DEVICE:-cuda:1}"
+# openbmb/MiniCPM-V
+# /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct
+
+MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct}"
+DEVICE="${DEVICE:-cuda:7}"
 DTYPE="${DTYPE:-float16}"
 CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}"
 EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
-CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-128}"
+CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-8}"
 SEQUENCE_LENGTH="${SEQUENCE_LENGTH:-2048}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
-WEIGHT_BITS="${WEIGHT_BITS:-2}"
+WEIGHT_BITS="${WEIGHT_BITS:-4}"
 GROUP_SIZE="${GROUP_SIZE:-128}"
-AWQ_SEARCH="${AWQ_SEARCH:-true}"
-OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/my_results/quantization}"
+AWQ_SEARCH="${AWQ_SEARCH:-false}"
+EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
+ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte hellaswag winogrande arc_easy arc_challenge openbookqa}"
+ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
+ZERO_SHOT_NUM_FEWSHOT="${ZERO_SHOT_NUM_FEWSHOT:-0}"
+EVAL_VLM="${EVAL_VLM:-false}"
+VLM_DATASETS="${VLM_DATASETS:-SEEDBench_IMG ScienceQA_VAL OCRBench MMStar MME MMMU MMBench}"
+VLM_MODE="${VLM_MODE:-all}"
+VLM_API_NPROC="${VLM_API_NPROC:-4}"
+VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
+OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT:-$REPO_ROOT/my_results1/quantization}}"
 
 CMD=(
   python "$REPO_ROOT/main.py"
@@ -33,12 +45,46 @@ CMD=(
   --group_size "$GROUP_SIZE"
   --output_dir "$OUTPUT_DIR"
   --weight_symmetric false
+  --awq_search "$AWQ_SEARCH"
+  --eval_zero_shot "$EVAL_ZERO_SHOT"
+  --eval_vlm "$EVAL_VLM"
 )
-
-CMD+=(--awq_search "$AWQ_SEARCH")
 
 if [[ -n "${HF_TOKEN:-}" ]]; then
   CMD+=(--hf_token "$HF_TOKEN")
+fi
+
+if [[ "$EVAL_ZERO_SHOT" == "true" ]]; then
+  read -r -a ZERO_SHOT_TASK_ARRAY <<< "$ZERO_SHOT_TASKS"
+  CMD+=(
+    --zero_shot_tasks "${ZERO_SHOT_TASK_ARRAY[@]}"
+    --zero_shot_batch_size "$ZERO_SHOT_BATCH_SIZE"
+    --zero_shot_num_fewshot "$ZERO_SHOT_NUM_FEWSHOT"
+  )
+  if [[ -n "${ZERO_SHOT_LIMIT:-}" ]]; then
+    CMD+=(--zero_shot_limit "$ZERO_SHOT_LIMIT")
+  fi
+fi
+
+if [[ "$EVAL_VLM" == "true" ]]; then
+  read -r -a VLM_DATASET_ARRAY <<< "$VLM_DATASETS"
+  CMD+=(
+    --vlm_datasets "${VLM_DATASET_ARRAY[@]}"
+    --vlm_mode "$VLM_MODE"
+    --vlm_api_nproc "$VLM_API_NPROC"
+    --vlm_pred_format "$VLM_PRED_FORMAT"
+    --vlm_verbose "${VLM_VERBOSE:-false}"
+    --vlm_ignore_failed "${VLM_IGNORE_FAILED:-false}"
+  )
+  if [[ -n "${VLM_WORK_DIR:-}" ]]; then
+    CMD+=(--vlm_work_dir "$VLM_WORK_DIR")
+  fi
+  if [[ -n "${VLM_EVAL_KIT_ROOT:-}" ]]; then
+    CMD+=(--vlm_eval_kit_root "$VLM_EVAL_KIT_ROOT")
+  fi
+  if [[ -n "${VLM_JUDGE:-}" ]]; then
+    CMD+=(--vlm_judge "$VLM_JUDGE")
+  fi
 fi
 
 printf 'Running:'
