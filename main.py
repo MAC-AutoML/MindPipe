@@ -1,6 +1,8 @@
 """Top-level entrypoint for mindpipe."""
 
 from __future__ import annotations
+import warnings
+warnings.filterwarnings("ignore")
 
 import json
 import sys
@@ -10,7 +12,6 @@ from algorithm.common.reproducibility import set_global_seed
 from workflow.builder import build_run_parser
 from workflow.builder import build_run_config
 from workflow.executor import run_workflow
-
 
 def _build_result_payload(args, result) -> dict:
     payload = {
