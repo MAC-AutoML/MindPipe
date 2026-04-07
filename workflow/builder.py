@@ -41,7 +41,7 @@ EXECUTION_ORDER_CHOICES = (
 VALID_STAGE_TYPES = {"quantization", "pruning"}
 DEFAULT_VLMEVALKIT_ROOT = os.environ.get(
     "VLMEVALKIT_ROOT",
-    "/mnt/42_store/zxz/VLMEvalKit-source/VLMEvalKit",
+    str(REPO_ROOT / "third_party" / "VLMEvalKit"),
 )
 
 

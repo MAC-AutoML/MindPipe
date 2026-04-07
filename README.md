@@ -81,6 +81,7 @@ MindPipe/
 
 ```bash
 conda activate mindpipe
+git submodule update --init --recursive
 ```
 
 ### 量化
