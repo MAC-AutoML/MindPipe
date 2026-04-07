@@ -242,6 +242,8 @@ class QuaRotMethod(BaseQuantizationMethod):
                 down_proj_groupsize = ref_utils.llama_down_proj_groupsize(quantization_root, source_args.a_groupsize)
 
             act_qlayers = quant_utils.find_qlayers(quantization_root, layers=[quant_utils.ActQuantWrapper])
+            num_heads = model.config.num_attention_heads
+            head_dim = model.config.hidden_size // num_heads
             for layer_name, qlayer in act_qlayers.items():
                 layer_input_bits = source_args.a_bits
                 layer_groupsize = source_args.a_groupsize
@@ -252,6 +254,8 @@ class QuaRotMethod(BaseQuantizationMethod):
                         sym=not source_args.v_asym,
                         clip_ratio=source_args.v_clip_ratio,
                     )
+                if "o_proj" in layer_name:
+                    layer_groupsize = head_dim
                 if "lm_head" in layer_name:
                     layer_input_bits = 16
                 if "down_proj" in layer_name:
