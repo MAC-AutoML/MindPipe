@@ -1,1 +1,0 @@
-"""Structured Wanda source library."""
