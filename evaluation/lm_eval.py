@@ -129,7 +129,7 @@ def evaluate_zero_shot(
         "tasks": resolved_tasks,
         "num_fewshot": num_fewshot,
         "batch_size": batch_size,
-        "limit": limit,
+        "num_samples": num_samples,
         "results": task_results,
         "acc_avg": acc_avg,
         "elapsed_seconds": elapsed_seconds,

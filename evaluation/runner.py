@@ -14,8 +14,6 @@ def run_evaluations(model, tokenizer=None, tokenizer_bundle=None, common_args: d
     resolved_tokenizer = getattr(tokenizer_bundle, "tokenizer", tokenizer_bundle)
     metrics = {}
     zero_shot_num_samples = common_args.get("num_samples")
-    if zero_shot_num_samples is None:
-        zero_shot_num_samples = common_args.get("zero_shot_limit")
     if common_args.get("eval_ppl", True):
         metrics = evaluate_perplexity(
             model=model,
