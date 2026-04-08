@@ -505,6 +505,17 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
             if dataset_type == "MT":
                 raise NotImplementedError(f"Dataset `{dataset_name}` is multi-turn and is not supported yet.")
 
+            num_samples = common_args.get("num_samples")
+            if num_samples is not None:
+                original_len = len(dataset)
+                if hasattr(dataset, "data"):
+                    dataset.data = dataset.data.head(int(num_samples))
+                elif hasattr(dataset, "dataset_map"):
+                    for dname in dataset.dataset_map:
+                        dataset.dataset_map[dname].data = dataset.dataset_map[dname].data.head(int(num_samples))
+                    dataset.data = dataset.data.head(int(num_samples))
+                print(f"[vlm_eval] Dataset {dataset_name}: {original_len} -> {len(dataset)} samples (num_samples={num_samples})")
+
             result_file = modules["get_pred_file_path"](
                 str(work_dir),
                 model_name,

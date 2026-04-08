@@ -62,12 +62,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_eval_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--eval_ppl", type=_bool_flag, default=True)
+    parser.add_argument("--eval_ppl", type=_bool_flag, default=False)
     parser.add_argument("--eval_zero_shot", type=_bool_flag, default=False)
     parser.add_argument("--zero_shot_tasks", nargs="+", default=list(DEFAULT_ZERO_SHOT_TASKS))
     parser.add_argument("--zero_shot_num_fewshot", type=int, default=0)
     parser.add_argument("--zero_shot_batch_size", type=int, default=1)
-    parser.add_argument("--zero_shot_limit", type=int, default=None)
 
 
 def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
@@ -81,6 +80,7 @@ def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--vlm_verbose", type=_bool_flag, default=False)
     parser.add_argument("--vlm_ignore_failed", type=_bool_flag, default=False)
     parser.add_argument("--vlm_pred_format", default="xlsx", choices=["xlsx", "tsv", "json"])
+    parser.add_argument("--num_samples", type=int, default=None, help="Limit number of evaluation samples (applies to both zero_shot and vlm_eval)")
 
 
 def _add_pruning_args(parser: argparse.ArgumentParser) -> None:

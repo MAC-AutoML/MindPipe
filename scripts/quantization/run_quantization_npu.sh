@@ -133,7 +133,11 @@ append_passthrough_env() {
     AWQ_SEARCH
   )
   local key
+<<<<<<< HEAD
   for key in "${common_keys[@]}" "${zero_shot_keys[@]}" "${vlm_keys[@]}" "${algorithm_keys[@]}"; do
+=======
+  for key in HF_TOKEN OUTPUT_ROOT OUTPUT_DIR ZERO_SHOT_TASKS ZERO_SHOT_BATCH_SIZE ZERO_SHOT_NUM_FEWSHOT NUM_SAMPLES VLM_DATASETS VLM_MODE VLM_WORK_DIR VLM_EVAL_KIT_ROOT VLM_JUDGE VLM_API_NPROC VLM_VERBOSE VLM_IGNORE_FAILED VLM_PRED_FORMAT; do
+>>>>>>> 9111d34901f8b8e6ec0d7a4b6391a2c983100dca
     if [[ -n "${!key:-}" ]]; then
       env_ref+=("$key=${!key}")
     fi
