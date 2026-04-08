@@ -63,9 +63,6 @@ if [[ "$EVAL_ZERO_SHOT" == "true" ]]; then
     --zero_shot_batch_size "$ZERO_SHOT_BATCH_SIZE"
     --zero_shot_num_fewshot "$ZERO_SHOT_NUM_FEWSHOT"
   )
-  if [[ -n "${ZERO_SHOT_LIMIT:-}" ]]; then
-    CMD+=(--zero_shot_limit "$ZERO_SHOT_LIMIT")
-  fi
 fi
 
 if [[ "$EVAL_VLM" == "true" ]]; then
@@ -87,6 +84,10 @@ if [[ "$EVAL_VLM" == "true" ]]; then
   if [[ -n "${VLM_JUDGE:-}" ]]; then
     CMD+=(--vlm_judge "$VLM_JUDGE")
   fi
+fi
+
+if [[ -n "${NUM_SAMPLES:-}" ]]; then
+  CMD+=(--num_samples "$NUM_SAMPLES")
 fi
 
 printf 'Running:'
