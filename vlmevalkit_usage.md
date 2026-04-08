@@ -9,8 +9,24 @@
 - 为 `Qwen2.5-VL` 和 `MiniCPM-V` 增加了适配 wrapper，使 `MindPipe` 内部模型可以直接按 `VLMEvalKit` 的接口进行推理。
 - 对 `MiniCPM-V` 补了与新版 `transformers` 的兼容逻辑，包括生成接口、cache 接口和推理 dtype 相关处理。
 - 环境中安装了 `VLMEvalKit` 及所需依赖，并清理了会造成冲突但当前链路不需要的包。
+- 默认的 `VLMEvalKit` 路径改成了仓库内相对路径，优先使用 `third_party/VLMEvalKit`。
+- 同时保留了 `VLMEVALKIT_ROOT` 环境变量覆盖，方便使用外部已有的 `VLMEvalKit` 仓库。
 
 ## 如何使用
+
+### 0. 准备 `VLMEvalKit`
+
+推荐把 `VLMEvalKit` 作为 submodule 放在仓库内：
+
+```bash
+git submodule update --init --recursive
+```
+
+如果不使用仓库内 submodule，也可以通过环境变量指定外部路径：
+
+```bash
+export VLMEVALKIT_ROOT=/path/to/VLMEvalKit
+```
 
 当前有两种用法。
 

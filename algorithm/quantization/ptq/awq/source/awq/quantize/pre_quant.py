@@ -125,6 +125,49 @@ def get_model_input_device(model, device=None):
     return resolve_device(device)
 
 
+def _build_dense_causal_mask(input_ids, model):
+    batch_size, sequence_length = input_ids.shape
+    embedding_module = model.get_input_embeddings()
+    mask_dtype = embedding_module.weight.dtype
+    mask_device = input_ids.device
+    min_value = torch.finfo(mask_dtype).min
+    causal_mask = torch.zeros(
+        (sequence_length, sequence_length),
+        dtype=mask_dtype,
+        device=mask_device,
+    )
+    blocked = torch.triu(
+        torch.ones((sequence_length, sequence_length), dtype=torch.bool, device=mask_device),
+        diagonal=1,
+    )
+    causal_mask.masked_fill_(blocked, min_value)
+    return causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, sequence_length, sequence_length)
+
+
+def run_text_forward(model, input_ids):
+    if model.__class__.__name__ == "LlavaLlamaModel":
+        model.llm(input_ids, use_cache=False)
+        return
+    if model.__class__.__name__ == "InternVL3":
+        model.language_model(input_ids, use_cache=False)
+        return
+    if getattr(getattr(model, "config", None), "model_type", None) == "qwen2_5_vl" and hasattr(model, "model") and hasattr(model.model, "language_model"):
+        dense_causal_mask = _build_dense_causal_mask(input_ids, model.model.language_model)
+        attention_mask = {
+            "full_attention": dense_causal_mask,
+            "sliding_attention": dense_causal_mask,
+        }
+        model.model.language_model(input_ids, attention_mask=attention_mask, use_cache=False)
+        return
+    if hasattr(model, "model") and hasattr(model.model, "language_model"):
+        model.model.language_model(input_ids, use_cache=False)
+        return
+    if hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
+        model.language_model(input_ids, use_cache=False)
+        return
+    model(input_ids, use_cache=False)
+
+
 @torch.no_grad()
 def run_awq(
     model,
@@ -186,12 +229,7 @@ def run_awq(
     layers[0] = Catcher(layers[0])
     model_input_device = get_model_input_device(model, device=runtime_device)
     try:
-        if model.__class__.__name__ == "LlavaLlamaModel":
-            model.llm(samples.to(model_input_device), use_cache=False)
-        elif model.__class__.__name__ == "InternVL3":
-            model.language_model(samples.to(model_input_device), use_cache=False)
-        else:
-            model(samples.to(model_input_device), use_cache=False)
+        run_text_forward(model, samples.to(model_input_device))
     except ValueError:  # work with early exit
         pass
     del samples

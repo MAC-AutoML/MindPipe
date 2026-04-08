@@ -11,6 +11,43 @@ from algorithm.common.datasets import get_evaluation_tokens
 from algorithm.common.device import resolve_device
 
 
+def _build_dense_causal_mask(input_ids: torch.Tensor, model) -> torch.Tensor:
+    batch_size, sequence_length = input_ids.shape
+    embedding_module = model.get_input_embeddings()
+    mask_dtype = embedding_module.weight.dtype
+    min_value = torch.finfo(mask_dtype).min
+    causal_mask = torch.zeros(
+        (sequence_length, sequence_length),
+        dtype=mask_dtype,
+        device=input_ids.device,
+    )
+    blocked = torch.triu(
+        torch.ones((sequence_length, sequence_length), dtype=torch.bool, device=input_ids.device),
+        diagonal=1,
+    )
+    causal_mask.masked_fill_(blocked, min_value)
+    return causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, sequence_length, sequence_length)
+
+
+def _forward_for_ppl(model, batch: torch.Tensor):
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type == "qwen2_5_vl" and hasattr(model, "model") and hasattr(model.model, "language_model"):
+        dense_causal_mask = _build_dense_causal_mask(batch, model.model.language_model)
+        attention_mask = {
+            "full_attention": dense_causal_mask,
+            "sliding_attention": dense_causal_mask,
+        }
+        outputs = model.model.language_model(
+            input_ids=batch,
+            attention_mask=attention_mask,
+            use_cache=False,
+        )
+        hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs.last_hidden_state
+        return model.lm_head(hidden_states)
+    outputs = model(input_ids=batch, use_cache=False)
+    return outputs.logits
+
+
 @torch.inference_mode()
 def evaluate_perplexity(
     model,
@@ -57,8 +94,8 @@ def evaluate_perplexity(
             chunk_start * sequence_length : chunk_end * sequence_length,
         ].to(resolved_device)
         batch = batch.reshape(chunk_end - chunk_start, sequence_length)
-        outputs = model(input_ids=batch, use_cache=False)
-        logits = torch.nan_to_num(outputs.logits.float(), nan=0.0, posinf=1e4, neginf=-1e4)
+        logits = _forward_for_ppl(model, batch)
+        logits = torch.nan_to_num(logits.float(), nan=0.0, posinf=1e4, neginf=-1e4)
         logits = torch.clamp(logits, min=-1e4, max=1e4)
         shift_logits = logits[:, :-1, :].contiguous()
         shift_labels = batch[:, 1:].contiguous()

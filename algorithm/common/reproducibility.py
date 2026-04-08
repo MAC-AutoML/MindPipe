@@ -27,9 +27,15 @@ def set_global_seed(seed: int, device: str | None = None) -> None:
     if device is not None:
         resolved = resolve_device(device)
         manual_seed_all(seed, resolved)
+    
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.enabled = False  # 禁用cudnn
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
 
     try:
-        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.use_deterministic_algorithms(True)
     except Exception as error:  # pragma: no cover - defensive fallback
         LOGGER.warning("Failed to enable deterministic algorithms: %s", error)
 

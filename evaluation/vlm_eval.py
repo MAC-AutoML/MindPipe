@@ -19,9 +19,10 @@ from algorithm.common.io import ensure_dir
 from algorithm.common.io import model_slug
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VLMEVALKIT_ROOT = os.environ.get(
     "VLMEVALKIT_ROOT",
-    "/mnt/42_store/zxz/VLMEvalKit-source/VLMEvalKit",
+    str(REPO_ROOT / "third_party" / "VLMEvalKit"),
 )
 
 
@@ -72,7 +73,10 @@ def _temporary_env(**updates: str | None):
 def _load_vlmeval_modules(vlm_eval_kit_root: str) -> dict[str, Any]:
     root = Path(vlm_eval_kit_root).expanduser().resolve()
     if not root.exists():
-        raise FileNotFoundError(f"VLMEvalKit root does not exist: {root}")
+        raise FileNotFoundError(
+            f"VLMEvalKit root does not exist: {root}. "
+            "Initialize the `third_party/VLMEvalKit` submodule or set `VLMEVALKIT_ROOT`."
+        )
     root_str = str(root)
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
