@@ -62,7 +62,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_eval_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--eval_ppl", type=_bool_flag, default=True)
+    parser.add_argument("--eval_ppl", type=_bool_flag, default=False)
     parser.add_argument("--eval_zero_shot", type=_bool_flag, default=False)
     parser.add_argument("--zero_shot_tasks", nargs="+", default=list(DEFAULT_ZERO_SHOT_TASKS))
     parser.add_argument("--zero_shot_num_fewshot", type=int, default=0)
