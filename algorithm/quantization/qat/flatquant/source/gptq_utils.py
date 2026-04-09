@@ -7,6 +7,7 @@ import logging
 from algorithm.common.device import empty_cache
 from algorithm.common.device import synchronize
 
+from flatquant.backbone_utils import get_decoder_config
 from flatquant.backbone_utils import get_decoder_layers
 from flatquant.backbone_utils import move_front_modules
 from flatquant.backbone_utils import unwrap_layer_output
@@ -175,8 +176,9 @@ def gptq_fwrd(model, dataloader, dev, args):
     '''
     logging.info('-----GPTQ Quantization-----')
     
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
+    decoder_config = get_decoder_config(model)
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
     layers = get_decoder_layers(model)
 
     move_front_modules(model, dev)
@@ -184,7 +186,7 @@ def gptq_fwrd(model, dataloader, dev, args):
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros(
-        (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
+        (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=dev
     )
     cache = {'i': 0, 'layer_kwargs': {}}
 
@@ -283,7 +285,7 @@ def gptq_fwrd(model, dataloader, dev, args):
 
         inps, outs = outs, inps
 
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     cleanup_memory(verbose=True)
     logging.info('-----GPTQ Quantization Done-----\n')
     return quantizers

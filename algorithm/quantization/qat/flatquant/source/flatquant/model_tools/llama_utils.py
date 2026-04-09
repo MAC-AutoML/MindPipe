@@ -1,3 +1,4 @@
+import inspect
 import math
 
 import torch
@@ -16,6 +17,16 @@ from transformers.models.llama.modeling_llama import LlamaMLP, LlamaAttention, \
 
 
 from tqdm import tqdm
+
+
+_LLAMA_APPLY_ROTARY_HAS_POSITION_IDS = "position_ids" in inspect.signature(apply_rotary_pos_emb).parameters
+
+
+def _apply_llama_rotary_pos_emb(query_states, key_states, cos, sin, position_ids):
+    if _LLAMA_APPLY_ROTARY_HAS_POSITION_IDS:
+        return apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+    return apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
 
 class FlatQuantLlamaMLP(LlamaMLP):
     def __init__(self, args, module: LlamaMLP):
@@ -267,7 +278,13 @@ class FlatQuantLlamaAttention(LlamaAttention):
                 cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         else:
             cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+        query_states, key_states = _apply_llama_rotary_pos_emb(
+            query_states,
+            key_states,
+            cos,
+            sin,
+            position_ids,
+        )
         # ---- here do the quantization ----
         if not self._ori_mode:
             query_states, key_states = self.quant_kcache(query_states, key_states)

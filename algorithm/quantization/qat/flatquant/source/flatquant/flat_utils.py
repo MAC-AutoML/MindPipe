@@ -30,7 +30,7 @@ def reparameterize_ln(ln, trans):
 
 def reparameterize_model(model):
     layers = get_decoder_layers(model)
-    for idx in range(model.config.num_hidden_layers):
+    for idx in range(len(layers)):
         layer = layers[idx]
         layer.self_attn.reparameterize()
         layer.mlp.reparameterize()

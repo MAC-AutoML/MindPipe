@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Shared experiment defaults
 OUTPUT_ROOT_DEFAULT="$REPO_ROOT/new_results/quantization"
 DATA_PATH_DEFAULT="/mnt/42_store/lcw/data2/Huawei/datasets"
-SEQUENCE_LENGTH_DEFAULT=2048
+SEQUENCE_LENGTH_DEFAULT=512
 DATA_PATH="${DATA_PATH:-$DATA_PATH_DEFAULT}"
 CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}"
 EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
@@ -33,10 +33,10 @@ FLATQUANT_VALUE_BITS_DEFAULT=4
 
 # Experiment matrix
 MODELS=(
-  # "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
   "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct"
   "/mnt/82_store/LLM-weights/Llama-2-7b-hf"
   "/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct"
+  # "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
   # "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
 )
 AWQ_BITS=(2 3 4)
@@ -160,11 +160,7 @@ append_passthrough_env() {
     AWQ_SEARCH
   )
   local key
-<<<<<<< HEAD
   for key in "${common_keys[@]}" "${zero_shot_keys[@]}" "${vlm_keys[@]}" "${algorithm_keys[@]}"; do
-=======
-  for key in HF_TOKEN OUTPUT_ROOT OUTPUT_DIR ZERO_SHOT_TASKS ZERO_SHOT_BATCH_SIZE ZERO_SHOT_NUM_FEWSHOT NUM_SAMPLES VLM_DATASETS VLM_MODE VLM_WORK_DIR VLM_EVAL_KIT_ROOT VLM_JUDGE VLM_API_NPROC VLM_VERBOSE VLM_IGNORE_FAILED VLM_PRED_FORMAT; do
->>>>>>> 9111d34901f8b8e6ec0d7a4b6391a2c983100dca
     if [[ -n "${!key:-}" ]]; then
       env_ref+=("$key=${!key}")
     fi
