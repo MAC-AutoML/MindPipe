@@ -8,6 +8,8 @@ import os
 from types import MethodType
 from typing import Any
 
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import torch
 import torch.nn as nn
 from transformers import AutoConfig
@@ -24,6 +26,7 @@ from transformers import AutoProcessor
 from transformers import AutoTokenizer
 from transformers import GenerationConfig
 from transformers.generation import GenerationMixin
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
 try:
     from transformers.cache_utils import Cache
     from transformers.cache_utils import DynamicCache
@@ -125,16 +128,24 @@ class TextBackbone:
         raise AttributeError(f"Unsupported backbone root: {type(self.root)}")
 
     @property
+    def decoder_config(self):
+        config_candidates = [
+            getattr(self.root, "config", None),
+            getattr(self.model, "config", None),
+        ]
+        for config in config_candidates:
+            if config is None:
+                continue
+            text_config = getattr(config, "text_config", None)
+            if text_config is not None:
+                return text_config
+            if hasattr(config, "hidden_size"):
+                return config
+        raise AttributeError(f"Unsupported decoder config for backbone root: {type(self.root)}")
+
+    @property
     def hidden_size(self) -> int:
-        hidden_size = getattr(getattr(self.root, "config", None), "hidden_size", None)
-        if hidden_size is None:
-            model_config = getattr(self.model, "config", None)
-            hidden_size = getattr(model_config, "hidden_size", None)
-        if hidden_size is None:
-            hidden_size = getattr(getattr(getattr(self.model, "config", None), "text_config", None), "hidden_size", None)
-        if hidden_size is None:
-            raise AttributeError(f"Cannot resolve hidden_size for backbone root: {type(self.root)}")
-        return int(hidden_size)
+        return int(self.decoder_config.hidden_size)
 
     @property
     def embed_tokens(self) -> nn.Module | None:
@@ -180,6 +191,83 @@ def resolve_dtype(dtype_name: str) -> str | torch.dtype:
     if dtype_name == "bfloat16":
         return torch.bfloat16
     return "auto"
+
+
+def _ensure_transformers_remote_code_compat() -> None:
+    """Patch small API removals that older HF remote code may still import."""
+    import transformers.utils.import_utils as import_utils
+
+    if not hasattr(import_utils, "is_torch_fx_available"):
+        import_utils.is_torch_fx_available = lambda: hasattr(torch, "fx")
+
+
+def _normalize_legacy_remote_config(config) -> None:
+    model_type = getattr(config, "model_type", None)
+    if model_type not in {"minicpm", "minicpmv"}:
+        return
+
+    rope_scaling = getattr(config, "rope_scaling", None)
+    if not isinstance(rope_scaling, dict):
+        return
+    if "type" in rope_scaling and "factor" in rope_scaling:
+        return
+
+    rope_type = rope_scaling.get("rope_type")
+    factor = rope_scaling.get("factor")
+    if rope_type in (None, "default"):
+        config.rope_scaling = None
+        return
+    if rope_type in {"linear", "dynamic"} and factor is not None:
+        config.rope_scaling = {"type": rope_type, "factor": float(factor)}
+        return
+    config.rope_scaling = None
+
+
+def _patch_minicpmv_remote_class(model_path: str) -> None:
+    _ensure_transformers_remote_code_compat()
+    minicpmv_cls = get_class_from_dynamic_module("modeling_minicpmv.MiniCPMV", model_path)
+    if getattr(minicpmv_cls, "_mindpipe_post_init_patched", False):
+        return
+
+    original_init = minicpmv_cls.__init__
+
+    def patched_init(self, config, *args, **kwargs):
+        original_init(self, config, *args, **kwargs)
+        if not hasattr(self, "all_tied_weights_keys"):
+            self.post_init()
+
+    minicpmv_cls.__init__ = patched_init
+    minicpmv_cls._mindpipe_post_init_patched = True
+
+
+def _prepare_minicpm_tokenizer_env() -> None:
+    os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
+
+def _refresh_minicpm_rotary_embeddings(model: nn.Module) -> None:
+    backbone = get_text_backbone(model)
+    for layer_idx, layer in enumerate(backbone.layers):
+        attn = getattr(layer, "self_attn", None)
+        if attn is None or not hasattr(attn, "_init_rope"):
+            continue
+
+        q_proj = getattr(attn, "q_proj", None)
+        q_weight = getattr(q_proj, "weight", None)
+        target_device = q_weight.device if q_weight is not None else None
+
+        attn._init_rope()
+        rotary_emb = getattr(attn, "rotary_emb", None)
+        if rotary_emb is None:
+            raise RuntimeError(f"MiniCPM attention layer {layer_idx} did not rebuild rotary embeddings.")
+        if target_device is not None:
+            rotary_emb.to(device=target_device)
+
+        for buffer_name in ("inv_freq", "cos_cached", "sin_cached"):
+            buffer_value = getattr(rotary_emb, buffer_name, None)
+            if buffer_value is None or not torch.is_tensor(buffer_value):
+                raise RuntimeError(f"MiniCPM rotary buffer `{buffer_name}` is missing at layer {layer_idx}.")
+            if not torch.isfinite(buffer_value).all():
+                raise RuntimeError(f"MiniCPM rotary buffer `{buffer_name}` is non-finite at layer {layer_idx}.")
 
 
 def ensure_generation_compat(model: nn.Module) -> nn.Module:
@@ -281,7 +369,9 @@ def load_model_and_tokenizer(
     dtype: str = "auto",
     force_eager: bool = False,
 ):
+    _ensure_transformers_remote_code_compat()
     config = _load_config_with_fallback(model_path, trust_remote_code=True)
+    _normalize_legacy_remote_config(config)
     if force_eager:
         if hasattr(config, "_attn_implementation_internal"):
             config._attn_implementation_internal = "eager"
@@ -351,6 +441,7 @@ def load_model_and_tokenizer(
             ensure_generation_compat(model.language_model)
         processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     elif config.model_type == "minicpmv" or "MiniCPMV" in architectures:
+        _patch_minicpmv_remote_class(model_path)
         multimodal_model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
         if not hasattr(multimodal_model, "llm"):
             raise AttributeError(f"MiniCPM-V model from {model_path} does not expose an `llm` decoder.")
@@ -362,6 +453,9 @@ def load_model_and_tokenizer(
         processor = None
 
     tokenizer = getattr(processor, "tokenizer", None)
+    if config.model_type in {"minicpm", "minicpmv"} or "MiniCPMV" in architectures:
+        _refresh_minicpm_rotary_embeddings(model)
+        _prepare_minicpm_tokenizer_env()
     if tokenizer is None:
         try:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -379,7 +473,7 @@ def load_model_and_tokenizer(
         tokenizer.pad_token = tokenizer.eos_token
     try:
         backbone = get_text_backbone(model)
-        max_position_embeddings = getattr(backbone.root.config, "max_position_embeddings", 2048)
+        max_position_embeddings = getattr(backbone.decoder_config, "max_position_embeddings", 2048)
         model.seqlen = min(int(max_position_embeddings), 2048)
     except Exception:
         max_position_embeddings = getattr(model.config, "max_position_embeddings", 2048)
@@ -471,8 +565,12 @@ def capture_first_block_inputs(
     device: str | torch.device,
 ):
     device = resolve_device(device)
-    use_cache = getattr(model.config, "use_cache", False)
-    model.config.use_cache = False
+    decoder_config = backbone.decoder_config
+    use_cache = getattr(decoder_config, "use_cache", getattr(model.config, "use_cache", False))
+    if hasattr(decoder_config, "use_cache"):
+        decoder_config.use_cache = False
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = False
     blocks = backbone.layers
     backbone.move_front_modules(device)
     blocks[0] = blocks[0].to(device)
@@ -521,5 +619,8 @@ def capture_first_block_inputs(
     blocks[0] = blocks[0].cpu()
     backbone.move_front_modules("cpu")
     empty_cache(device)
-    model.config.use_cache = use_cache
+    if hasattr(decoder_config, "use_cache"):
+        decoder_config.use_cache = use_cache
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = use_cache
     return inputs, dict(cached_kwargs)

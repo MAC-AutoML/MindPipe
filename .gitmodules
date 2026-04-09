@@ -1,3 +1,3 @@
 [submodule "third_party/VLMEvalKit"]
 	path = third_party/VLMEvalKit
-	url = git@github.com:open-compass/VLMEvalKit.git
+	url = https://github.com/open-compass/VLMEvalKit.git

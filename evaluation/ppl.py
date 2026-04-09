@@ -72,6 +72,12 @@ def evaluate_perplexity(
     if max_eval_chunks is not None:
         total_chunks = min(total_chunks, max_eval_chunks)
 
+    # Free cached memory from pruning/calibration before evaluation
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.empty_cache()
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     model.to(resolved_device)
     model.eval()
     if hasattr(model.config, "use_cache"):

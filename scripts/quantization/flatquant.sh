@@ -31,11 +31,12 @@ FLATQUANT_LAC="${FLATQUANT_LAC:-true}"
 FLATQUANT_DIRECT_INV="${FLATQUANT_DIRECT_INV:-true}"
 FLATQUANT_DEACTIVE_AMP="${FLATQUANT_DEACTIVE_AMP:-true}"
 EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
-ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte hellaswag winogrande arc_easy arc_challenge openbookqa}"
+ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte winogrande arc_easy arc_challenge openbookqa}"
 ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
 ZERO_SHOT_NUM_FEWSHOT="${ZERO_SHOT_NUM_FEWSHOT:-0}"
 EVAL_VLM="${EVAL_VLM:-false}"
-VLM_DATASETS="${VLM_DATASETS:-SEEDBench_IMG ScienceQA_VAL OCRBench MMStar MME MMMU MMBench}"
+# SEEDBench_IMG
+VLM_DATASETS="${VLM_DATASETS:-OCRBench TextVQA_VAL ChartQA_TEST InfoVQA_VAL}"
 VLM_MODE="${VLM_MODE:-all}"
 VLM_API_NPROC="${VLM_API_NPROC:-4}"
 VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
@@ -87,9 +88,6 @@ if [[ "$EVAL_ZERO_SHOT" == "true" ]]; then
     --zero_shot_batch_size "$ZERO_SHOT_BATCH_SIZE"
     --zero_shot_num_fewshot "$ZERO_SHOT_NUM_FEWSHOT"
   )
-  if [[ -n "${ZERO_SHOT_LIMIT:-}" ]]; then
-    CMD+=(--zero_shot_limit "$ZERO_SHOT_LIMIT")
-  fi
 fi
 
 if [[ "$EVAL_VLM" == "true" ]]; then
@@ -111,6 +109,10 @@ if [[ "$EVAL_VLM" == "true" ]]; then
   if [[ -n "${VLM_JUDGE:-}" ]]; then
     CMD+=(--vlm_judge "$VLM_JUDGE")
   fi
+fi
+
+if [[ -n "${NUM_SAMPLES:-}" ]]; then
+  CMD+=(--num_samples "$NUM_SAMPLES")
 fi
 
 printf 'Running:'

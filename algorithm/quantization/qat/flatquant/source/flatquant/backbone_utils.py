@@ -30,6 +30,15 @@ def get_decoder_layers(model):
     raise AttributeError(f"Unsupported decoder root: {type(root)}")
 
 
+def get_decoder_config(model):
+    root = get_decoder_root(model)
+    if hasattr(root, "config") and root.config is not None:
+        return root.config
+    if hasattr(model, "config") and hasattr(model.config, "text_config"):
+        return model.config.text_config
+    raise AttributeError(f"Unsupported decoder config for model: {type(model)}")
+
+
 def move_front_modules(model, device):
     root = get_decoder_root(model)
     for attr_name in (

@@ -2,20 +2,42 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUTPUT_ROOT_DEFAULT="$REPO_ROOT/my_results/quantization"
+
+# Shared experiment defaults
+OUTPUT_ROOT_DEFAULT="$REPO_ROOT/new_results/quantization"
 DATA_PATH_DEFAULT="/mnt/42_store/lcw/data2/Huawei/datasets"
-SEQUENCE_LENGTH_DEFAULT=2048
+SEQUENCE_LENGTH_DEFAULT=512
+DATA_PATH="${DATA_PATH:-$DATA_PATH_DEFAULT}"
+CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}"
+EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
+CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-128}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
+
+# Shared evaluation defaults
+EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
+ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte winogrande arc_easy arc_challenge openbookqa}"
+ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
+ZERO_SHOT_NUM_FEWSHOT="${ZERO_SHOT_NUM_FEWSHOT:-0}"
+EVAL_VLM="${EVAL_VLM:-true}"
+VLM_DATASETS="${VLM_DATASETS:-OCRBench TextVQA_VAL ChartQA_TEST InfoVQA_VAL}"
+VLM_MODE="${VLM_MODE:-all}"
+VLM_API_NPROC="${VLM_API_NPROC:-4}"
+VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
+
+# Algorithm-specific defaults
+AWQ_SEARCH="${AWQ_SEARCH:-true}"
 FLATQUANT_QUERY_BITS_DEFAULT=16
 FLATQUANT_KEY_BITS_DEFAULT=4
 FLATQUANT_VALUE_BITS_DEFAULT=4
-DATA_PATH="${DATA_PATH:-$DATA_PATH_DEFAULT}"
 
+# Experiment matrix
 MODELS=(
-  "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
   "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct"
   "/mnt/82_store/LLM-weights/Llama-2-7b-hf"
   "/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct"
-  "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
+  # "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
+  # "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
 )
 AWQ_BITS=(2 3 4)
 GPTQ_BITS=(2 3 4)
@@ -28,16 +50,16 @@ FLATQUANT_CONFIGS=(
   "16 16 16 16 16 w16a16"
 )
 
-ENABLE_AWQ="${ENABLE_AWQ:-true}"
-ENABLE_GPTQ="${ENABLE_GPTQ:-true}"
+# Worker scheduling
+ENABLE_AWQ="${ENABLE_AWQ:-false}"
+ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
 ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-true}"
 
-AWQ_GPUS="${AWQ_GPUS:-0}"
+AWQ_GPUS="${AWQ_GPUS:-6}"
 GPTQ_GPUS="${GPTQ_GPUS:-7}"
-FLATQUANT_GPUS="${FLATQUANT_GPUS:-1,2}"
+FLATQUANT_GPUS="${FLATQUANT_GPUS:-3,6}"
 
-EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
-EVAL_VLM="${EVAL_VLM:-true}"
+# Execution control
 FORCE_RERUN="${FORCE_RERUN:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 
@@ -106,8 +128,39 @@ is_complete() {
 
 append_passthrough_env() {
   local -n env_ref="$1"
+  local -a common_keys=(
+    HF_TOKEN
+    OUTPUT_ROOT
+    OUTPUT_DIR
+    DATA_PATH
+    CALIBRATION_DATASET
+    EVALUATION_DATASET
+    CALIBRATION_SAMPLES
+    BATCH_SIZE
+    MAX_EVAL_CHUNKS
+  )
+  local -a zero_shot_keys=(
+    ZERO_SHOT_TASKS
+    ZERO_SHOT_BATCH_SIZE
+    ZERO_SHOT_NUM_FEWSHOT
+    ZERO_SHOT_LIMIT
+  )
+  local -a vlm_keys=(
+    VLM_DATASETS
+    VLM_MODE
+    VLM_WORK_DIR
+    VLM_EVAL_KIT_ROOT
+    VLM_JUDGE
+    VLM_API_NPROC
+    VLM_VERBOSE
+    VLM_IGNORE_FAILED
+    VLM_PRED_FORMAT
+  )
+  local -a algorithm_keys=(
+    AWQ_SEARCH
+  )
   local key
-  for key in HF_TOKEN OUTPUT_ROOT OUTPUT_DIR ZERO_SHOT_TASKS ZERO_SHOT_BATCH_SIZE ZERO_SHOT_NUM_FEWSHOT ZERO_SHOT_LIMIT VLM_DATASETS VLM_MODE VLM_WORK_DIR VLM_EVAL_KIT_ROOT VLM_JUDGE VLM_API_NPROC VLM_VERBOSE VLM_IGNORE_FAILED VLM_PRED_FORMAT; do
+  for key in "${common_keys[@]}" "${zero_shot_keys[@]}" "${vlm_keys[@]}" "${algorithm_keys[@]}"; do
     if [[ -n "${!key:-}" ]]; then
       env_ref+=("$key=${!key}")
     fi
