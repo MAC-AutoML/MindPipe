@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from flatquant.flat_linear import FlatQuantizedLinear
 from flatquant.function_utils import get_decompose_dim
@@ -22,6 +23,7 @@ class FlatQuantMiniCPMMLP(nn.Module):
     def __init__(self, args, module):
         super().__init__()
         self.args = args
+        object.__setattr__(self, "_original_module", module)
         self.hidden_size = module.hidden_size
         self.intermediate_size = module.intermediate_size
         self.act_fn = module.act_fn
@@ -71,13 +73,31 @@ class FlatQuantMiniCPMMLP(nn.Module):
     def _ori_forward(self, x):
         if self.diag_init == "sq_style":
             self.up_smax = torch.maximum(self.up_smax, x.reshape(-1, x.shape[-1]).abs().max(0)[0].clone().detach())
-        hidden = self.act_fn(self.gate_proj._ori_forward(x)) * self.up_proj._ori_forward(x)
-        if self.diag_init == "sq_style":
+            original_module = self._original_module
+            if getattr(original_module.config, "pretraining_tp", 1) > 1:
+                slice_size = original_module.intermediate_size // original_module.config.pretraining_tp
+                gate_proj = torch.cat(
+                    [
+                        F.linear(x, gate_proj_slice)
+                        for gate_proj_slice in original_module.gate_proj.weight.split(slice_size, dim=0)
+                    ],
+                    dim=-1,
+                )
+                up_proj = torch.cat(
+                    [
+                        F.linear(x, up_proj_slice)
+                        for up_proj_slice in original_module.up_proj.weight.split(slice_size, dim=0)
+                    ],
+                    dim=-1,
+                )
+                hidden = original_module.act_fn(gate_proj) * up_proj
+            else:
+                hidden = original_module.act_fn(original_module.gate_proj(x)) * original_module.up_proj(x)
             self.down_smax = torch.maximum(
                 self.down_smax,
                 hidden.reshape(-1, hidden.shape[-1]).abs().max(0)[0].clone().detach(),
             )
-        return self.down_proj._ori_forward(hidden)
+        return self._original_module(x)
 
     def forward(self, x):
         if self._ori_mode:
@@ -121,6 +141,7 @@ class FlatQuantMiniCPMAttention(nn.Module):
     def __init__(self, args, module):
         super().__init__()
         self.args = args
+        object.__setattr__(self, "_original_module", module)
         self.config = module.config
         self.layer_idx = getattr(module, "layer_idx", None)
         self.hidden_size = getattr(module, "hidden_size", module.config.hidden_size)
@@ -266,11 +287,24 @@ class FlatQuantMiniCPMAttention(nn.Module):
         use_cache=False,
         **kwargs,
     ):
-        bsz, q_len, _ = hidden_states.size()
         if self._ori_mode:
-            query_states, key_states, value_states = self._ori_forward_after_ln(hidden_states)
-        else:
-            query_states, key_states, value_states = self._trans_forward_after_ln(hidden_states)
+            if self.diag_init == "sq_style" and hasattr(self, "ln_smax"):
+                self.ln_smax = torch.maximum(
+                    self.ln_smax,
+                    hidden_states.reshape(-1, hidden_states.shape[-1]).abs().max(0)[0].clone().detach(),
+                )
+            return self._original_module(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                **kwargs,
+            )
+
+        bsz, q_len, _ = hidden_states.size()
+        query_states, key_states, value_states = self._trans_forward_after_ln(hidden_states)
 
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -282,9 +316,8 @@ class FlatQuantMiniCPMAttention(nn.Module):
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = self.apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
-        if not self._ori_mode:
-            query_states, key_states = self.quant_kcache(query_states, key_states)
-            value_states = self.quant_vcache(value_states)
+        query_states, key_states = self.quant_kcache(query_states, key_states)
+        value_states = self.quant_vcache(value_states)
 
         present_key_value = None
         if past_key_value is not None:
