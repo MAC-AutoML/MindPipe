@@ -79,8 +79,24 @@ class TextBackbone:
         raise AttributeError(f"Unsupported backbone root: {type(self.root)}")
 
     @property
+    def decoder_config(self):
+        config_candidates = [
+            getattr(self.root, "config", None),
+            getattr(self.model, "config", None),
+        ]
+        for config in config_candidates:
+            if config is None:
+                continue
+            text_config = getattr(config, "text_config", None)
+            if text_config is not None:
+                return text_config
+            if hasattr(config, "hidden_size"):
+                return config
+        raise AttributeError(f"Unsupported decoder config for backbone root: {type(self.root)}")
+
+    @property
     def hidden_size(self) -> int:
-        return int(getattr(self.root.config, "hidden_size", self.model.config.hidden_size))
+        return int(self.decoder_config.hidden_size)
 
     @property
     def embed_tokens(self) -> nn.Module | None:
@@ -349,7 +365,7 @@ def load_model_and_tokenizer(
         tokenizer.pad_token = tokenizer.eos_token
     try:
         backbone = get_text_backbone(model)
-        max_position_embeddings = getattr(backbone.root.config, "max_position_embeddings", 2048)
+        max_position_embeddings = getattr(backbone.decoder_config, "max_position_embeddings", 2048)
         model.seqlen = min(int(max_position_embeddings), 2048)
     except Exception:
         max_position_embeddings = getattr(model.config, "max_position_embeddings", 2048)
@@ -436,8 +452,12 @@ def capture_first_block_inputs(
     device: str | torch.device,
 ):
     device = resolve_device(device)
-    use_cache = getattr(model.config, "use_cache", False)
-    model.config.use_cache = False
+    decoder_config = backbone.decoder_config
+    use_cache = getattr(decoder_config, "use_cache", getattr(model.config, "use_cache", False))
+    if hasattr(decoder_config, "use_cache"):
+        decoder_config.use_cache = False
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = False
     blocks = backbone.layers
     backbone.move_front_modules(device)
     blocks[0] = blocks[0].to(device)
@@ -486,5 +506,8 @@ def capture_first_block_inputs(
     blocks[0] = blocks[0].cpu()
     backbone.move_front_modules("cpu")
     empty_cache(device)
-    model.config.use_cache = use_cache
+    if hasattr(decoder_config, "use_cache"):
+        decoder_config.use_cache = use_cache
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = use_cache
     return inputs, dict(cached_kwargs)
