@@ -19,6 +19,15 @@ from flatquant.function_utils import set_require_grad_all, get_n_set_parameters_
 from flatquant.quant_utils import set_quantizer_state
 
 
+def _build_calibration_forward_kwargs(model, sample):
+    model_type = getattr(model.config, "model_type", None)
+    if model_type == "qwen2_5_vl":
+        # Qwen2.5-VL builds 3D position_ids for multimodal RoPE. With `attention_mask=None`,
+        # recent transformers masking code tries to reinterpret those ids as a packed 2D mask.
+        return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
+    return {}
+
+
 def _reset_square_linear_to_identity(linear):
     if hasattr(linear, "parametrizations") and hasattr(linear.parametrizations, "weight"):
         weight = linear.parametrizations.weight.original
@@ -110,7 +119,8 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
                 break
             try:
                 sample = batch[0]
-                model(sample.to(dev), use_cache=False)
+                sample = sample.to(dev)
+                model(sample, use_cache=False, **_build_calibration_forward_kwargs(model, sample))
             except ValueError:
                 pass
     layer_kwargs = dict(cache["layer_kwargs"])
