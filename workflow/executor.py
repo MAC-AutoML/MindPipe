@@ -80,7 +80,8 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     common_args["device"] = resolved_device
 
     dtype = config.common_args.get("dtype", "auto")
-    model, tokenizer_bundle = load_model_and_tokenizer(config.model_path, dtype=dtype)
+    attn_implementation = config.common_args.get("attn_implementation")
+    model, tokenizer_bundle = load_model_and_tokenizer(config.model_path,dtype=dtype,attn_implementation=attn_implementation,)
     sequence_length = int(common_args["sequence_length"])
     model.seqlen = sequence_length
 

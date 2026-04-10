@@ -39,12 +39,7 @@ class QuaRotMethod(BaseQuantizationMethod):
             return None, None
 
     def load_resources(self, args):
-        force_eager = not self._should_use_runtime_path_for_args(args)
-        return load_model_and_tokenizer(args.model_path, dtype=args.dtype, force_eager=force_eager)
-
-    @staticmethod
-    def _should_use_runtime_path_for_args(args) -> bool:
-        return args.activation_bits >= 16 and args.key_bits >= 16 and args.value_bits >= 16
+        return load_model_and_tokenizer(args.model_path,dtype=args.dtype,attn_implementation=args.attn_implementation)
 
     @staticmethod
     def _quantization_root(model):

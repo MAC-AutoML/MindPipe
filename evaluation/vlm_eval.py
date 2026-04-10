@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import inspect
+import logging
 import math
 import os
 import sys
@@ -116,7 +117,13 @@ def _resolve_model_name(common_args: dict[str, Any]) -> str:
     return "mindpipe_model"
 
 
-def _default_max_new_tokens(dataset_type: str) -> int:
+def _default_max_new_tokens(dataset_name: str | None, dataset_type: str) -> int:
+    if dataset_name == "OCRBench":
+        return 128
+    if dataset_name == "ChartQA_TEST":
+        return 16
+    if dataset_name in {"TextVQA_VAL", "InfoVQA_VAL"}:
+        return 32
     if dataset_type == "MCQ":
         return 128
     if dataset_type == "Y/N":
@@ -153,7 +160,29 @@ def _open_image(image_path: str) -> Image.Image:
     return Image.open(image_path).convert("RGB")
 
 
-def _build_qwen_wrapper(
+def _build_qwen2_messages(message, dataset: str | None):
+    conversation = []
+    for item in message:
+        if item["type"] == "text":
+            conversation.append({"type": "text", "text": item["value"]})
+            continue
+        if item["type"] == "image":
+            image_path = Path(item["value"]).expanduser().resolve()
+            content_item = {"type": "image", "image": image_path.as_uri()}
+            if dataset == "OCRBench":
+                content_item["min_pixels"] = 10 * 10 * 28 * 28
+            for key in ("min_pixels", "max_pixels", "total_pixels", "resized_height", "resized_width"):
+                if key in item and item[key] is not None:
+                    content_item[key] = item[key]
+            conversation.append(content_item)
+            continue
+        if item["type"] == "video":
+            raise NotImplementedError("MindPipe VLM evaluation does not support video datasets yet.")
+        raise ValueError(f"Unsupported message item: {item}")
+    return [{"role": "user", "content": conversation}]
+
+
+def _build_qwen2_wrapper(
     model,
     tokenizer_bundle,
     common_args: dict[str, Any],
@@ -164,10 +193,10 @@ def _build_qwen_wrapper(
     processor = tokenizer_bundle.processor
     tokenizer = tokenizer_bundle.tokenizer
     if processor is None:
-        raise ValueError("Qwen2.5-VL evaluation requires TokenizerBundle.processor.")
+        raise ValueError("Qwen2/Qwen2.5-VL evaluation requires TokenizerBundle.processor.")
     target_device = resolve_device(common_args.get("device", "auto"))
 
-    class MindPipeQwenVLWrapper(base_model_cls):
+    class MindPipeQwen2VLWrapper(base_model_cls):
         INTERLEAVE = True
 
         def __init__(self):
@@ -182,7 +211,7 @@ def _build_qwen_wrapper(
             return False
 
         def build_prompt(self, line, dataset):
-            raise NotImplementedError("MindPipe Qwen2.5-VL wrapper relies on dataset prompts.")
+            raise NotImplementedError("MindPipe Qwen2/Qwen2.5-VL wrapper relies on dataset prompts.")
 
         def _ensure_model_ready(self):
             if self._model_prepared:
@@ -200,47 +229,31 @@ def _build_qwen_wrapper(
             self._model_prepared = True
 
         def generate_inner(self, message, dataset=None):
+            try:
+                from qwen_vl_utils import process_vision_info
+            except Exception as err:
+                logging.critical("qwen_vl_utils not found, please install it via 'pip install qwen-vl-utils'")
+                raise err
             self._ensure_model_ready()
-            conversation = []
-            images = []
-            for item in message:
-                if item["type"] == "text":
-                    conversation.append({"type": "text", "text": item["value"]})
-                elif item["type"] == "image":
-                    image_path = Path(item["value"]).expanduser().resolve()
-                    conversation.append({"type": "image", "image": image_path.as_uri()})
-                    images.append(_open_image(str(image_path)))
-                elif item["type"] == "video":
-                    raise NotImplementedError("MindPipe VLM evaluation does not support video datasets yet.")
-                else:
-                    raise ValueError(f"Unsupported message item: {item}")
-
-            messages = [{"role": "user", "content": conversation}]
+            messages = _build_qwen2_messages(message, dataset)
             prompt = self.processor.apply_chat_template(
                 [messages],
                 tokenize=False,
                 add_generation_prompt=True,
             )
-            batched_images = [images] if images else None
-            try:
-                inputs = self.processor(
-                    text=prompt,
-                    images=batched_images,
-                    padding=True,
-                    return_tensors="pt",
-                )
-            except Exception:
-                inputs = self.processor(
-                    text=prompt,
-                    images=images or None,
-                    padding=True,
-                    return_tensors="pt",
-                )
+            images, videos = process_vision_info([messages])
+            inputs = self.processor(
+                text=prompt,
+                images=images,
+                videos=videos,
+                padding=True,
+                return_tensors="pt",
+            )
             inputs = _maybe_to_device(inputs, _model_input_device(self.model, self.target_device))
             input_ids = inputs["input_ids"] if isinstance(inputs, dict) else inputs.input_ids
             generated_ids = self.model.generate(
                 **inputs,
-                max_new_tokens=_default_max_new_tokens(dataset_type_resolver(dataset)),
+                max_new_tokens=_default_max_new_tokens(dataset, dataset_type_resolver(dataset)),
                 do_sample=False,
             )
             trimmed_ids = [
@@ -254,7 +267,7 @@ def _build_qwen_wrapper(
             )
             return responses[0].strip()
 
-    return MindPipeQwenVLWrapper()
+    return MindPipeQwen2VLWrapper()
 
 
 def _build_minicpm_wrapper(
@@ -365,7 +378,7 @@ def _build_minicpm_wrapper(
         def generate_inner(self, message, dataset=None):
             self._ensure_model_ready()
             dataset_type = dataset_type_resolver(dataset)
-            max_new_tokens = _default_max_new_tokens(dataset_type)
+            max_new_tokens = _default_max_new_tokens(dataset, dataset_type)
             prompt = "\n".join(item["value"] for item in message if item["type"] == "text")
             images = [_open_image(item["value"]) for item in message if item["type"] == "image"]
             if chat_signature is not None and "image" in chat_signature.parameters:
@@ -383,8 +396,8 @@ def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules
     base_model_cls = modules["BaseModel"]
     dataset_type_resolver = modules["DATASET_TYPE"]
 
-    if tokenizer_bundle.processor is not None or "qwen2_5_vl" in str(model_type):
-        return _build_qwen_wrapper(
+    if model_type in {"qwen2_vl", "qwen2_5_vl"}:
+        return _build_qwen2_wrapper(
             model,
             tokenizer_bundle,
             common_args,
@@ -400,7 +413,7 @@ def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules
             dataset_type_resolver,
         )
     raise NotImplementedError(
-        "VLM benchmark evaluation currently supports Qwen2.5-VL and MiniCPM-V style models only."
+        "VLM benchmark evaluation currently supports Qwen2/Qwen2.5-VL and MiniCPM-V style models only."
     )
 
 

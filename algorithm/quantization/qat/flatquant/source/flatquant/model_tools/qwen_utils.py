@@ -550,7 +550,7 @@ class FlatQuantQwen2_5_VLAttention(_FlatQuantQwenAttentionMixin, Qwen2_5_VLAtten
             attn_weights = None
         else:
             attn_weights = attn_weights.to(attn_dtype)
-        return attn_output, attn_weights
+        return attn_output, attn_weights, past_key_values
 
 
 def apply_flatquant_to_qwen(args, model):
