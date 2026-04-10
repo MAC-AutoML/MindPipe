@@ -92,6 +92,47 @@ class TokenizerBundle:
         return getattr(self.tokenizer, name)
 
 
+class MiniCPMTokenizerAdapter:
+    """Expose MiniCPM-specific tokenizer fields on top of a standard HF tokenizer."""
+
+    def __init__(self, tokenizer: Any):
+        self.tokenizer = tokenizer
+        self.im_start = "<image>"
+        self.im_end = "</image>"
+        self.ref_start = "<ref>"
+        self.ref_end = "</ref>"
+        self.box_start = "<box>"
+        self.box_end = "</box>"
+        self.quad_start = "<quad>"
+        self.quad_end = "</quad>"
+
+    @property
+    def bos_id(self) -> int:
+        return int(self.tokenizer.bos_token_id)
+
+    @property
+    def eos_id(self) -> int:
+        return int(self.tokenizer.eos_token_id)
+
+    @property
+    def unk_id(self) -> int:
+        return int(self.tokenizer.unk_token_id)
+
+    @property
+    def im_start_id(self) -> int:
+        return int(self.tokenizer.convert_tokens_to_ids(self.im_start))
+
+    @property
+    def im_end_id(self) -> int:
+        return int(self.tokenizer.convert_tokens_to_ids(self.im_end))
+
+    def save_pretrained(self, path: str, *args, **kwargs) -> None:
+        self.tokenizer.save_pretrained(path, *args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self.tokenizer, name)
+
+
 class TextModelAdapter(nn.Module):
     """Expose a multimodal model's text decoder through a causal-LM interface."""
 
@@ -302,66 +343,57 @@ def ensure_generation_compat(model: nn.Module) -> nn.Module:
 def _ensure_dynamic_cache_compat() -> None:
     if DynamicCache is None:
         return
+    def _dynamic_cache_seen_tokens(self):
+        return self.get_seq_length(0)
+
+    def _dynamic_cache_get_max_length(self, *args, **kwargs):
+        return None
+
+    def _dynamic_cache_get_usable_length(self, new_seq_length=0, layer_idx=0):
+        return self.get_seq_length(layer_idx)
+
+    @classmethod
+    def _dynamic_cache_from_legacy_cache(cls, past_key_values=None):
+        cache = cls()
+        if past_key_values is None:
+            return cache
+        for layer_idx, layer_past in enumerate(past_key_values):
+            if layer_past is None:
+                continue
+            key_states, value_states = layer_past[:2]
+            cache.update(key_states, value_states, layer_idx)
+        return cache
+
     if not hasattr(DynamicCache, "seen_tokens"):
-        DynamicCache.seen_tokens = property(lambda self: self.get_seq_length())
+        DynamicCache.seen_tokens = property(_dynamic_cache_seen_tokens)
     if not hasattr(DynamicCache, "get_max_length"):
-        DynamicCache.get_max_length = lambda self, *args, **kwargs: None
+        DynamicCache.get_max_length = _dynamic_cache_get_max_length
     if not hasattr(DynamicCache, "get_usable_length"):
-        DynamicCache.get_usable_length = lambda self, *args, **kwargs: self.get_seq_length()
+        DynamicCache.get_usable_length = _dynamic_cache_get_usable_length
+    if not hasattr(DynamicCache, "from_legacy_cache"):
+        DynamicCache.from_legacy_cache = _dynamic_cache_from_legacy_cache
 
 
 def _patched_minicpm_prepare_inputs_for_generation(
     self,
     input_ids,
+    next_sequence_length=None,
     past_key_values=None,
     attention_mask=None,
     inputs_embeds=None,
+    is_first_iteration: bool | None = False,
     **kwargs,
 ):
-    cache_length = 0
-    if past_key_values is not None:
-        if Cache is not None and isinstance(past_key_values, Cache):
-            cache_length = past_key_values.get_seq_length()
-            past_length = getattr(past_key_values, "seen_tokens", cache_length)
-            get_max_length = getattr(past_key_values, "get_max_length", None)
-            max_cache_length = get_max_length() if callable(get_max_length) else None
-        else:
-            cache_length = past_length = past_key_values[0][0].shape[2]
-            max_cache_length = None
-
-        if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
-            input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
-        elif past_length < input_ids.shape[1]:
-            input_ids = input_ids[:, past_length:]
-
-        if (
-            max_cache_length is not None
-            and attention_mask is not None
-            and cache_length + input_ids.shape[1] > max_cache_length
-        ):
-            attention_mask = attention_mask[:, -max_cache_length:]
-
-    position_ids = kwargs.get("position_ids", None)
-    if attention_mask is not None and position_ids is None:
-        position_ids = attention_mask.long().cumsum(-1) - 1
-        position_ids.masked_fill_(attention_mask == 0, 1)
-        if past_key_values is not None:
-            position_ids = position_ids[:, -input_ids.shape[1] :]
-
-    if inputs_embeds is not None and (past_key_values is None or cache_length == 0):
-        model_inputs = {"inputs_embeds": inputs_embeds}
-    else:
-        model_inputs = {"input_ids": input_ids}
-
-    model_inputs.update(
-        {
-            "position_ids": position_ids,
-            "past_key_values": past_key_values,
-            "use_cache": kwargs.get("use_cache"),
-            "attention_mask": attention_mask,
-        }
+    return GenerationMixin.prepare_inputs_for_generation(
+        self,
+        input_ids,
+        next_sequence_length=next_sequence_length,
+        past_key_values=past_key_values,
+        attention_mask=attention_mask,
+        inputs_embeds=inputs_embeds,
+        is_first_iteration=is_first_iteration,
+        **kwargs,
     )
-    return model_inputs
 
 
 def load_model_and_tokenizer(
