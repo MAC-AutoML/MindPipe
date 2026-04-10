@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import importlib
 import inspect
 import logging
@@ -15,6 +16,7 @@ from typing import Any
 from PIL import Image
 import torch
 
+from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from algorithm.common.io import ensure_dir
 from algorithm.common.io import model_slug
@@ -157,6 +159,21 @@ def _model_input_device(model, fallback_device):
 
 def _open_image(image_path: str) -> Image.Image:
     return Image.open(image_path).convert("RGB")
+
+
+def _attach_generation_cleanup(wrapper, device):
+    """给任意兼容 VLMEvalKit 的 wrapper 统一挂上样本级清理逻辑。"""
+    original_generate_inner = wrapper.generate_inner
+
+    def wrapped_generate_inner(message, dataset=None):
+        try:
+            return original_generate_inner(message, dataset)
+        finally:
+            gc.collect()
+            empty_cache(device)
+
+    wrapper.generate_inner = wrapped_generate_inner
+    return wrapper
 
 
 def _build_qwen2_messages(message, dataset: str | None):
@@ -501,6 +518,9 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
     model_name = _resolve_model_name(common_args)
     mode = str(common_args.get("vlm_mode", "all"))
     wrapper = _build_wrapper(model, tokenizer_bundle, common_args, modules)
+    # 把清理逻辑放在模型 wrapper 外层，后续新接入的 VLM 模型也能直接复用，
+    # 不需要在每个模型分支里重复写一套显存回收代码。
+    wrapper = _attach_generation_cleanup(wrapper, common_args.get("device", "auto"))
 
     results: dict[str, Any] = {}
     with _temporary_env(PRED_FORMAT=str(common_args.get("vlm_pred_format", "xlsx"))):
@@ -569,6 +589,10 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
                     record["evaluation"] = _json_safe(dataset.evaluate(result_file, **judge_kwargs))
 
             results[dataset_name] = record
+            # 在数据集切换处再清一次，避免前一个 benchmark split 的高水位缓存
+            # 继续带到下一个 split。
+            gc.collect()
+            empty_cache(common_args.get("device", "auto"))
 
     return {
         "mode": mode,
