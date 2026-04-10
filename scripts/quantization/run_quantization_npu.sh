@@ -29,6 +29,13 @@ VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
 
 # Algorithm-specific defaults
 AWQ_SEARCH="${AWQ_SEARCH:-true}"
+SPLITQUANT_QUERY_BITS_DEFAULT=16
+SPLITQUANT_KEY_BITS_DEFAULT=4
+SPLITQUANT_VALUE_BITS_DEFAULT=4
+SPLITQUANT_GROUP_SIZE="${SPLITQUANT_GROUP_SIZE:-64}"
+SPLITQUANT_WEIGHT_GROUP_SIZE="${SPLITQUANT_WEIGHT_GROUP_SIZE:-$SPLITQUANT_GROUP_SIZE}"
+SPLITQUANT_ACTIVATION_GROUP_SIZE="${SPLITQUANT_ACTIVATION_GROUP_SIZE:-$SPLITQUANT_GROUP_SIZE}"
+SPLITQUANT_KV_GROUP_SIZE="${SPLITQUANT_KV_GROUP_SIZE:-128}"
 
 # Experiment matrix
 MODELS=(
@@ -42,14 +49,24 @@ MODELS=(
 # GPTQ_BITS=(2 3 4)
 AWQ_BITS=(4)
 GPTQ_BITS=(4)
+SPLITQUANT_CONFIGS=(
+  "2 16 16 4 4 w2a16"
+  "3 16 16 4 4 w3a16"
+  "4 16 16 4 4 w4a16"
+  "4 4 16 4 4 w4a4"
+  "8 8 16 4 4 w8a8"
+  "16 16 16 16 16 w16a16"
+)
 
 # Worker scheduling
 # Only keep algorithms that are currently marked NPU-ready in the repo.
 ENABLE_AWQ="${ENABLE_AWQ:-true}"
 ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
+ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-false}"
 
 AWQ_NPUS="${AWQ_NPUS:-0}"
 GPTQ_NPUS="${GPTQ_NPUS:-1}"
+SPLITQUANT_NPUS="${SPLITQUANT_NPUS:-1}"
 
 # Execution control
 FORCE_RERUN="${FORCE_RERUN:-false}"
@@ -71,19 +88,36 @@ metrics_path_for() {
   local model_path="$2"
   local weight_bits="$3"
   local activation_bits="$4"
+  local query_bits="${5:-$SPLITQUANT_QUERY_BITS_DEFAULT}"
+  local key_bits="${6:-$SPLITQUANT_KEY_BITS_DEFAULT}"
+  local value_bits="${7:-$SPLITQUANT_VALUE_BITS_DEFAULT}"
   local out_root
   out_root="$(output_root)"
   local model_name
   model_name="$(basename "$model_path")"
 
-  printf '%s/%s/%s/%s_w%sa%s_seq%s/metrics.json' \
-    "$out_root" \
-    "$model_name" \
-    "$algorithm" \
-    "$algorithm" \
-    "$weight_bits" \
-    "$activation_bits" \
-    "${SEQUENCE_LENGTH:-$SEQUENCE_LENGTH_DEFAULT}"
+  if [[ "$algorithm" == "splitquant" ]]; then
+    printf '%s/%s/%s/%s_w%sa%s_q%sk%sv%s_seq%s/metrics.json' \
+      "$out_root" \
+      "$model_name" \
+      "$algorithm" \
+      "$algorithm" \
+      "$weight_bits" \
+      "$activation_bits" \
+      "$query_bits" \
+      "$key_bits" \
+      "$value_bits" \
+      "${SEQUENCE_LENGTH:-$SEQUENCE_LENGTH_DEFAULT}"
+  else
+    printf '%s/%s/%s/%s_w%sa%s_seq%s/metrics.json' \
+      "$out_root" \
+      "$model_name" \
+      "$algorithm" \
+      "$algorithm" \
+      "$weight_bits" \
+      "$activation_bits" \
+      "${SEQUENCE_LENGTH:-$SEQUENCE_LENGTH_DEFAULT}"
+  fi
 }
 
 
@@ -228,8 +262,11 @@ run_experiment() {
   local model_path="$2"
   local weight_bits="$3"
   local activation_bits="$4"
-  local label="$5"
-  local npu_spec="$6"
+  local query_bits="$5"
+  local key_bits="$6"
+  local value_bits="$7"
+  local label="$8"
+  local npu_spec="$9"
   local script_path="$REPO_ROOT/scripts/quantization/${algorithm}.sh"
   local model_name
   model_name="$(basename "$model_path")"
@@ -238,7 +275,7 @@ run_experiment() {
   local effective_eval_vlm="false"
   local out_root
   out_root="$(output_root)"
-  metrics_path="$(metrics_path_for "$algorithm" "$model_path" "$weight_bits" "$activation_bits")"
+  metrics_path="$(metrics_path_for "$algorithm" "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits")"
   if should_eval_vlm "$model_path"; then
     effective_eval_vlm="true"
   fi
@@ -261,6 +298,18 @@ run_experiment() {
     "OUTPUT_DIR=$out_root"
   )
   append_device_env env_vars "$npu_spec"
+  if [[ "$algorithm" == "splitquant" ]]; then
+    env_vars+=(
+      "ACTIVATION_BITS=$activation_bits"
+      "QUERY_BITS=$query_bits"
+      "KEY_BITS=$key_bits"
+      "VALUE_BITS=$value_bits"
+      "GROUP_SIZE=$SPLITQUANT_GROUP_SIZE"
+      "WEIGHT_GROUP_SIZE=$SPLITQUANT_WEIGHT_GROUP_SIZE"
+      "ACTIVATION_GROUP_SIZE=$SPLITQUANT_ACTIVATION_GROUP_SIZE"
+      "KV_GROUP_SIZE=$SPLITQUANT_KV_GROUP_SIZE"
+    )
+  fi
   append_passthrough_env env_vars
 
   printf '[run][%s][npu=%s] %s\n' "$algorithm" "$npu_spec" "$run_id"
@@ -302,6 +351,12 @@ run_algorithm_queue() {
   local skip_count=0
   local model_path
   local bit
+  local weight_bits
+  local activation_bits
+  local query_bits
+  local key_bits
+  local value_bits
+  local config
   local job_index=0
 
   case "$algorithm" in
@@ -309,7 +364,7 @@ run_algorithm_queue() {
       for model_path in "${MODELS[@]}"; do
         for bit in "${AWQ_BITS[@]}"; do
           if (( job_index % worker_count == worker_index )); then
-            if ! run_experiment awq "$model_path" "$bit" 16 "w${bit}a16" "$npu_spec"; then
+            if ! run_experiment awq "$model_path" "$bit" 16 16 16 16 "w${bit}a16" "$npu_spec"; then
               ((failure_count += 1))
             fi
             case "$LAST_RUN_STATUS" in
@@ -325,7 +380,24 @@ run_algorithm_queue() {
       for model_path in "${MODELS[@]}"; do
         for bit in "${GPTQ_BITS[@]}"; do
           if (( job_index % worker_count == worker_index )); then
-            if ! run_experiment gptq "$model_path" "$bit" 16 "w${bit}a16" "$npu_spec"; then
+            if ! run_experiment gptq "$model_path" "$bit" 16 16 16 16 "w${bit}a16" "$npu_spec"; then
+              ((failure_count += 1))
+            fi
+            case "$LAST_RUN_STATUS" in
+              success) ((success_count += 1)) ;;
+              skip) ((skip_count += 1)) ;;
+            esac
+          fi
+          ((job_index += 1))
+        done
+      done
+      ;;
+    splitquant)
+      for model_path in "${MODELS[@]}"; do
+        for config in "${SPLITQUANT_CONFIGS[@]}"; do
+          read -r weight_bits activation_bits query_bits key_bits value_bits label <<< "$config"
+          if (( job_index % worker_count == worker_index )); then
+            if ! run_experiment splitquant "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits" "$label" "$npu_spec"; then
               ((failure_count += 1))
             fi
             case "$LAST_RUN_STATUS" in
@@ -397,6 +469,10 @@ main() {
 
   if [[ "$ENABLE_GPTQ" == "true" ]]; then
     launch_algorithm_workers gptq "$GPTQ_NPUS"
+  fi
+
+  if [[ "$ENABLE_SPLITQUANT" == "true" ]]; then
+    launch_algorithm_workers splitquant "$SPLITQUANT_NPUS"
   fi
 
   if ((${#WORKER_PIDS[@]} == 0)); then
