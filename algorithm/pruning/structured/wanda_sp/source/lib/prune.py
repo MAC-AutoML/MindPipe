@@ -81,16 +81,17 @@ def get_decoder_layers(model):
 
 
 def prepare_calibration_input(model, dataloader, device):
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
     layers = get_decoder_layers(model)
+    decoder_config = get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
     if "model.embed_tokens" in getattr(model, "hf_device_map", {}):
         device = model.hf_device_map["model.embed_tokens"]
 
     dtype = next(iter(model.parameters())).dtype
     sample_count = len(dataloader)
-    inps = torch.zeros((sample_count, model.seqlen, model.config.hidden_size), dtype=dtype, device=device)
+    inps = torch.zeros((sample_count, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=device)
     inps.requires_grad = False
     cache = {"i": 0, "layer_kwargs": {}}
 
@@ -120,7 +121,7 @@ def prepare_calibration_input(model, dataloader, device):
     layers[0] = layers[0].module
 
     outs = torch.zeros_like(inps)
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     return inps, outs, dict(cache["layer_kwargs"])
 
 
@@ -259,8 +260,9 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
 
 def prune_wanda_sp(args, model, tokenizer, device=None):
     device = resolve_device(device)
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
+    decoder_config = get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
     print("loading calibdation data")
     dataloader, _ = get_loaders("c4", nsamples=args.nsamples, seed=args.seed, seqlen=model.seqlen, tokenizer=tokenizer, data_path=getattr(args, 'data_path', None))
@@ -319,5 +321,5 @@ def prune_wanda_sp(args, model, tokenizer, device=None):
         inps, outs = outs, inps
         empty_cache(next(iter(subset.values())).weight.device if subset else device)
 
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     empty_cache(device)

@@ -18,6 +18,28 @@ from ...base import BaseQuantizationMethod
 LOGGER = logging.getLogger(__name__)
 
 
+def _purge_conflicting_modules(module_name: str, allowed_root: Path) -> None:
+    import sys
+
+    allowed_root = allowed_root.resolve()
+    prefix = f"{module_name}."
+    for name, module in list(sys.modules.items()):
+        if name != module_name and not name.startswith(prefix):
+            continue
+
+        module_file = getattr(module, "__file__", None)
+        module_path = getattr(module, "__path__", None)
+        candidates: list[Path] = []
+        if module_file:
+            candidates.append(Path(module_file))
+        if module_path:
+            candidates.extend(Path(path) for path in module_path)
+
+        if any(path.resolve().is_relative_to(allowed_root) for path in candidates):
+            continue
+        sys.modules.pop(name, None)
+
+
 def _infer_direct_inv_from_checkpoint(checkpoint_root: str | None, checkpoint_name: str) -> bool | None:
     if not checkpoint_root:
         return None
@@ -168,7 +190,12 @@ class FlatQuantMethod(BaseQuantizationMethod):
         )
 
         with prepend_python_path(source_root):
+            import importlib
             import torch
+
+            importlib.invalidate_caches()
+            _purge_conflicting_modules("flatquant", source_root / "flatquant")
+            _purge_conflicting_modules("gptq_utils", source_root)
 
             import gptq_utils
             import flatquant.utils as ref_utils

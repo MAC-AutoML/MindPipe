@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import os
 from types import MethodType
 from typing import Any
+
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import torch
 import torch.nn as nn
 from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
+try:
+    from transformers import AutoModelForImageTextToText
+except ImportError:  # pragma: no cover - older/newer transformers variants
+    AutoModelForImageTextToText = None
+try:
+    from transformers import AutoModelForVision2Seq
+except ImportError:  # pragma: no cover - older/newer transformers variants
+    AutoModelForVision2Seq = None
 from transformers import AutoProcessor
 from transformers import AutoTokenizer
 from transformers import GenerationConfig
 from transformers.generation import GenerationMixin
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
 try:
     from transformers.cache_utils import Cache
     from transformers.cache_utils import DynamicCache
@@ -23,6 +36,46 @@ except Exception:  # pragma: no cover - older/newer transformers variants
 
 from .device import empty_cache
 from .device import resolve_device
+
+
+def _load_vision_text_model(model_path: str, **model_kwargs):
+    if AutoModelForImageTextToText is not None:
+        return AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs)
+    if AutoModelForVision2Seq is not None:
+        return AutoModelForVision2Seq.from_pretrained(model_path, **model_kwargs)
+    raise ImportError("Neither AutoModelForImageTextToText nor AutoModelForVision2Seq is available in this transformers build.")
+
+
+def _load_config_with_fallback(model_path: str, trust_remote_code: bool = True):
+    try:
+        return AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except ValueError as exc:
+        # Qwen3.5-VL checkpoints currently expose `model_type=qwen3_5`, while some
+        # transformers builds only register the equivalent Qwen3-VL config classes.
+        if "model type `qwen3_5`" not in str(exc):
+            raise
+        from transformers import Qwen3VLConfig
+
+        config_path = os.path.join(model_path, "config.json")
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config_dict = json.load(handle)
+
+        config_dict["model_type"] = "qwen3_vl"
+        text_cfg = config_dict.get("text_config")
+        if isinstance(text_cfg, dict):
+            text_cfg["model_type"] = "qwen3_vl_text"
+            if text_cfg.get("rope_scaling") is None and isinstance(text_cfg.get("rope_parameters"), dict):
+                text_cfg["rope_scaling"] = dict(text_cfg["rope_parameters"])
+        vision_cfg = config_dict.get("vision_config")
+        if isinstance(vision_cfg, dict):
+            vision_cfg["model_type"] = "qwen3_vl"
+        architectures = config_dict.get("architectures")
+        if isinstance(architectures, list):
+            config_dict["architectures"] = [
+                "Qwen3VLForConditionalGeneration" if name == "Qwen3_5ForConditionalGeneration" else name
+                for name in architectures
+            ]
+        return Qwen3VLConfig.from_dict(config_dict)
 
 
 @dataclass
@@ -75,12 +128,28 @@ class TextBackbone:
         raise AttributeError(f"Unsupported backbone root: {type(self.root)}")
 
     @property
+    def decoder_config(self):
+        config_candidates = [
+            getattr(self.root, "config", None),
+            getattr(self.model, "config", None),
+        ]
+        for config in config_candidates:
+            if config is None:
+                continue
+            text_config = getattr(config, "text_config", None)
+            if text_config is not None:
+                return text_config
+            if hasattr(config, "hidden_size"):
+                return config
+        raise AttributeError(f"Unsupported decoder config for backbone root: {type(self.root)}")
+
+    @property
     def hidden_size(self) -> int:
-        return int(getattr(self.root.config, "hidden_size", self.model.config.hidden_size))
+        return int(self.decoder_config.hidden_size)
 
     @property
     def embed_tokens(self) -> nn.Module | None:
-        for attr_name in ("embed_tokens", "wte", "word_embeddings", "embed_in"):
+        for attr_name in ("embed_tokens", "tok_embeddings", "wte", "word_embeddings", "embed_in"):
             if hasattr(self.root, attr_name):
                 return getattr(self.root, attr_name)
         return None
@@ -95,6 +164,7 @@ class TextBackbone:
     def move_front_modules(self, device: str | torch.device) -> None:
         for attr_name in (
             "embed_tokens",
+            "tok_embeddings",
             "embed_positions",
             "rotary_emb",
             "rotary_pos_emb",
@@ -121,6 +191,83 @@ def resolve_dtype(dtype_name: str) -> str | torch.dtype:
     if dtype_name == "bfloat16":
         return torch.bfloat16
     return "auto"
+
+
+def _ensure_transformers_remote_code_compat() -> None:
+    """Patch small API removals that older HF remote code may still import."""
+    import transformers.utils.import_utils as import_utils
+
+    if not hasattr(import_utils, "is_torch_fx_available"):
+        import_utils.is_torch_fx_available = lambda: hasattr(torch, "fx")
+
+
+def _normalize_legacy_remote_config(config) -> None:
+    model_type = getattr(config, "model_type", None)
+    if model_type not in {"minicpm", "minicpmv"}:
+        return
+
+    rope_scaling = getattr(config, "rope_scaling", None)
+    if not isinstance(rope_scaling, dict):
+        return
+    if "type" in rope_scaling and "factor" in rope_scaling:
+        return
+
+    rope_type = rope_scaling.get("rope_type")
+    factor = rope_scaling.get("factor")
+    if rope_type in (None, "default"):
+        config.rope_scaling = None
+        return
+    if rope_type in {"linear", "dynamic"} and factor is not None:
+        config.rope_scaling = {"type": rope_type, "factor": float(factor)}
+        return
+    config.rope_scaling = None
+
+
+def _patch_minicpmv_remote_class(model_path: str) -> None:
+    _ensure_transformers_remote_code_compat()
+    minicpmv_cls = get_class_from_dynamic_module("modeling_minicpmv.MiniCPMV", model_path)
+    if getattr(minicpmv_cls, "_mindpipe_post_init_patched", False):
+        return
+
+    original_init = minicpmv_cls.__init__
+
+    def patched_init(self, config, *args, **kwargs):
+        original_init(self, config, *args, **kwargs)
+        if not hasattr(self, "all_tied_weights_keys"):
+            self.post_init()
+
+    minicpmv_cls.__init__ = patched_init
+    minicpmv_cls._mindpipe_post_init_patched = True
+
+
+def _prepare_minicpm_tokenizer_env() -> None:
+    os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
+
+def _refresh_minicpm_rotary_embeddings(model: nn.Module) -> None:
+    backbone = get_text_backbone(model)
+    for layer_idx, layer in enumerate(backbone.layers):
+        attn = getattr(layer, "self_attn", None)
+        if attn is None or not hasattr(attn, "_init_rope"):
+            continue
+
+        q_proj = getattr(attn, "q_proj", None)
+        q_weight = getattr(q_proj, "weight", None)
+        target_device = q_weight.device if q_weight is not None else None
+
+        attn._init_rope()
+        rotary_emb = getattr(attn, "rotary_emb", None)
+        if rotary_emb is None:
+            raise RuntimeError(f"MiniCPM attention layer {layer_idx} did not rebuild rotary embeddings.")
+        if target_device is not None:
+            rotary_emb.to(device=target_device)
+
+        for buffer_name in ("inv_freq", "cos_cached", "sin_cached"):
+            buffer_value = getattr(rotary_emb, buffer_name, None)
+            if buffer_value is None or not torch.is_tensor(buffer_value):
+                raise RuntimeError(f"MiniCPM rotary buffer `{buffer_name}` is missing at layer {layer_idx}.")
+            if not torch.isfinite(buffer_value).all():
+                raise RuntimeError(f"MiniCPM rotary buffer `{buffer_name}` is non-finite at layer {layer_idx}.")
 
 
 def ensure_generation_compat(model: nn.Module) -> nn.Module:
@@ -222,7 +369,9 @@ def load_model_and_tokenizer(
     dtype: str = "auto",
     force_eager: bool = False,
 ):
-    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    _ensure_transformers_remote_code_compat()
+    config = _load_config_with_fallback(model_path, trust_remote_code=True)
+    _normalize_legacy_remote_config(config)
     if force_eager:
         if hasattr(config, "_attn_implementation_internal"):
             config._attn_implementation_internal = "eager"
@@ -237,12 +386,62 @@ def load_model_and_tokenizer(
     if force_eager:
         model_kwargs["attn_implementation"] = "eager"
     architectures = set(getattr(config, "architectures", []) or [])
-    if config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures:
-        from transformers import Qwen2_5_VLForConditionalGeneration
+    is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
+    is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
+    is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
+    is_qwen2_vl = config.model_type == "qwen2_vl" or "Qwen2VLForConditionalGeneration" in architectures
+    is_llava = config.model_type == "llava" or "LlavaForConditionalGeneration" in architectures
+
+    if is_qwen3_5:
+        try:
+            from transformers import Qwen3_5ForConditionalGeneration
+
+            model = Qwen3_5ForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
+        except Exception:
+            model = _load_vision_text_model(model_path, **model_kwargs)
+        if hasattr(model, "language_model"):
+            ensure_generation_compat(model.language_model)
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif is_qwen3_vl:
+        try:
+            from transformers import Qwen3VLForConditionalGeneration
+
+            model = Qwen3VLForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
+        except Exception:
+            model = _load_vision_text_model(model_path, **model_kwargs)
+        if hasattr(model, "language_model"):
+            ensure_generation_compat(model.language_model)
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif is_qwen2_5_vl:
+        try:
+            from transformers import Qwen2_5_VLForConditionalGeneration
+        except ImportError:
+            from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
 
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
         processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif is_qwen2_vl:
+        try:
+            from transformers import Qwen2VLForConditionalGeneration
+        except ImportError:
+            from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
+
+        model = Qwen2VLForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif config.model_type == "internvl_chat" or "InternVLChatModel" in architectures:
+        multimodal_model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+        if not hasattr(multimodal_model, "language_model"):
+            raise AttributeError(f"InternVL model from {model_path} does not expose a `language_model` decoder.")
+        ensure_generation_compat(multimodal_model.language_model)
+        model = TextModelAdapter(text_model=multimodal_model.language_model, source_model=multimodal_model)
+        processor = None
+    elif is_llava:
+        model = _load_vision_text_model(model_path, **model_kwargs)
+        if hasattr(model, "language_model"):
+            ensure_generation_compat(model.language_model)
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     elif config.model_type == "minicpmv" or "MiniCPMV" in architectures:
+        _patch_minicpmv_remote_class(model_path)
         multimodal_model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
         if not hasattr(multimodal_model, "llm"):
             raise AttributeError(f"MiniCPM-V model from {model_path} does not expose an `llm` decoder.")
@@ -253,16 +452,28 @@ def load_model_and_tokenizer(
         model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
         processor = None
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        use_fast=False,
-        trust_remote_code=True,
-    )
+    tokenizer = getattr(processor, "tokenizer", None)
+    if config.model_type in {"minicpm", "minicpmv"} or "MiniCPMV" in architectures:
+        _refresh_minicpm_rotary_embeddings(model)
+        _prepare_minicpm_tokenizer_env()
+    if tokenizer is None:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                use_fast=False,
+                trust_remote_code=True,
+            )
+        except Exception:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                use_fast=True,
+                trust_remote_code=True,
+            )
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
     try:
         backbone = get_text_backbone(model)
-        max_position_embeddings = getattr(backbone.root.config, "max_position_embeddings", 2048)
+        max_position_embeddings = getattr(backbone.decoder_config, "max_position_embeddings", 2048)
         model.seqlen = min(int(max_position_embeddings), 2048)
     except Exception:
         max_position_embeddings = getattr(model.config, "max_position_embeddings", 2048)
@@ -272,6 +483,11 @@ def load_model_and_tokenizer(
 
 
 def get_text_backbone(model: nn.Module) -> TextBackbone:
+    if isinstance(model, TextModelAdapter):
+        if hasattr(model.text_model, "model") and hasattr(model.text_model.model, "layers"):
+            return TextBackbone(model=model, root=model.text_model.model, prefix="text_model.model")
+        if hasattr(model.text_model, "layers"):
+            return TextBackbone(model=model, root=model.text_model, prefix="text_model")
     if hasattr(model, "llm") and hasattr(model.llm, "model") and hasattr(model.llm.model, "layers"):
         return TextBackbone(model=model, root=model.llm.model, prefix="llm.model")
     if hasattr(model, "model") and hasattr(model.model, "language_model"):
@@ -381,8 +597,9 @@ def capture_first_block_inputs(
     device: str | torch.device,
 ):
     device = resolve_device(device)
-    use_cache = getattr(model.config, "use_cache", False)
-    model.config.use_cache = False
+    decoder_config = backbone.decoder_config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
     blocks = backbone.layers
     backbone.move_front_modules(device)
     blocks[0] = blocks[0].to(device)
@@ -431,5 +648,5 @@ def capture_first_block_inputs(
     blocks[0] = blocks[0].cpu()
     backbone.move_front_modules("cpu")
     empty_cache(device)
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     return inputs, dict(cached_kwargs)

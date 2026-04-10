@@ -113,8 +113,9 @@ def find_layers(module, layers=[nn.Linear], name=''):
     return res
 
 def check_sparsity(model):
-    use_cache = model.config.use_cache 
-    model.config.use_cache = False 
+    decoder_config = _get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
     layers = _get_decoder_root(model).layers
     count = 0 
@@ -135,14 +136,15 @@ def check_sparsity(model):
 
         print(f"layer {i} sparsity {float(sub_count)/sub_params:.6f}")
 
-    model.config.use_cache = use_cache 
+    decoder_config.use_cache = use_cache
     return float(count)/total_params 
 
 def prepare_calibration_input(model, dataloader, device):
     device = resolve_runtime_device(device)
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
     decoder_root = _get_decoder_root(model)
+    decoder_config = decoder_root.config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
     layers = decoder_root.layers
 
     # dev = model.hf_device_map["model.embed_tokens"]
@@ -158,7 +160,7 @@ def prepare_calibration_input(model, dataloader, device):
     if hasattr(decoder_root, "rotary_emb"):
         decoder_root.rotary_emb = decoder_root.rotary_emb.to(device)
     layers[0] = layers[0].to(device)
-    inps = torch.zeros((128, model.seqlen, model.config.hidden_size), dtype=dtype, device=device)
+    inps = torch.zeros((128, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=device)
     inps.requires_grad = False
     cache = {'i': 0, 'attention_mask': None, "position_ids": None, "cache_position": None}
 
@@ -197,7 +199,7 @@ def prepare_calibration_input(model, dataloader, device):
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
     position_ids = cache['position_ids']
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
 
     return inps, outs, attention_mask, position_ids, cache['cache_position'] 
 
@@ -234,8 +236,9 @@ def prune_magnitude(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
 
 def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
     device = resolve_runtime_device(device)
-    use_cache = model.config.use_cache 
-    model.config.use_cache = False 
+    decoder_config = _get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
     print("loading calibdation data")
     dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
@@ -345,7 +348,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
         del layer
         empty_cache(dev)
 
-    model.config.use_cache = use_cache 
+    decoder_config.use_cache = use_cache
     empty_cache(device)
 
 
@@ -355,8 +358,9 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     print('Starting ...')
     dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
 
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
+    decoder_config = _get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
     layers = _get_decoder_root(model).layers
 
     dev = resolve_runtime_device(dev)
@@ -368,7 +372,7 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros(
-        (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
+        (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=dev
     )
     cache = {'i': 0, 'attention_mask': None, "position_ids": None, "cache_position": None}
 
@@ -477,7 +481,7 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
         inps, outs = outs, inps
 
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     empty_cache(dev)
 
 
@@ -488,8 +492,9 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     print('Starting ...')
     dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
 
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
+    decoder_config = _get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
     layers = _get_decoder_root(model).layers
 
     dev = resolve_runtime_device(dev)
@@ -501,7 +506,7 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros(
-        (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
+        (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=dev
     )
     cache = {'i': 0, 'attention_mask': None, "position_ids": None, "cache_position": None}
 
@@ -617,5 +622,5 @@ def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
         inps, outs = outs, inps
 
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     empty_cache(dev)

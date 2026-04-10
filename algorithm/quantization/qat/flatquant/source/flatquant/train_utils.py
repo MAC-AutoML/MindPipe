@@ -11,6 +11,7 @@ import transformers
 from algorithm.common.device import empty_cache
 
 from flatquant.backbone_utils import build_batched_layer_kwargs
+from flatquant.backbone_utils import get_decoder_config
 from flatquant.backbone_utils import get_decoder_layers
 from flatquant.backbone_utils import move_front_modules
 from flatquant.backbone_utils import unwrap_layer_output
@@ -68,8 +69,9 @@ def _stabilize_flatquant_layer(layer):
 
 def cali_flat_quant(args, model, dataloader, dev, logger):
     model.eval()
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
+    decoder_config = get_decoder_config(model)
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
     # check trainable parameters
     for name, param in model.named_parameters():
@@ -91,7 +93,7 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
 
     # catch the first layer input
     inps = torch.zeros(
-        (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
+        (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=dev
     )
     cache = {"i": 0}
     class Catcher(nn.Module):
@@ -247,5 +249,5 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
     del inps, fp_inps, fp_outs
     gc.collect()
     empty_cache(dev)
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     return model

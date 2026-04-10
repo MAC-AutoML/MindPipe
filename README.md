@@ -83,6 +83,7 @@ MindPipe/
 ```bash
 conda activate mindpipe
 git submodule update --init --recursive
+python -m pip install -r requirements.txt
 ```
 
 ### 量化
