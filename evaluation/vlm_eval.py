@@ -116,7 +116,13 @@ def _resolve_model_name(common_args: dict[str, Any]) -> str:
     return "mindpipe_model"
 
 
-def _default_max_new_tokens(dataset_type: str) -> int:
+def _default_max_new_tokens(dataset_name: str | None, dataset_type: str) -> int:
+    if dataset_name == "OCRBench":
+        return 128
+    if dataset_name == "ChartQA_TEST":
+        return 16
+    if dataset_name in {"TextVQA_VAL", "InfoVQA_VAL"}:
+        return 32
     if dataset_type == "MCQ":
         return 128
     if dataset_type == "Y/N":
@@ -246,7 +252,7 @@ def _build_qwen2_wrapper(
             input_ids = inputs["input_ids"] if isinstance(inputs, dict) else inputs.input_ids
             generated_ids = self.model.generate(
                 **inputs,
-                max_new_tokens=_default_max_new_tokens(dataset_type_resolver(dataset)),
+                max_new_tokens=_default_max_new_tokens(dataset, dataset_type_resolver(dataset)),
                 do_sample=False,
             )
             trimmed_ids = [
@@ -362,7 +368,7 @@ def _build_minicpm_wrapper(
         def generate_inner(self, message, dataset=None):
             self._ensure_model_ready()
             dataset_type = dataset_type_resolver(dataset)
-            max_new_tokens = _default_max_new_tokens(dataset_type)
+            max_new_tokens = _default_max_new_tokens(dataset, dataset_type)
             prompt = "\n".join(item["value"] for item in message if item["type"] == "text")
             images = [_open_image(item["value"]) for item in message if item["type"] == "image"]
             if chat_signature is not None and "image" in chat_signature.parameters:
