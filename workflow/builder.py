@@ -92,6 +92,7 @@ def _add_pruning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--flap_metrics", default="WIFV", choices=["IFV", "WIFV", "WIFN"])
     parser.add_argument("--flap_remove_heads", type=int, default=8)
     parser.add_argument("--pseudo_pruning", type=_bool_flag, default=True)
+    parser.add_argument("--rho", type=float, default=0.1, help="Initial rho for ALPS ADMM optimization.")
 
 
 def _add_quantization_args(parser: argparse.ArgumentParser) -> None:

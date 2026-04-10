@@ -453,11 +453,8 @@ def capture_first_block_inputs(
 ):
     device = resolve_device(device)
     decoder_config = backbone.decoder_config
-    use_cache = getattr(decoder_config, "use_cache", getattr(model.config, "use_cache", False))
-    if hasattr(decoder_config, "use_cache"):
-        decoder_config.use_cache = False
-    if hasattr(model.config, "use_cache"):
-        model.config.use_cache = False
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
     blocks = backbone.layers
     backbone.move_front_modules(device)
     blocks[0] = blocks[0].to(device)
@@ -506,8 +503,5 @@ def capture_first_block_inputs(
     blocks[0] = blocks[0].cpu()
     backbone.move_front_modules("cpu")
     empty_cache(device)
-    if hasattr(decoder_config, "use_cache"):
-        decoder_config.use_cache = use_cache
-    if hasattr(model.config, "use_cache"):
-        model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     return inputs, dict(cached_kwargs)
