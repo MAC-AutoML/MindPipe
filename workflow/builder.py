@@ -225,7 +225,9 @@ def build_run_config(args) -> WorkflowConfig:
         result_metadata["sparsity_ratio"] = args.sparsity_ratio
 
     if has_quantization:
-        quant_calib = args.quantization_calibration_dataset or ("pileval" if args.quantization in ("awq", "gptq", "flatquant") else args.calibration_dataset)
+        quant_calib = args.quantization_calibration_dataset or (
+            "pileval" if args.quantization in ("awq", "gptq", "flatquant", "splitquant") else args.calibration_dataset
+        )
         quant_samples = args.quantization_calibration_samples or args.calibration_samples
         quant_damp = args.quantization_damp_percent if args.quantization_damp_percent is not None else args.damp_percent
 
