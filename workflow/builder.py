@@ -51,6 +51,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model_path", required=True)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dtype", default="bfloat16", choices=["auto", "float16", "bfloat16"])
+    parser.add_argument(
+        "--attn_implementation",
+        default="flash_attention_2",
+        choices=["flash_attention_2", "sdpa", "eager"],
+    )
     parser.add_argument("--log_level", default="INFO")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hf_token", default=None)

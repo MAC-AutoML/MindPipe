@@ -33,7 +33,11 @@ class SpinQuantMethod(BaseQuantizationMethod):
             return None, None
 
     def load_resources(self, args):
-        return load_model_and_tokenizer(args.model_path, dtype=args.dtype, force_eager=False)
+        return load_model_and_tokenizer(
+            args.model_path,
+            dtype=args.dtype,
+            attn_implementation=args.attn_implementation,
+        )
 
     def _build_source_args(self, args) -> SimpleNamespace:
         return SimpleNamespace(

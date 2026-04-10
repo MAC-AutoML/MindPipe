@@ -367,25 +367,21 @@ def _patched_minicpm_prepare_inputs_for_generation(
 def load_model_and_tokenizer(
     model_path: str,
     dtype: str = "auto",
-    force_eager: bool = False,
+    attn_implementation: str | None = None,
 ):
     _ensure_transformers_remote_code_compat()
     config = _load_config_with_fallback(model_path, trust_remote_code=True)
     _normalize_legacy_remote_config(config)
-    if force_eager:
-        if hasattr(config, "_attn_implementation_internal"):
-            config._attn_implementation_internal = "eager"
-        if hasattr(config, "_attn_implementation"):
-            config._attn_implementation = "eager"
+    if attn_implementation is None:
+        raise ValueError("attn_implementation must be specified explicitly when loading a model.")
+    architectures = set(getattr(config, "architectures", []) or [])
     model_kwargs = {
         "torch_dtype": resolve_dtype(dtype),
         "config": config,
         "trust_remote_code": True,
         "low_cpu_mem_usage": True,
+        "attn_implementation": attn_implementation,
     }
-    if force_eager:
-        model_kwargs["attn_implementation"] = "eager"
-    architectures = set(getattr(config, "architectures", []) or [])
     is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
