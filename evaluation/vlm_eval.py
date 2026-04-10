@@ -17,6 +17,7 @@ import torch
 from algorithm.common.device import resolve_device
 from algorithm.common.io import ensure_dir
 from algorithm.common.io import model_slug
+from algorithm.common.modeling import MiniCPMTokenizerAdapter
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -265,6 +266,8 @@ def _build_minicpm_wrapper(
 ):
     source_model = getattr(model, "_source_model", model)
     tokenizer = tokenizer_bundle.tokenizer
+    if not isinstance(tokenizer, MiniCPMTokenizerAdapter):
+        tokenizer = MiniCPMTokenizerAdapter(tokenizer)
     target_device = resolve_device(common_args.get("device", "auto"))
     try:
         chat_signature = inspect.signature(source_model.chat)
@@ -292,6 +295,13 @@ def _build_minicpm_wrapper(
                 return
             if not getattr(self.model, "hf_device_map", None):
                 self.model.to(self.target_device)
+            if hasattr(self.model, "config") and hasattr(self.model.config, "use_cache"):
+                self.model.config.use_cache = False
+            if hasattr(self.model, "llm"):
+                if hasattr(self.model.llm, "config") and hasattr(self.model.llm.config, "use_cache"):
+                    self.model.llm.config.use_cache = False
+                if getattr(self.model.llm, "generation_config", None) is not None:
+                    self.model.llm.generation_config.use_cache = False
             self.model.eval()
             self._model_prepared = True
 
