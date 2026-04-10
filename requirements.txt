@@ -42,7 +42,6 @@ latex2sympy2_extended==1.11.0
 Levenshtein==0.27.3
 librosa==0.11.0
 lm_eval==0.4.11
-lmms_eval==0.3.0
 loguru==0.7.3
 lxml==6.0.2
 math-verify==0.9.0
