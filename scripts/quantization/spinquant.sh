@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct}"
 DEVICE="${DEVICE:-cuda:0}"
 DTYPE="${DTYPE:-float16}"
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 DATA_PATH="${DATA_PATH:-/mnt/42_store/lcw/data2/Huawei/datasets}"
 CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}"
 EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
@@ -21,6 +22,7 @@ VALUE_BITS="${VALUE_BITS:-16}"
 GROUP_SIZE="${GROUP_SIZE:-128}"
 WEIGHT_METHOD="${WEIGHT_METHOD:-gptq}"
 ROTATION_MODE="${ROTATION_MODE:-hadamard}"
+EVAL_PPL="${EVAL_PPL:-true}"
 OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT:-$REPO_ROOT/results/quantization}}"
 
 CMD=(
@@ -29,6 +31,7 @@ CMD=(
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
+  --attn_implementation "$ATTN_IMPLEMENTATION"
   --data_path "$DATA_PATH"
   --calibration_dataset "$CALIBRATION_DATASET"
   --evaluation_dataset "$EVALUATION_DATASET"
@@ -45,6 +48,7 @@ CMD=(
   --weight_method "$WEIGHT_METHOD"
   --rotation_mode "$ROTATION_MODE"
   --output_dir "$OUTPUT_DIR"
+  --eval_ppl "$EVAL_PPL"
 )
 
 if [[ -n "${ROTATION_CHECKPOINT:-}" ]]; then

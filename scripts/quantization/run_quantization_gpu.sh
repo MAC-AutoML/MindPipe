@@ -13,8 +13,10 @@ EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
 CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-128}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 
 # Shared evaluation defaults
+EVAL_PPL="${EVAL_PPL:-true}"
 EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
 ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte winogrande arc_easy arc_challenge openbookqa}"
 ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
@@ -116,6 +118,9 @@ is_complete() {
   local metrics_path="$1"
   local require_vlm="${2:-false}"
   [[ -f "$metrics_path" ]] || return 1
+  if [[ "$EVAL_PPL" == "true" ]] && ! grep -q '"perplexity"' "$metrics_path"; then
+    return 1
+  fi
   if [[ "$EVAL_ZERO_SHOT" == "true" ]] && ! grep -q '"zero_shot"' "$metrics_path"; then
     return 1
   fi
@@ -138,6 +143,7 @@ append_passthrough_env() {
     CALIBRATION_SAMPLES
     BATCH_SIZE
     MAX_EVAL_CHUNKS
+    ATTN_IMPLEMENTATION
   )
   local -a zero_shot_keys=(
     ZERO_SHOT_TASKS
@@ -278,6 +284,7 @@ run_experiment() {
     "WEIGHT_BITS=$weight_bits"
     "DATA_PATH=$DATA_PATH"
     "SEQUENCE_LENGTH=${SEQUENCE_LENGTH:-$SEQUENCE_LENGTH_DEFAULT}"
+    "EVAL_PPL=$EVAL_PPL"
     "EVAL_ZERO_SHOT=$EVAL_ZERO_SHOT"
     "EVAL_VLM=$effective_eval_vlm"
     "OUTPUT_ROOT=$out_root"
@@ -296,6 +303,7 @@ run_experiment() {
 
   printf '[run][%s][gpu=%s] %s\n' "$algorithm" "$gpu_spec" "$run_id"
   printf '  out: %s\n' "$metrics_path"
+  printf '  eval_ppl: %s\n' "$EVAL_PPL"
   printf '  eval_vlm: %s\n' "$effective_eval_vlm"
   printf '  cmd:'
   printf ' %q' env "${env_vars[@]}" bash "$script_path"

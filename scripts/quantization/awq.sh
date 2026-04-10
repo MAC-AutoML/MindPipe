@@ -6,9 +6,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # openbmb/MiniCPM-V
 # /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct
 
-MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Llama-2-7b-hf}"
+MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct}"
 DEVICE="${DEVICE:-cuda:6}"
 DTYPE="${DTYPE:-float16}"
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 DATA_PATH="${DATA_PATH:-/mnt/42_store/lcw/data2/Huawei/datasets}"
 CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}"
 EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
@@ -19,6 +20,7 @@ MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
 WEIGHT_BITS="${WEIGHT_BITS:-2}"
 GROUP_SIZE="${GROUP_SIZE:-128}"
 AWQ_SEARCH="${AWQ_SEARCH:-true}"
+EVAL_PPL="${EVAL_PPL:-true}"
 EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
 ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte winogrande arc_easy arc_challenge openbookqa}"
 ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
@@ -37,6 +39,7 @@ CMD=(
   --model_path "$MODEL_PATH"
   --device "$DEVICE"
   --dtype "$DTYPE"
+  --attn_implementation "$ATTN_IMPLEMENTATION"
   --data_path "$DATA_PATH"
   --calibration_dataset "$CALIBRATION_DATASET"
   --evaluation_dataset "$EVALUATION_DATASET"
@@ -49,6 +52,7 @@ CMD=(
   --output_dir "$OUTPUT_DIR"
   --weight_symmetric false
   --awq_search "$AWQ_SEARCH"
+  --eval_ppl "$EVAL_PPL"
   --eval_zero_shot "$EVAL_ZERO_SHOT"
   --eval_vlm "$EVAL_VLM"
 )
