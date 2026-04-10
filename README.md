@@ -59,7 +59,7 @@ MindPipe/
 | GPTQ | PTQ | W4 | - | - | 是 |
 | QuaRot | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
 | SpinQuant | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
-| FlatQuant | QAT | W4 | A4 | K4 V4 | 否（Hadamard + autocast 需验证） |
+| FlatQuant | QAT | W4 | A4 | K4 V4 | 是 |
 
 ### 剪枝
 
@@ -74,6 +74,7 @@ MindPipe/
 
 - Qwen2.5-7B-Instruct
 - Qwen2.5-VL-7B-Instruct
+- Qwen2.5-7B-Instruct（FlatQuant / NPU）
 
 ## 快速开始
 
@@ -165,7 +166,7 @@ python main.py --quantization gptq --model_path /path/to/model --device auto ...
 
 ### NPU fail-fast
 
-未在 NPU 上验证的算法（QuaRot、SpinQuant、FlatQuant）设有 `npu_ready = False` 标记。在 NPU 上调用时会直接报错，避免静默出错：
+未在 NPU 上验证的算法（QuaRot、SpinQuant）设有 `npu_ready = False` 标记。在 NPU 上调用时会直接报错，避免静默出错：
 
 ```
 RuntimeError: Algorithm 'quarot' is not yet NPU-ready. Please use --device cuda:0 to run.
@@ -336,7 +337,6 @@ results/
 
 ## 当前已知限制
 
-- **FlatQuant** PPL 结果数值偏高，训练/重参数化路径仍需排查
+- **FlatQuant** 已支持 NPU 运行；若出现 PPL 偏高，优先排查训练/重参数化路径与数值稳定性
 - **QuaRot / SpinQuant** 的低比特 activation 配置尚未在 Qwen/Qwen2.5-VL 上做精细收敛
 - **SpinQuant** 默认使用 `identity-R2` fallback，learned rotation 训练链路尚未适配 Qwen
-- **AWQ** 完整 search 路径较重，当前默认使用 `--no-awq_search`

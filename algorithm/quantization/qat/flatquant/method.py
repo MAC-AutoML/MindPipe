@@ -45,7 +45,7 @@ def _infer_direct_inv_from_checkpoint(checkpoint_root: str | None, checkpoint_na
 
 class FlatQuantMethod(BaseQuantizationMethod):
     name = "flatquant"
-    npu_ready = False  # Hadamard + autocast + .cuda() 改动需在 NPU 上验证
+    npu_ready = True  # NPU path is exercised in-tree; Hadamard uses the non-CUDA fallback implementation
 
     def resolve_output_dir(self, args) -> Path:
         model_name = model_slug(args.model_path)

@@ -341,6 +341,38 @@ def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> l
     return [sorted(available_names)]
 
 
+def _build_dense_causal_mask(input_ids: torch.Tensor, embedding_module: nn.Module) -> torch.Tensor:
+    batch_size, sequence_length = input_ids.shape
+    if not hasattr(embedding_module, "weight"):
+        raise AttributeError(f"Embedding module {type(embedding_module)} does not expose a weight tensor.")
+    mask_dtype = embedding_module.weight.dtype
+    min_value = torch.finfo(mask_dtype).min
+    causal_mask = torch.zeros(
+        (sequence_length, sequence_length),
+        dtype=mask_dtype,
+        device=input_ids.device,
+    )
+    blocked = torch.triu(
+        torch.ones((sequence_length, sequence_length), dtype=torch.bool, device=input_ids.device),
+        diagonal=1,
+    )
+    causal_mask.masked_fill_(blocked, min_value)
+    return causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, sequence_length, sequence_length)
+
+
+def _run_calibration_forward(model: nn.Module, backbone: TextBackbone, token_ids: torch.Tensor) -> None:
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type == "qwen2_5_vl":
+        dense_causal_mask = _build_dense_causal_mask(token_ids, backbone.embed_tokens)
+        attention_mask = {
+            "full_attention": dense_causal_mask,
+            "sliding_attention": dense_causal_mask,
+        }
+        backbone.root(input_ids=token_ids, attention_mask=attention_mask, use_cache=False)
+        return
+    model(input_ids=token_ids, use_cache=False)
+
+
 @torch.no_grad()
 def capture_first_block_inputs(
     model: nn.Module,
@@ -391,7 +423,7 @@ def capture_first_block_inputs(
     for token_ids, _labels in calibration_batches:
         try:
             with torch.no_grad():
-                model(input_ids=token_ids.to(device), use_cache=False)
+                _run_calibration_forward(model, backbone, token_ids.to(device))
         except ValueError:
             pass
 
