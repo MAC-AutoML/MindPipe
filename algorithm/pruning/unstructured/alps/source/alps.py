@@ -6,6 +6,7 @@ import transformers
 import numpy as np
 
 from algorithm.common.device import empty_cache
+from algorithm.common.device import resolve_device
 from algorithm.common.device import synchronize
 
 
@@ -98,8 +99,9 @@ class ALPS_prune:
         D_supp = torch.zeros_like(B)
 
         totp, num_cout = B.shape
-        L, Q = torch.linalg.eigh(self.XtX.double())  # NPU 不支持 eigh，会自动回退到 CPU
-        Q = Q.to(self.dev).float()  # 显式搬回设备，让后续 ADMM 热循环跑在加速器上
+        # 与原版 ALPS 一致：XtX 搬到 CPU 做 float64 eigh（只做一次），结果搬回设备
+        L, Q = torch.linalg.eigh(self.XtX.cpu().double())
+        Q = Q.to(self.dev).float()
         L = L.to(self.dev).float()
         XTX_inv = (Q @ ((1/(L+(rho))) * Q).T).float()
 

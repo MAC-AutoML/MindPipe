@@ -247,6 +247,8 @@ results/<model>/<algorithm>/metrics.json
 | `--structure_pattern` | `unstructured` | 剪枝结构模式 |
 | `--damp_percent` | 0.01 | Hessian 阻尼系数 |
 
+> **ShortGPT 注意事项**：ShortGPT 使用 **PG19** 数据集评估层重要性（Block Influence）。PG19 是长文本（完整书籍），hidden state 统计更稳定，层重要性排序更准确。推荐指定 `--calibration_dataset pg19`；使用其他数据集（如 wikitext2）不会报错，但可能因文本较短导致重要性排序偏差，影响剪枝后模型精度。
+
 ### 组合参数
 
 | 参数 | 默认值 | 说明 |
