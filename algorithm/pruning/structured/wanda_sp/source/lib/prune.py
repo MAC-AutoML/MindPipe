@@ -3,7 +3,6 @@ import torch.nn as nn
 
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
-from .data import get_loaders
 from .layerwrapper import WrappedGPT
 
 
@@ -258,15 +257,11 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
     empty_cache(device)
 
 
-def prune_wanda_sp(args, model, tokenizer, device=None):
+def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
     device = resolve_device(device)
     decoder_config = get_decoder_root(model).config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
-
-    print("loading calibdation data")
-    dataloader, _ = get_loaders("c4", nsamples=args.nsamples, seed=args.seed, seqlen=model.seqlen, tokenizer=tokenizer, data_path=getattr(args, 'data_path', None))
-    print("dataset loading complete")
 
     with torch.no_grad():
         inps, outs, layer_kwargs = prepare_calibration_input(model, dataloader, device)

@@ -99,7 +99,7 @@ class ALPS_prune:
         D_supp = torch.zeros_like(B)
 
         totp, num_cout = B.shape
-        # 与原版 ALPS 一致：XtX 搬到 CPU 做 float64 eigh（只做一次），结果搬回设备
+        # 显式走 CPU float64 eigh，避免依赖 NPU 隐式 fallback 的 dtype 路径
         L, Q = torch.linalg.eigh(self.XtX.cpu().double())
         Q = Q.to(self.dev).float()
         L = L.to(self.dev).float()

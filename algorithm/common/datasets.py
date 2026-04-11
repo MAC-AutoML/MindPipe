@@ -149,6 +149,30 @@ def _load_pileval(tokenizer, sequence_length: int, sample_count: int, seed: int,
     return calibration_batches, None
 
 
+def _load_pg19(tokenizer, sequence_length: int, sample_count: int, seed: int, data_path: Path):
+    pg19_dir = data_path / "pg19"
+    if not pg19_dir.exists():
+        raise FileNotFoundError(f"PG19 dataset not found under {pg19_dir}")
+    from datasets import load_from_disk
+    pg19 = load_from_disk(str(pg19_dir))
+
+    random.seed(seed)
+    calibration_batches = []
+    for _ in range(sample_count):
+        while True:
+            sample_index = random.randint(0, len(pg19) - 1)
+            encoded = tokenizer(pg19[sample_index]["text"], return_tensors="pt")
+            if encoded.input_ids.shape[1] >= sequence_length:
+                break
+        start = random.randint(0, encoded.input_ids.shape[1] - sequence_length)
+        end = start + sequence_length
+        input_ids = encoded.input_ids[:, start:end]
+        labels = input_ids.clone()
+        labels[:, :-1] = -100
+        calibration_batches.append((input_ids, labels))
+    return calibration_batches, None
+
+
 def get_calibration_and_evaluation_data(
     tokenizer,
     dataset_name: str,
@@ -165,6 +189,8 @@ def get_calibration_and_evaluation_data(
         return _load_c4(tokenizer, sequence_length, sample_count, seed, data_path)
     if normalized_name == "pileval":
         return _load_pileval(tokenizer, sequence_length, sample_count, seed, data_path)
+    if normalized_name == "pg19":
+        return _load_pg19(tokenizer, sequence_length, sample_count, seed, data_path)
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 

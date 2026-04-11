@@ -24,6 +24,7 @@ from ...base import BaseQuantizationMethod
 class SpinQuantMethod(BaseQuantizationMethod):
     name = "spinquant"
     npu_ready = False  # Hadamard fallback 需在 NPU 上验证
+    default_calibration_dataset = "c4"
 
     @staticmethod
     def _try_get_hadK(hadamard_utils, size: int):
