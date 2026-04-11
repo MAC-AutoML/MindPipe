@@ -37,7 +37,7 @@ class FLAPMethod(BasePruningMethod):
             pruning_ratio=args.sparsity_ratio,
             remove_heads=args.flap_remove_heads,
             metrics=args.flap_metrics,
-            structure=args.structure_pattern if args.structure_pattern != "unstructured" else "AL-AM",
+            structure="AL-AM",
             prune_method="flap",
             cache_dir="llm_weights",
             unstr=args.pseudo_pruning,
