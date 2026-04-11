@@ -118,6 +118,10 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--value_symmetric", type=_bool_flag, default=True)
     parser.add_argument("--weight_method", default="gptq", choices=["gptq", "rtn"])
     parser.add_argument("--use_activation_order", type=_bool_flag, default=False)
+    # SmoothQuant
+    parser.add_argument("--smoothquant_alpha", type=float, default=0.85)
+    parser.add_argument("--smoothquant_act_scales_from", default=None)
+    parser.add_argument("--smoothquant_save_act_scales", type=_bool_flag, default=True)
     # FlatQuant
     parser.add_argument("--flatquant_epochs", type=int, default=15)
     parser.add_argument("--flatquant_calibration_batch_size", type=int, default=4)

@@ -724,7 +724,7 @@ def _build_dense_causal_mask(input_ids: torch.Tensor, embedding_module: nn.Modul
     return causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, sequence_length, sequence_length)
 
 
-def _run_calibration_forward(model: nn.Module, backbone: TextBackbone, token_ids: torch.Tensor) -> None:
+def run_text_backbone_calibration_forward(model: nn.Module, backbone: TextBackbone, token_ids: torch.Tensor) -> None:
     model_type = getattr(getattr(model, "config", None), "model_type", None)
     if model_type == "qwen2_5_vl":
         dense_causal_mask = _build_dense_causal_mask(token_ids, backbone.embed_tokens)
@@ -735,6 +735,10 @@ def _run_calibration_forward(model: nn.Module, backbone: TextBackbone, token_ids
         backbone.root(input_ids=token_ids, attention_mask=attention_mask, use_cache=False)
         return
     model(input_ids=token_ids, use_cache=False)
+
+
+def _run_calibration_forward(model: nn.Module, backbone: TextBackbone, token_ids: torch.Tensor) -> None:
+    run_text_backbone_calibration_forward(model, backbone, token_ids)
 
 
 @torch.no_grad()
