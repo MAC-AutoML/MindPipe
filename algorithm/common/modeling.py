@@ -267,18 +267,102 @@ def _normalize_legacy_remote_config(config) -> None:
 def _patch_minicpmv_remote_class(model_path: str) -> None:
     _ensure_transformers_remote_code_compat()
     minicpmv_cls = get_class_from_dynamic_module("modeling_minicpmv.MiniCPMV", model_path)
-    if getattr(minicpmv_cls, "_mindpipe_post_init_patched", False):
+    if (
+        getattr(minicpmv_cls, "_mindpipe_post_init_patched", False)
+        and getattr(minicpmv_cls, "_mindpipe_chat_patched", False)
+    ):
         return
 
     original_init = minicpmv_cls.__init__
+    original_chat = getattr(minicpmv_cls, "chat", None)
 
     def patched_init(self, config, *args, **kwargs):
         original_init(self, config, *args, **kwargs)
         if not hasattr(self, "all_tied_weights_keys"):
             self.post_init()
 
-    minicpmv_cls.__init__ = patched_init
+    def patched_chat(
+        self,
+        image,
+        msgs,
+        context,
+        tokenizer,
+        vision_hidden_states=None,
+        max_new_tokens=2048,
+        sampling=False,
+        **kwargs,
+    ):
+        if isinstance(msgs, str):
+            msgs = json.loads(msgs)
+
+        # Keep the original remote-code implementation for non-string prompts.
+        if original_chat is not None and any(not isinstance(msg.get("content"), str) for msg in msgs):
+            return original_chat(
+                self,
+                image=image,
+                msgs=msgs,
+                context=context,
+                tokenizer=tokenizer,
+                vision_hidden_states=vision_hidden_states,
+                max_new_tokens=max_new_tokens,
+                sampling=sampling,
+                **kwargs,
+            )
+
+        prompt = ""
+        for index, msg in enumerate(msgs):
+            role = msg["role"]
+            content = msg["content"]
+            if role not in {"user", "assistant"}:
+                raise ValueError(f"Unsupported MiniCPM chat role: {role}")
+            if index == 0:
+                if role != "user":
+                    raise ValueError("The role of first MiniCPM message should be user")
+                content = tokenizer.im_start + tokenizer.unk_token * self.config.query_num + tokenizer.im_end + "\n" + content
+            prompt += "<用户>" if role == "user" else "<AI>"
+            prompt += content
+        prompt += "<AI>"
+
+        if sampling:
+            generation_config = {
+                "top_p": 0.8,
+                "top_k": 100,
+                "temperature": 0.6,
+                "do_sample": True,
+            }
+        else:
+            generation_config = {
+                "num_beams": 3,
+                "repetition_penalty": 1.2,
+            }
+
+        # The upstream implementation only forwards a hard-coded subset of kwargs.
+        # Preserve the defaults above, but allow callers to pass any valid generate()
+        # argument such as `use_cache=False`.
+        generation_config.update(kwargs)
+
+        with torch.inference_mode():
+            responses, vision_hidden_states = self.generate(
+                data_list=[prompt],
+                max_inp_length=2048,
+                img_list=[[image]],
+                tokenizer=tokenizer,
+                max_new_tokens=max_new_tokens,
+                vision_hidden_states=vision_hidden_states,
+                return_vision_hidden_states=True,
+                **generation_config,
+            )
+        answer = responses[0]
+        next_context = list(msgs)
+        next_context.append({"role": "assistant", "content": answer})
+        return answer, next_context, generation_config
+
+    if not getattr(minicpmv_cls, "_mindpipe_post_init_patched", False):
+        minicpmv_cls.__init__ = patched_init
+    if original_chat is not None and not getattr(minicpmv_cls, "_mindpipe_chat_patched", False):
+        minicpmv_cls.chat = patched_chat
     minicpmv_cls._mindpipe_post_init_patched = True
+    minicpmv_cls._mindpipe_chat_patched = True
 
 
 def _prepare_minicpm_tokenizer_env() -> None:
@@ -343,6 +427,7 @@ def ensure_generation_compat(model: nn.Module) -> nn.Module:
 def _ensure_dynamic_cache_compat() -> None:
     if DynamicCache is None:
         return
+
     def _dynamic_cache_seen_tokens(self):
         return self.get_seq_length(0)
 
@@ -357,12 +442,45 @@ def _ensure_dynamic_cache_compat() -> None:
         cache = cls()
         if past_key_values is None:
             return cache
+        if Cache is not None and isinstance(past_key_values, Cache):
+            return past_key_values
+        if (
+            isinstance(past_key_values, (list, tuple))
+            and len(past_key_values) == 2
+            and all(torch.is_tensor(item) or item is None for item in past_key_values)
+        ):
+            past_key_values = (past_key_values,)
         for layer_idx, layer_past in enumerate(past_key_values):
             if layer_past is None:
                 continue
+            if torch.is_tensor(layer_past):
+                raise ValueError(
+                    "DynamicCache.from_legacy_cache expected per-layer cache tuples, "
+                    f"but received a tensor at layer {layer_idx} with shape {tuple(layer_past.shape)}."
+                )
+            if not isinstance(layer_past, (list, tuple)) or len(layer_past) < 2:
+                raise ValueError(
+                    "DynamicCache.from_legacy_cache expected per-layer cache tuples of "
+                    f"(key, value), but received {type(layer_past).__name__} at layer {layer_idx}."
+                )
             key_states, value_states = layer_past[:2]
             cache.update(key_states, value_states, layer_idx)
         return cache
+
+    def _dynamic_cache_to_legacy_cache(self):
+        legacy_cache = []
+        for layer in getattr(self, "layers", []):
+            key_states = getattr(layer, "keys", None)
+            value_states = getattr(layer, "values", None)
+            sliding_window = getattr(layer, "_sliding_window_tensor", None)
+            if key_states is None or value_states is None:
+                legacy_cache.append(None)
+                continue
+            if sliding_window is not None:
+                legacy_cache.append((key_states, value_states, sliding_window))
+            else:
+                legacy_cache.append((key_states, value_states))
+        return tuple(legacy_cache)
 
     if not hasattr(DynamicCache, "seen_tokens"):
         DynamicCache.seen_tokens = property(_dynamic_cache_seen_tokens)
@@ -372,6 +490,8 @@ def _ensure_dynamic_cache_compat() -> None:
         DynamicCache.get_usable_length = _dynamic_cache_get_usable_length
     if not hasattr(DynamicCache, "from_legacy_cache"):
         DynamicCache.from_legacy_cache = _dynamic_cache_from_legacy_cache
+    if not hasattr(DynamicCache, "to_legacy_cache"):
+        DynamicCache.to_legacy_cache = _dynamic_cache_to_legacy_cache
 
 
 def _patched_minicpm_prepare_inputs_for_generation(
