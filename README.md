@@ -33,6 +33,7 @@ MindPipe/
 │       ├── registry.py       # 剪枝算法注册表
 │       ├── structured/
 │       │   ├── flap/         # FLAP
+│       │   ├── shortgpt/    # ShortGPT
 │       │   └── wanda_sp/     # Wanda-SP
 │       └── unstructured/
 │           ├── wanda/        # Wanda
@@ -63,12 +64,16 @@ MindPipe/
 
 ### 剪枝
 
-| 算法 | 结构 | NPU 就绪 |
-|------|------|---------|
-| Wanda | 非结构化 | 是 |
-| SparseGPT | 非结构化 | 是 |
-| Wanda-SP | 结构化 | 是 |
-| FLAP | 结构化 | 是 |
+| 算法 | 结构 | NPU 就绪 | 推荐校准数据集 |
+|------|------|---------|--------------|
+| Wanda | 非结构化 | 是 | c4 |
+| SparseGPT | 非结构化 | 是 | c4 |
+| Wanda-SP | 结构化 | 是 | c4 |
+| FLAP | 结构化 | 是 | wikitext2 |
+| ShortGPT | 结构化（层剪枝） | 是 | pg19 |
+| ALPS | 非结构化 | 是 | c4 |
+
+所有剪枝方法均通过 `--calibration_dataset` 参数统一选择校准数据集（`wikitext2` / `c4` / `pileval` / `pg19`），推荐使用上表中的数据集以获得最佳效果。
 
 ### 已验证模型
 
@@ -111,6 +116,7 @@ python main.py \
   --model_path /path/to/model \
   --device cuda:0 \
   --dtype float16 \
+  --calibration_dataset c4 \
   --calibration_samples 128 \
   --sequence_length 2048 \
   --sparsity_ratio 0.5 \
@@ -242,10 +248,12 @@ results/<model>/<algorithm>/metrics.json
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--pruning` | None | `wanda` / `sparsegpt` / `wanda_sp` / `flap` |
+| `--pruning` | None | `wanda` / `sparsegpt` / `wanda_sp` / `flap` / `shortgpt` / `alps` |
 | `--sparsity_ratio` | 0.5 | 稀疏率 |
 | `--structure_pattern` | `unstructured` | 剪枝结构模式 |
 | `--damp_percent` | 0.01 | Hessian 阻尼系数 |
+
+> **校准数据集选择**：各算法均支持 `wikitext2` / `c4` / `pileval` / `pg19` 四种校准数据集。上表"推荐校准数据集"列为各算法原始论文使用的默认数据集，效果最好。ShortGPT 强烈推荐 `pg19`（长文本书籍，Block Influence 统计更稳定），使用其他数据集不会报错但可能影响精度。`--calibration_samples` 控制采样窗口数，ShortGPT 适当增大（如 256 或 512）可提升重要性排序的稳定性。
 
 ### 组合参数
 

@@ -15,6 +15,7 @@ from ...base import BaseQuantizationMethod
 
 class AWQMethod(BaseQuantizationMethod):
     name = "awq"
+    default_calibration_dataset = "pileval"
 
     def apply_fake_quantization(self, model, tokenizer_bundle, args) -> dict[str, object]:
         source_root = Path(__file__).resolve().parent / "source"

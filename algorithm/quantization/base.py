@@ -14,6 +14,7 @@ from ..common.io import model_slug
 class BaseQuantizationMethod(ABC):
     name = "base"
     npu_ready: bool = True  # Override to False in subclasses that lack NPU support
+    default_calibration_dataset: str  # Each subclass must define its own
 
     @abstractmethod
     def apply_fake_quantization(self, model, tokenizer_bundle, args) -> dict[str, Any]:

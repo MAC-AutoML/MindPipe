@@ -6,6 +6,7 @@ import transformers
 import numpy as np
 
 from algorithm.common.device import empty_cache
+from algorithm.common.device import resolve_device
 from algorithm.common.device import synchronize
 
 
@@ -98,7 +99,10 @@ class ALPS_prune:
         D_supp = torch.zeros_like(B)
 
         totp, num_cout = B.shape
-        L, Q = torch.linalg.eigh(self.XtX.double())
+        # 显式走 CPU float64 eigh，避免依赖 NPU 隐式 fallback 的 dtype 路径
+        L, Q = torch.linalg.eigh(self.XtX.cpu().double())
+        Q = Q.to(self.dev).float()
+        L = L.to(self.dev).float()
         XTX_inv = (Q @ ((1/(L+(rho))) * Q).T).float()
 
         init_rho = False

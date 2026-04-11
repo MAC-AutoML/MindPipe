@@ -14,6 +14,7 @@ from ..common.io import model_slug
 class BasePruningMethod(ABC):
     name = "base"
     npu_ready = True  # Override to False in subclasses that lack NPU support
+    default_calibration_dataset: str  # Each subclass must define its own
 
     @abstractmethod
     def apply_pruning(self, model, tokenizer_bundle, args) -> dict[str, Any]:

@@ -44,6 +44,7 @@ def _check_sparsity(model) -> float:
 
 class SparseGPTMethod(BasePruningMethod):
     name = "sparsegpt"
+    default_calibration_dataset = "c4"
 
     def apply_pruning(self, model, tokenizer_bundle, args) -> dict[str, object]:
         resolved = resolve_device(args.device)

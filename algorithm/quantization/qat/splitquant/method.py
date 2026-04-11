@@ -60,6 +60,7 @@ def _resolve_split_group_size(args) -> int:
 class SplitQuantMethod(BaseQuantizationMethod):
     name = "splitquant"
     npu_ready = True  # NPU path is exercised in-tree; Hadamard uses the non-CUDA fallback implementation
+    default_calibration_dataset = "pileval"
 
     def resolve_output_dir(self, args) -> Path:
         model_name = model_slug(args.model_path)

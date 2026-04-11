@@ -20,6 +20,7 @@ from ...base import BaseQuantizationMethod
 
 class GPTQMethod(BaseQuantizationMethod):
     name = "gptq"
+    default_calibration_dataset = "pileval"
     quantization_block_size = 32
 
     def apply_fake_quantization(self, model, tokenizer_bundle, args) -> dict[str, object]:

@@ -3,7 +3,6 @@ import torch.nn as nn
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from .layerwrapper import BiasGPT
-from .data import get_loaders 
 import math
 from tqdm import tqdm
 
@@ -498,25 +497,22 @@ def cal_remove_neuron(args, model):
         return int((remove_params - remove_head_params) / (hidden_size * 3))
 
 
-def prune_flap(args, model, tokenizer, device=None):
+def prune_flap(args, model, tokenizer, device=None, dataloader=None):
     """
     Our FLAP Pruning.
-    
+
     Args:
         args (object): Command line arguments parsed via argparse.
         model (nn.Module): PyTorch model to prune.
         tokenizer (Tokenizer): Tokenizer associated with the model.
         device (torch.device, optional): Device to move tensors to. Defaults to CUDA device 0.
+        dataloader (list, optional): Pre-loaded calibration batches from method.py.
     """
     device = resolve_device(device)
     decoder_config = get_decoder_root(model).config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
-    
-    print("loading calibdation data")
-    dataloader, _ = get_loaders("wikitext2", nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
-    print("dataset loading complete")
-    
+
     with torch.no_grad():
         inps, outs, layer_kwargs = prepare_calibration_input(model, dataloader, device)
     layers = get_decoder_layers(model)
