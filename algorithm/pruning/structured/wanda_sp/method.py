@@ -29,11 +29,6 @@ class WandaSPMethod(BasePruningMethod):
     default_calibration_dataset = "c4"
 
     def apply_pruning(self, model, tokenizer_bundle, args) -> dict[str, object]:
-        if args.structure_pattern != "unstructured":
-            raise ValueError(
-                "`wanda_sp` does not use --structure_pattern; leave it as 'unstructured'."
-            )
-
         source_root = Path(__file__).resolve().parent / "source"
         source_args = SimpleNamespace(
             model=args.model_path,
