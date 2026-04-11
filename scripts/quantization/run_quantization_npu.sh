@@ -29,6 +29,9 @@ VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
 
 # Algorithm-specific defaults
 AWQ_SEARCH="${AWQ_SEARCH:-true}"
+FLATQUANT_QUERY_BITS_DEFAULT=16
+FLATQUANT_KEY_BITS_DEFAULT=4
+FLATQUANT_VALUE_BITS_DEFAULT=4
 SPLITQUANT_QUERY_BITS_DEFAULT=16
 SPLITQUANT_KEY_BITS_DEFAULT=4
 SPLITQUANT_VALUE_BITS_DEFAULT=4
@@ -49,6 +52,14 @@ MODELS=(
 # GPTQ_BITS=(2 3 4)
 AWQ_BITS=(4)
 GPTQ_BITS=(4)
+FLATQUANT_CONFIGS=(
+  "2 16 16 4 4 w2a16"
+  "3 16 16 4 4 w3a16"
+  "4 16 16 4 4 w4a16"
+  "4 4 16 4 4 w4a4"
+  "8 8 16 4 4 w8a8"
+  "16 16 16 16 16 w16a16"
+)
 SPLITQUANT_CONFIGS=(
   "2 16 16 4 4 w2a16"
   "3 16 16 4 4 w3a16"
@@ -59,13 +70,14 @@ SPLITQUANT_CONFIGS=(
 )
 
 # Worker scheduling
-# Only keep algorithms that are currently marked NPU-ready in the repo.
 ENABLE_AWQ="${ENABLE_AWQ:-true}"
 ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
+ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-false}"
 ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-false}"
 
 AWQ_NPUS="${AWQ_NPUS:-0}"
 GPTQ_NPUS="${GPTQ_NPUS:-1}"
+FLATQUANT_NPUS="${FLATQUANT_NPUS:-1}"
 SPLITQUANT_NPUS="${SPLITQUANT_NPUS:-1}"
 
 # Execution control
@@ -88,15 +100,23 @@ metrics_path_for() {
   local model_path="$2"
   local weight_bits="$3"
   local activation_bits="$4"
-  local query_bits="${5:-$SPLITQUANT_QUERY_BITS_DEFAULT}"
-  local key_bits="${6:-$SPLITQUANT_KEY_BITS_DEFAULT}"
-  local value_bits="${7:-$SPLITQUANT_VALUE_BITS_DEFAULT}"
+  local default_query_bits="$FLATQUANT_QUERY_BITS_DEFAULT"
+  local default_key_bits="$FLATQUANT_KEY_BITS_DEFAULT"
+  local default_value_bits="$FLATQUANT_VALUE_BITS_DEFAULT"
+  if [[ "$algorithm" == "splitquant" ]]; then
+    default_query_bits="$SPLITQUANT_QUERY_BITS_DEFAULT"
+    default_key_bits="$SPLITQUANT_KEY_BITS_DEFAULT"
+    default_value_bits="$SPLITQUANT_VALUE_BITS_DEFAULT"
+  fi
+  local query_bits="${5:-$default_query_bits}"
+  local key_bits="${6:-$default_key_bits}"
+  local value_bits="${7:-$default_value_bits}"
   local out_root
   out_root="$(output_root)"
   local model_name
   model_name="$(basename "$model_path")"
 
-  if [[ "$algorithm" == "splitquant" ]]; then
+  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" ]]; then
     printf '%s/%s/%s/%s_w%sa%s_q%sk%sv%s_seq%s/metrics.json' \
       "$out_root" \
       "$model_name" \
@@ -298,12 +318,16 @@ run_experiment() {
     "OUTPUT_DIR=$out_root"
   )
   append_device_env env_vars "$npu_spec"
-  if [[ "$algorithm" == "splitquant" ]]; then
+  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" ]]; then
     env_vars+=(
       "ACTIVATION_BITS=$activation_bits"
       "QUERY_BITS=$query_bits"
       "KEY_BITS=$key_bits"
       "VALUE_BITS=$value_bits"
+    )
+  fi
+  if [[ "$algorithm" == "splitquant" ]]; then
+    env_vars+=(
       "GROUP_SIZE=$SPLITQUANT_GROUP_SIZE"
       "WEIGHT_GROUP_SIZE=$SPLITQUANT_WEIGHT_GROUP_SIZE"
       "ACTIVATION_GROUP_SIZE=$SPLITQUANT_ACTIVATION_GROUP_SIZE"
@@ -392,6 +416,23 @@ run_algorithm_queue() {
         done
       done
       ;;
+    flatquant)
+      for model_path in "${MODELS[@]}"; do
+        for config in "${FLATQUANT_CONFIGS[@]}"; do
+          read -r weight_bits activation_bits query_bits key_bits value_bits label <<< "$config"
+          if (( job_index % worker_count == worker_index )); then
+            if ! run_experiment flatquant "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits" "$label" "$npu_spec"; then
+              ((failure_count += 1))
+            fi
+            case "$LAST_RUN_STATUS" in
+              success) ((success_count += 1)) ;;
+              skip) ((skip_count += 1)) ;;
+            esac
+          fi
+          ((job_index += 1))
+        done
+      done
+      ;;
     splitquant)
       for model_path in "${MODELS[@]}"; do
         for config in "${SPLITQUANT_CONFIGS[@]}"; do
@@ -469,6 +510,10 @@ main() {
 
   if [[ "$ENABLE_GPTQ" == "true" ]]; then
     launch_algorithm_workers gptq "$GPTQ_NPUS"
+  fi
+
+  if [[ "$ENABLE_FLATQUANT" == "true" ]]; then
+    launch_algorithm_workers flatquant "$FLATQUANT_NPUS"
   fi
 
   if [[ "$ENABLE_SPLITQUANT" == "true" ]]; then
