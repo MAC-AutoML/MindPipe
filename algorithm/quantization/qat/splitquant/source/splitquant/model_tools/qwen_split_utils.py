@@ -1,29 +1,22 @@
-import math
-
 import torch
 import torch.nn as nn
 
-from flatquant.flat_linear import FlatQuantizedLinear
-from flatquant.function_utils import get_decompose_dim
-from flatquant.function_utils import get_init_scale
-from flatquant.quant_utils import ActivationQuantizer
-from flatquant.trans_utils import InvDecomposeTransMatrix
-from flatquant.trans_utils import InvSingleTransMatrix
-from flatquant.trans_utils import SVDDecomposeTransMatrix
-from flatquant.trans_utils import SVDSingleTransMatrix
-from flatquant.utils import skip_initialization
+from splitquant.function_utils import get_init_scale
+from splitquant.quant_utils import ActivationQuantizer
+from splitquant.split_linear import SplitQuantizedLinear
+from splitquant.trans_utils import SVDSingleGroupTransMatrix
+from splitquant.trans_utils import SVDSingleTransMatrix
+from splitquant.utils import skip_initialization
 
 from transformers.models.qwen2.modeling_qwen2 import ALL_ATTENTION_FUNCTIONS as QWEN2_ATTENTION_FUNCTIONS
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
 from transformers.models.qwen2.modeling_qwen2 import Qwen2MLP
 from transformers.models.qwen2.modeling_qwen2 import apply_rotary_pos_emb
 from transformers.models.qwen2.modeling_qwen2 import eager_attention_forward as qwen2_eager_attention_forward
-from transformers.models.qwen2.modeling_qwen2 import repeat_kv
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import ALL_ATTENTION_FUNCTIONS as QWEN2_VL_ATTENTION_FUNCTIONS
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLAttention
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import apply_multimodal_rotary_pos_emb
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import eager_attention_forward as qwen2_vl_eager_attention_forward
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import repeat_kv as repeat_kv_vl
 
 
 def _decoder_root(model):
@@ -54,16 +47,42 @@ def _resolve_mrope_section(config):
     raise KeyError("Qwen2.5-VL config is missing mrope_section in rope_parameters/rope_scaling.")
 
 
-class FlatQuantQwen2MLP(torch.nn.Module):
+def _resolve_split_group_size(args) -> int:
+    group_sizes = []
+    if args.w_bits < 16:
+        group_sizes.append(int(args.w_groupsize))
+    if args.a_bits < 16:
+        group_sizes.append(int(args.a_groupsize))
+    if not group_sizes:
+        return -1
+    if any(size <= 0 for size in group_sizes):
+        raise ValueError("SplitQuant requires positive group sizes for quantized weights/activations.")
+    first = group_sizes[0]
+    if any(size != first for size in group_sizes[1:]):
+        raise ValueError("SplitQuant requires activation and weight group sizes to match.")
+    return first
+
+
+def _build_group_trans(in_features: int, group_size: int, add_diag: bool, trans_name: str):
+    if in_features % group_size != 0:
+        raise ValueError(
+            f"SplitQuant requires {trans_name} in_features={in_features} divisible by split group size={group_size}."
+        )
+    return SVDSingleGroupTransMatrix(in_features, group_size, add_diag=add_diag)
+
+
+class SplitQuantQwenMLP(nn.Module):
     def __init__(self, args, module: Qwen2MLP):
         super().__init__()
         self.args = args
         self.hidden_size = module.hidden_size
         self.intermediate_size = module.intermediate_size
         self.act_fn = module.act_fn
-        self.up_proj = FlatQuantizedLinear(args, module.up_proj)
-        self.gate_proj = FlatQuantizedLinear(args, module.gate_proj)
-        self.down_proj = FlatQuantizedLinear(args, module.down_proj)
+        self.group_size = _resolve_split_group_size(args) if (args.w_bits < 16 or args.a_bits < 16) else -1
+
+        self.up_proj = SplitQuantizedLinear(args, module.up_proj)
+        self.gate_proj = SplitQuantizedLinear(args, module.gate_proj)
+        self.down_proj = SplitQuantizedLinear(args, module.down_proj)
         self.add_fq_trans()
 
         self._ori_mode = False
@@ -86,22 +105,18 @@ class FlatQuantQwen2MLP(torch.nn.Module):
             )
 
     def add_fq_trans(self):
-        if self.args.direct_inv:
-            decompose_trans_matrix = InvDecomposeTransMatrix
-        else:
-            decompose_trans_matrix = SVDDecomposeTransMatrix
         if self.args.w_bits < 16 or self.args.a_bits < 16:
-            up_dim_left, up_dim_right = get_decompose_dim(self.up_proj.linear.weight.shape[1])
-            self.up_gate_trans = decompose_trans_matrix(
-                up_dim_left,
-                up_dim_right,
-                add_diag=self.args.add_diag,
+            self.up_gate_trans = _build_group_trans(
+                self.up_proj.linear.weight.shape[1],
+                self.group_size,
+                self.args.add_diag,
+                "Qwen MLP up/gate transform",
             )
-            down_dim_left, down_dim_right = get_decompose_dim(self.down_proj.linear.weight.shape[1])
-            self.down_trans = decompose_trans_matrix(
-                down_dim_left,
-                down_dim_right,
-                add_diag=self.args.add_diag,
+            self.down_trans = _build_group_trans(
+                self.down_proj.linear.weight.shape[1],
+                self.group_size,
+                self.args.add_diag,
+                "Qwen MLP down transform",
             )
         else:
             self.up_gate_trans, self.down_trans = None, None
@@ -114,13 +129,10 @@ class FlatQuantQwen2MLP(torch.nn.Module):
         up_states = self.up_proj(x_ts, qa_trans=self.up_gate_trans)
         gate_states = self.gate_proj(x_ts, qa_trans=self.up_gate_trans)
 
-        x_act_fn = self.act_fn(gate_states) * up_states
+        hidden_states = self.act_fn(gate_states) * up_states
         if self.down_trans is not None:
-            x_ts_2 = self.down_trans(x_act_fn)
-        else:
-            x_ts_2 = x_act_fn
-        down_states = self.down_proj(x_ts_2, qa_trans=self.down_trans)
-        return down_states
+            hidden_states = self.down_trans(hidden_states)
+        return self.down_proj(hidden_states, qa_trans=self.down_trans)
 
     def _ori_forward(self, x):
         if self.diag_init == "sq_style":
@@ -134,8 +146,7 @@ class FlatQuantQwen2MLP(torch.nn.Module):
                 self.down_smax,
                 x.reshape(-1, x.shape[-1]).abs().max(0)[0].clone().detach(),
             )
-        down_states = self.down_proj._ori_forward(x)
-        return down_states
+        return self.down_proj._ori_forward(x)
 
     def forward(self, x):
         if self._ori_mode:
@@ -178,12 +189,11 @@ class FlatQuantQwen2MLP(torch.nn.Module):
             self.down_trans.to_eval_mode()
 
 
-class _FlatQuantQwenAttentionMixin:
-    repeat_kv_fn = staticmethod(repeat_kv)
+class _SplitQuantQwenAttentionMixin:
     attention_functions = QWEN2_ATTENTION_FUNCTIONS
     eager_attention_fn = staticmethod(qwen2_eager_attention_forward)
 
-    def _init_flatquant_attention(self, args, module):
+    def _init_splitquant_attention(self, args, module):
         self.args = args
         self.hidden_size = getattr(module, "hidden_size", module.config.hidden_size)
         self.num_heads = getattr(module, "num_heads", module.config.num_attention_heads)
@@ -203,14 +213,15 @@ class _FlatQuantQwenAttentionMixin:
         self.rope_scaling = getattr(module, "rope_scaling", getattr(module.config, "rope_scaling", None))
         self.sliding_window = getattr(module, "sliding_window", None)
         self.is_causal = getattr(module, "is_causal", True)
+        self.group_size = _resolve_split_group_size(args) if (args.w_bits < 16 or args.a_bits < 16) else -1
         self.mrope_section = _resolve_mrope_section(module.config) if isinstance(module, Qwen2_5_VLAttention) else None
         if hasattr(module, "rotary_emb"):
             self.rotary_emb = module.rotary_emb
 
-        self.q_proj = FlatQuantizedLinear(args, module.q_proj)
-        self.k_proj = FlatQuantizedLinear(args, module.k_proj)
-        self.v_proj = FlatQuantizedLinear(args, module.v_proj)
-        self.o_proj = FlatQuantizedLinear(args, module.o_proj)
+        self.q_proj = SplitQuantizedLinear(args, module.q_proj)
+        self.k_proj = SplitQuantizedLinear(args, module.k_proj)
+        self.v_proj = SplitQuantizedLinear(args, module.v_proj)
+        self.o_proj = SplitQuantizedLinear(args, module.o_proj)
         self.add_fq_trans()
 
         if args.q_bits < 16:
@@ -249,28 +260,24 @@ class _FlatQuantQwenAttentionMixin:
             )
 
     def add_fq_trans(self):
-        if self.args.direct_inv:
-            single_trans_matrix, decompose_trans_matrix = InvSingleTransMatrix, InvDecomposeTransMatrix
-        else:
-            single_trans_matrix, decompose_trans_matrix = SVDSingleTransMatrix, SVDDecomposeTransMatrix
         if self.args.w_bits < 16 or self.args.a_bits < 16:
-            ln_dim_left, ln_dim_right = get_decompose_dim(self.q_proj.linear.weight.shape[1])
-            self.ln_trans = decompose_trans_matrix(
-                ln_dim_left,
-                ln_dim_right,
-                add_diag=self.args.add_diag,
+            self.ln_trans = _build_group_trans(
+                self.q_proj.linear.weight.shape[1],
+                self.group_size,
+                self.args.add_diag,
+                "Qwen attention input transform",
             )
-            self.o_trans = single_trans_matrix(self.config.num_attention_heads)
+            self.o_trans = SVDSingleTransMatrix(self.config.num_attention_heads)
         else:
             self.ln_trans, self.o_trans = None, None
 
         head_dim = self.config.hidden_size // self.config.num_attention_heads
         if self.args.k_bits < 16 or self.args.q_bits < 16:
-            self.kcache_trans = single_trans_matrix(head_dim)
+            self.kcache_trans = SVDSingleTransMatrix(head_dim)
         else:
             self.kcache_trans = None
         if self.args.v_bits < 16 or self.args.w_bits < 16 or self.args.a_bits < 16:
-            self.vcache_trans = single_trans_matrix(head_dim)
+            self.vcache_trans = SVDSingleTransMatrix(head_dim)
         else:
             self.vcache_trans = None
 
@@ -421,10 +428,10 @@ class _FlatQuantQwenAttentionMixin:
             self.o_trans.to_eval_mode()
 
 
-class FlatQuantQwen2Attention(_FlatQuantQwenAttentionMixin, Qwen2Attention):
+class SplitQuantQwen2Attention(_SplitQuantQwenAttentionMixin, Qwen2Attention):
     def __init__(self, args, module: Qwen2Attention):
         super().__init__(module.config, module.layer_idx)
-        self._init_flatquant_attention(args, module)
+        self._init_splitquant_attention(args, module)
 
     def forward(
         self,
@@ -485,14 +492,13 @@ class FlatQuantQwen2Attention(_FlatQuantQwenAttentionMixin, Qwen2Attention):
         return attn_output, attn_weights
 
 
-class FlatQuantQwen2_5_VLAttention(_FlatQuantQwenAttentionMixin, Qwen2_5_VLAttention):
-    repeat_kv_fn = staticmethod(repeat_kv_vl)
+class SplitQuantQwen2_5_VLAttention(_SplitQuantQwenAttentionMixin, Qwen2_5_VLAttention):
     attention_functions = QWEN2_VL_ATTENTION_FUNCTIONS
     eager_attention_fn = staticmethod(qwen2_vl_eager_attention_forward)
 
     def __init__(self, args, module: Qwen2_5_VLAttention):
         super().__init__(module.config, module.layer_idx)
-        self._init_flatquant_attention(args, module)
+        self._init_splitquant_attention(args, module)
 
     def forward(
         self,
@@ -564,16 +570,16 @@ class FlatQuantQwen2_5_VLAttention(_FlatQuantQwenAttentionMixin, Qwen2_5_VLAtten
         return attn_output, attn_weights
 
 
-def apply_flatquant_to_qwen(args, model):
+def apply_splitquant_to_qwen(args, model):
     skip_initialization()
     decoder_root = _decoder_root(model)
-    attention_wrapper_cls = FlatQuantQwen2_5_VLAttention if _is_vl_model(model) else FlatQuantQwen2Attention
+    attention_wrapper_cls = SplitQuantQwen2_5_VLAttention if _is_vl_model(model) else SplitQuantQwen2Attention
     for layer_index in range(len(decoder_root.layers)):
         decoder_root.layers[layer_index].self_attn = attention_wrapper_cls(
             args,
             decoder_root.layers[layer_index].self_attn,
         )
-        decoder_root.layers[layer_index].mlp = FlatQuantQwen2MLP(
+        decoder_root.layers[layer_index].mlp = SplitQuantQwenMLP(
             args,
             decoder_root.layers[layer_index].mlp,
         )

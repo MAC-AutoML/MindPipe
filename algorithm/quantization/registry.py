@@ -7,6 +7,7 @@ from .ptq.gptq.method import GPTQMethod
 from .ptq.quarot.method import QuaRotMethod
 from .ptq.spinquant.method import SpinQuantMethod
 from .qat.flatquant.method import FlatQuantMethod
+from .qat.splitquant.method import SplitQuantMethod
 
 
 METHOD_REGISTRY = {
@@ -14,6 +15,7 @@ METHOD_REGISTRY = {
     "flatquant": FlatQuantMethod,
     "gptq": GPTQMethod,
     "quarot": QuaRotMethod,
+    "splitquant": SplitQuantMethod,
     "spinquant": SpinQuantMethod,
 }
 
@@ -24,4 +26,3 @@ def get_method(name: str):
         available = ", ".join(sorted(METHOD_REGISTRY))
         raise KeyError(f"Unknown quantization method '{name}'. Available methods: {available}")
     return method_cls()
-

@@ -32,6 +32,10 @@ AWQ_SEARCH="${AWQ_SEARCH:-true}"
 FLATQUANT_QUERY_BITS_DEFAULT=16
 FLATQUANT_KEY_BITS_DEFAULT=4
 FLATQUANT_VALUE_BITS_DEFAULT=4
+SPLITQUANT_GROUP_SIZE="${SPLITQUANT_GROUP_SIZE:-128}"
+SPLITQUANT_WEIGHT_GROUP_SIZE="${SPLITQUANT_WEIGHT_GROUP_SIZE:-$SPLITQUANT_GROUP_SIZE}"
+SPLITQUANT_ACTIVATION_GROUP_SIZE="${SPLITQUANT_ACTIVATION_GROUP_SIZE:-$SPLITQUANT_GROUP_SIZE}"
+SPLITQUANT_KV_GROUP_SIZE="${SPLITQUANT_KV_GROUP_SIZE:-128}"
 
 # Experiment matrix
 MODELS=(
@@ -51,15 +55,25 @@ FLATQUANT_CONFIGS=(
   "8 8 16 4 4 w8a8"
   "16 16 16 16 16 w16a16"
 )
+SPLITQUANT_CONFIGS=(
+  "2 16 16 4 4 w2a16"
+  "3 16 16 4 4 w3a16"
+  "4 16 16 4 4 w4a16"
+  "4 4 16 4 4 w4a4"
+  "8 8 16 4 4 w8a8"
+  "16 16 16 16 16 w16a16"
+)
 
 # Worker scheduling
 ENABLE_AWQ="${ENABLE_AWQ:-false}"
 ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
 ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-true}"
+ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-true}"
 
 AWQ_GPUS="${AWQ_GPUS:-6}"
 GPTQ_GPUS="${GPTQ_GPUS:-7}"
 FLATQUANT_GPUS="${FLATQUANT_GPUS:-3,6}"
+SPLITQUANT_GPUS="${SPLITQUANT_GPUS:-3,6}"
 
 # Execution control
 FORCE_RERUN="${FORCE_RERUN:-false}"
@@ -89,7 +103,7 @@ metrics_path_for() {
   local model_name
   model_name="$(basename "$model_path")"
 
-  if [[ "$algorithm" == "flatquant" ]]; then
+  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" ]]; then
     printf '%s/%s/%s/%s_w%sa%s_q%sk%sv%s_seq%s/metrics.json' \
       "$out_root" \
       "$model_name" \
@@ -291,12 +305,20 @@ run_experiment() {
     "OUTPUT_DIR=$out_root"
   )
   append_device_env env_vars "$gpu_spec"
-  if [[ "$algorithm" == "flatquant" ]]; then
+  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" ]]; then
     env_vars+=(
       "ACTIVATION_BITS=$activation_bits"
       "QUERY_BITS=$query_bits"
       "KEY_BITS=$key_bits"
       "VALUE_BITS=$value_bits"
+    )
+  fi
+  if [[ "$algorithm" == "splitquant" ]]; then
+    env_vars+=(
+      "GROUP_SIZE=$SPLITQUANT_GROUP_SIZE"
+      "WEIGHT_GROUP_SIZE=$SPLITQUANT_WEIGHT_GROUP_SIZE"
+      "ACTIVATION_GROUP_SIZE=$SPLITQUANT_ACTIVATION_GROUP_SIZE"
+      "KV_GROUP_SIZE=$SPLITQUANT_KV_GROUP_SIZE"
     )
   fi
   append_passthrough_env env_vars
@@ -398,6 +420,23 @@ run_algorithm_queue() {
         done
       done
       ;;
+    splitquant)
+      for model_path in "${MODELS[@]}"; do
+        for config in "${SPLITQUANT_CONFIGS[@]}"; do
+          read -r weight_bits activation_bits query_bits key_bits value_bits label <<< "$config"
+          if (( job_index % worker_count == worker_index )); then
+            if ! run_experiment splitquant "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits" "$label" "$gpu_spec"; then
+              ((failure_count += 1))
+            fi
+            case "$LAST_RUN_STATUS" in
+              success) ((success_count += 1)) ;;
+              skip) ((skip_count += 1)) ;;
+            esac
+          fi
+          ((job_index += 1))
+        done
+      done
+      ;;
     *)
       printf 'Unknown algorithm queue: %s\n' "$algorithm" >&2
       return 1
@@ -462,6 +501,10 @@ main() {
 
   if [[ "$ENABLE_FLATQUANT" == "true" ]]; then
     launch_algorithm_workers flatquant "$FLATQUANT_GPUS"
+  fi
+
+  if [[ "$ENABLE_SPLITQUANT" == "true" ]]; then
+    launch_algorithm_workers splitquant "$SPLITQUANT_GPUS"
   fi
 
   if ((${#WORKER_PIDS[@]} == 0)); then
