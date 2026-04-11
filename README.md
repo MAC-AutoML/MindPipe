@@ -75,6 +75,19 @@ MindPipe/
 
 所有剪枝方法均通过 `--calibration_dataset` 参数统一选择校准数据集（`wikitext2` / `c4` / `pileval` / `pg19`），推荐使用上表中的数据集以获得最佳效果。
 
+### 各方法 Reference 校准参数
+
+| 方法 | 校准集 | nsamples | seqlen |
+|------|--------|----------|--------|
+| FLAP | wikitext2 | 2048 | 128 |
+| Wanda | c4 | 128 | 模型 max_position_embeddings |
+| Wanda-SP | c4 | 128 | 模型 max_position_embeddings |
+| SparseGPT | c4 | 128 | 模型 max_position_embeddings |
+| ShortGPT | pg19 | 全量验证集 | stride=256 |
+| ALPS | c4 | 128 | 2048 |
+
+> **注意**：MindPipe 默认 `--calibration_samples 128`、`--sequence_length 2048`。FLAP 的 reference 用的是 nsamples=2048、seqlen=128，与默认值差异较大，跑 FLAP 实验时建议显式指定 `--calibration_samples 2048 --sequence_length 128`。
+
 ### 已验证模型
 
 - Qwen2.5-7B-Instruct
