@@ -26,6 +26,7 @@ from ...base import BaseQuantizationMethod
 class QuaRotMethod(BaseQuantizationMethod):
     name = "quarot"
     npu_ready = False  # Hadamard fallback 需在 NPU 上验证
+    default_calibration_dataset = "c4"
 
     @staticmethod
     def _is_minicpm_like(model) -> bool:
@@ -95,16 +96,7 @@ class QuaRotMethod(BaseQuantizationMethod):
             return None, None
 
     def load_resources(self, args):
-        # Keep Qwen-family models on eager-attention-disabled loading so runtime QuaRot path remains available.
-        if self._looks_like_qwen_model_path(args.model_path):
-            force_eager = False
-        else:
-            force_eager = not self._should_use_runtime_path_for_args(args)
-        return load_model_and_tokenizer(args.model_path, dtype=args.dtype, force_eager=force_eager)
-
-    @staticmethod
-    def _should_use_runtime_path_for_args(args) -> bool:
-        return args.activation_bits >= 16 and args.key_bits >= 16 and args.value_bits >= 16
+        return load_model_and_tokenizer(args.model_path,dtype=args.dtype,attn_implementation=args.attn_implementation)
 
     @staticmethod
     def _looks_like_qwen_model_path(model_path: str) -> bool:

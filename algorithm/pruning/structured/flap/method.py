@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ...base import BasePruningMethod
+from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import find_linear_layers
 from ....common.modeling import get_text_backbone
 from ....common.runtime import prepend_python_path
@@ -25,6 +26,7 @@ def _check_sparsity(model) -> float:
 
 class FLAPMethod(BasePruningMethod):
     name = "flap"
+    default_calibration_dataset = "wikitext2"
 
     def apply_pruning(self, model, tokenizer_bundle, args) -> dict[str, object]:
         source_root = Path(__file__).resolve().parent / "source"
@@ -35,7 +37,7 @@ class FLAPMethod(BasePruningMethod):
             pruning_ratio=args.sparsity_ratio,
             remove_heads=args.flap_remove_heads,
             metrics=args.flap_metrics,
-            structure=args.structure_pattern if args.structure_pattern != "unstructured" else "AL-AM",
+            structure="AL-AM",
             prune_method="flap",
             cache_dir="llm_weights",
             unstr=args.pseudo_pruning,
@@ -48,10 +50,19 @@ class FLAPMethod(BasePruningMethod):
         model.to(args.device)
         model.eval()
 
+        calibration_batches, _ = get_calibration_and_evaluation_data(
+            tokenizer=tokenizer_bundle.tokenizer,
+            dataset_name=args.calibration_dataset,
+            sequence_length=args.sequence_length,
+            sample_count=args.calibration_samples,
+            seed=args.seed,
+            data_path=args.data_path,
+        )
+
         with prepend_python_path(source_root):
             from lib.prune import prune_flap
 
-            prune_flap(source_args, model, tokenizer_bundle.tokenizer, args.device)
+            prune_flap(source_args, model, tokenizer_bundle.tokenizer, args.device, dataloader=calibration_batches)
             observed_sparsity = _check_sparsity(model)
 
         return {

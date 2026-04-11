@@ -3,7 +3,6 @@ import torch.nn as nn
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from .layerwrapper import BiasGPT
-from .data import get_loaders 
 import math
 from tqdm import tqdm
 
@@ -110,12 +109,13 @@ def check_sparsity(model):
     Returns:
         float: Ratio of the count of non-zero weights to total parameters in the model.
     """
-    use_cache = model.config.use_cache 
-    model.config.use_cache = False 
+    decoder_config = get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
     layers = get_decoder_layers(model)
-    intermediate_size = model.config.intermediate_size
-    hidden_size = model.config.hidden_size
+    intermediate_size = decoder_config.intermediate_size
+    hidden_size = decoder_config.hidden_size
     
     count = 0 
     total_params = 0
@@ -141,7 +141,7 @@ def check_sparsity(model):
             
         print(f"layer {i} sparsity {float(sub_count)/sub_params:.6f}")
 
-    model.config.use_cache = use_cache 
+    decoder_config.use_cache = use_cache
     return float(count)/total_params 
 
 
@@ -159,16 +159,17 @@ def prepare_calibration_input(model, dataloader, device):
         outs (torch.Tensor): Output tensor for calibration.
         layer_kwargs (dict): Cached decoder-layer kwargs.
     """
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
     layers = get_decoder_layers(model)
+    decoder_config = get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
     if "model.embed_tokens" in getattr(model, 'hf_device_map', {}):
         device = model.hf_device_map["model.embed_tokens"]
 
     dtype = next(iter(model.parameters())).dtype
     sample_count = len(dataloader)
-    inps = torch.zeros((sample_count, model.seqlen, model.config.hidden_size), dtype=dtype, device=device)
+    inps = torch.zeros((sample_count, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=device)
     inps.requires_grad = False
     cache = {'i': 0, 'layer_kwargs': {}}
 
@@ -198,7 +199,7 @@ def prepare_calibration_input(model, dataloader, device):
     layers[0] = layers[0].module
 
     outs = torch.zeros_like(inps)
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
 
     return inps, outs, dict(cache['layer_kwargs'])
 
@@ -481,10 +482,11 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
     
     
 def cal_remove_neuron(args, model):
-    intermediate_size = model.config.intermediate_size
-    hidden_size = model.config.hidden_size
-    num_layers = model.config.num_hidden_layers
-    head_dim = hidden_size // model.config.num_attention_heads
+    decoder_config = get_decoder_root(model).config
+    intermediate_size = decoder_config.intermediate_size
+    hidden_size = decoder_config.hidden_size
+    num_layers = decoder_config.num_hidden_layers
+    head_dim = hidden_size // decoder_config.num_attention_heads
     if args.structure == "UL-MM":
         remove_params = args.pruning_ratio * (intermediate_size * hidden_size * 3 + hidden_size * hidden_size * 4)
         remove_head_params = hidden_size * 4 * (args.remove_heads // num_layers) * head_dim
@@ -495,24 +497,22 @@ def cal_remove_neuron(args, model):
         return int((remove_params - remove_head_params) / (hidden_size * 3))
 
 
-def prune_flap(args, model, tokenizer, device=None):
+def prune_flap(args, model, tokenizer, device=None, dataloader=None):
     """
     Our FLAP Pruning.
-    
+
     Args:
         args (object): Command line arguments parsed via argparse.
         model (nn.Module): PyTorch model to prune.
         tokenizer (Tokenizer): Tokenizer associated with the model.
         device (torch.device, optional): Device to move tensors to. Defaults to CUDA device 0.
+        dataloader (list, optional): Pre-loaded calibration batches from method.py.
     """
     device = resolve_device(device)
-    use_cache = model.config.use_cache 
-    model.config.use_cache = False 
-    
-    print("loading calibdation data")
-    dataloader, _ = get_loaders("wikitext2", nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
-    print("dataset loading complete")
-    
+    decoder_config = get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
+
     with torch.no_grad():
         inps, outs, layer_kwargs = prepare_calibration_input(model, dataloader, device)
     layers = get_decoder_layers(model)
@@ -653,7 +653,7 @@ def prune_flap(args, model, tokenizer, device=None):
         else:
             compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], device, unstr=args.unstr)
                 
-    model.config.use_cache = use_cache 
+    decoder_config.use_cache = use_cache
     empty_cache(device)
 def prune_magnitude_sp(args, model, tokenizer, device=None):
     """

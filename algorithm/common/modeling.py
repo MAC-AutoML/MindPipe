@@ -92,6 +92,47 @@ class TokenizerBundle:
         return getattr(self.tokenizer, name)
 
 
+class MiniCPMTokenizerAdapter:
+    """Expose MiniCPM-specific tokenizer fields on top of a standard HF tokenizer."""
+
+    def __init__(self, tokenizer: Any):
+        self.tokenizer = tokenizer
+        self.im_start = "<image>"
+        self.im_end = "</image>"
+        self.ref_start = "<ref>"
+        self.ref_end = "</ref>"
+        self.box_start = "<box>"
+        self.box_end = "</box>"
+        self.quad_start = "<quad>"
+        self.quad_end = "</quad>"
+
+    @property
+    def bos_id(self) -> int:
+        return int(self.tokenizer.bos_token_id)
+
+    @property
+    def eos_id(self) -> int:
+        return int(self.tokenizer.eos_token_id)
+
+    @property
+    def unk_id(self) -> int:
+        return int(self.tokenizer.unk_token_id)
+
+    @property
+    def im_start_id(self) -> int:
+        return int(self.tokenizer.convert_tokens_to_ids(self.im_start))
+
+    @property
+    def im_end_id(self) -> int:
+        return int(self.tokenizer.convert_tokens_to_ids(self.im_end))
+
+    def save_pretrained(self, path: str, *args, **kwargs) -> None:
+        self.tokenizer.save_pretrained(path, *args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self.tokenizer, name)
+
+
 class TextModelAdapter(nn.Module):
     """Expose a multimodal model's text decoder through a causal-LM interface."""
 
@@ -226,18 +267,102 @@ def _normalize_legacy_remote_config(config) -> None:
 def _patch_minicpmv_remote_class(model_path: str) -> None:
     _ensure_transformers_remote_code_compat()
     minicpmv_cls = get_class_from_dynamic_module("modeling_minicpmv.MiniCPMV", model_path)
-    if getattr(minicpmv_cls, "_mindpipe_post_init_patched", False):
+    if (
+        getattr(minicpmv_cls, "_mindpipe_post_init_patched", False)
+        and getattr(minicpmv_cls, "_mindpipe_chat_patched", False)
+    ):
         return
 
     original_init = minicpmv_cls.__init__
+    original_chat = getattr(minicpmv_cls, "chat", None)
 
     def patched_init(self, config, *args, **kwargs):
         original_init(self, config, *args, **kwargs)
         if not hasattr(self, "all_tied_weights_keys"):
             self.post_init()
 
-    minicpmv_cls.__init__ = patched_init
+    def patched_chat(
+        self,
+        image,
+        msgs,
+        context,
+        tokenizer,
+        vision_hidden_states=None,
+        max_new_tokens=2048,
+        sampling=False,
+        **kwargs,
+    ):
+        if isinstance(msgs, str):
+            msgs = json.loads(msgs)
+
+        # Keep the original remote-code implementation for non-string prompts.
+        if original_chat is not None and any(not isinstance(msg.get("content"), str) for msg in msgs):
+            return original_chat(
+                self,
+                image=image,
+                msgs=msgs,
+                context=context,
+                tokenizer=tokenizer,
+                vision_hidden_states=vision_hidden_states,
+                max_new_tokens=max_new_tokens,
+                sampling=sampling,
+                **kwargs,
+            )
+
+        prompt = ""
+        for index, msg in enumerate(msgs):
+            role = msg["role"]
+            content = msg["content"]
+            if role not in {"user", "assistant"}:
+                raise ValueError(f"Unsupported MiniCPM chat role: {role}")
+            if index == 0:
+                if role != "user":
+                    raise ValueError("The role of first MiniCPM message should be user")
+                content = tokenizer.im_start + tokenizer.unk_token * self.config.query_num + tokenizer.im_end + "\n" + content
+            prompt += "<用户>" if role == "user" else "<AI>"
+            prompt += content
+        prompt += "<AI>"
+
+        if sampling:
+            generation_config = {
+                "top_p": 0.8,
+                "top_k": 100,
+                "temperature": 0.6,
+                "do_sample": True,
+            }
+        else:
+            generation_config = {
+                "num_beams": 3,
+                "repetition_penalty": 1.2,
+            }
+
+        # The upstream implementation only forwards a hard-coded subset of kwargs.
+        # Preserve the defaults above, but allow callers to pass any valid generate()
+        # argument such as `use_cache=False`.
+        generation_config.update(kwargs)
+
+        with torch.inference_mode():
+            responses, vision_hidden_states = self.generate(
+                data_list=[prompt],
+                max_inp_length=2048,
+                img_list=[[image]],
+                tokenizer=tokenizer,
+                max_new_tokens=max_new_tokens,
+                vision_hidden_states=vision_hidden_states,
+                return_vision_hidden_states=True,
+                **generation_config,
+            )
+        answer = responses[0]
+        next_context = list(msgs)
+        next_context.append({"role": "assistant", "content": answer})
+        return answer, next_context, generation_config
+
+    if not getattr(minicpmv_cls, "_mindpipe_post_init_patched", False):
+        minicpmv_cls.__init__ = patched_init
+    if original_chat is not None and not getattr(minicpmv_cls, "_mindpipe_chat_patched", False):
+        minicpmv_cls.chat = patched_chat
     minicpmv_cls._mindpipe_post_init_patched = True
+    minicpmv_cls._mindpipe_chat_patched = True
 
 
 def _prepare_minicpm_tokenizer_env() -> None:
@@ -302,90 +427,113 @@ def ensure_generation_compat(model: nn.Module) -> nn.Module:
 def _ensure_dynamic_cache_compat() -> None:
     if DynamicCache is None:
         return
+
+    def _dynamic_cache_seen_tokens(self):
+        return self.get_seq_length(0)
+
+    def _dynamic_cache_get_max_length(self, *args, **kwargs):
+        return None
+
+    def _dynamic_cache_get_usable_length(self, new_seq_length=0, layer_idx=0):
+        return self.get_seq_length(layer_idx)
+
+    @classmethod
+    def _dynamic_cache_from_legacy_cache(cls, past_key_values=None):
+        cache = cls()
+        if past_key_values is None:
+            return cache
+        if Cache is not None and isinstance(past_key_values, Cache):
+            return past_key_values
+        if (
+            isinstance(past_key_values, (list, tuple))
+            and len(past_key_values) == 2
+            and all(torch.is_tensor(item) or item is None for item in past_key_values)
+        ):
+            past_key_values = (past_key_values,)
+        for layer_idx, layer_past in enumerate(past_key_values):
+            if layer_past is None:
+                continue
+            if torch.is_tensor(layer_past):
+                raise ValueError(
+                    "DynamicCache.from_legacy_cache expected per-layer cache tuples, "
+                    f"but received a tensor at layer {layer_idx} with shape {tuple(layer_past.shape)}."
+                )
+            if not isinstance(layer_past, (list, tuple)) or len(layer_past) < 2:
+                raise ValueError(
+                    "DynamicCache.from_legacy_cache expected per-layer cache tuples of "
+                    f"(key, value), but received {type(layer_past).__name__} at layer {layer_idx}."
+                )
+            key_states, value_states = layer_past[:2]
+            cache.update(key_states, value_states, layer_idx)
+        return cache
+
+    def _dynamic_cache_to_legacy_cache(self):
+        legacy_cache = []
+        for layer in getattr(self, "layers", []):
+            key_states = getattr(layer, "keys", None)
+            value_states = getattr(layer, "values", None)
+            sliding_window = getattr(layer, "_sliding_window_tensor", None)
+            if key_states is None or value_states is None:
+                legacy_cache.append(None)
+                continue
+            if sliding_window is not None:
+                legacy_cache.append((key_states, value_states, sliding_window))
+            else:
+                legacy_cache.append((key_states, value_states))
+        return tuple(legacy_cache)
+
     if not hasattr(DynamicCache, "seen_tokens"):
-        DynamicCache.seen_tokens = property(lambda self: self.get_seq_length())
+        DynamicCache.seen_tokens = property(_dynamic_cache_seen_tokens)
     if not hasattr(DynamicCache, "get_max_length"):
-        DynamicCache.get_max_length = lambda self, *args, **kwargs: None
+        DynamicCache.get_max_length = _dynamic_cache_get_max_length
     if not hasattr(DynamicCache, "get_usable_length"):
-        DynamicCache.get_usable_length = lambda self, *args, **kwargs: self.get_seq_length()
+        DynamicCache.get_usable_length = _dynamic_cache_get_usable_length
+    if not hasattr(DynamicCache, "from_legacy_cache"):
+        DynamicCache.from_legacy_cache = _dynamic_cache_from_legacy_cache
+    if not hasattr(DynamicCache, "to_legacy_cache"):
+        DynamicCache.to_legacy_cache = _dynamic_cache_to_legacy_cache
 
 
 def _patched_minicpm_prepare_inputs_for_generation(
     self,
     input_ids,
+    next_sequence_length=None,
     past_key_values=None,
     attention_mask=None,
     inputs_embeds=None,
+    is_first_iteration: bool | None = False,
     **kwargs,
 ):
-    cache_length = 0
-    if past_key_values is not None:
-        if Cache is not None and isinstance(past_key_values, Cache):
-            cache_length = past_key_values.get_seq_length()
-            past_length = getattr(past_key_values, "seen_tokens", cache_length)
-            get_max_length = getattr(past_key_values, "get_max_length", None)
-            max_cache_length = get_max_length() if callable(get_max_length) else None
-        else:
-            cache_length = past_length = past_key_values[0][0].shape[2]
-            max_cache_length = None
-
-        if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
-            input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
-        elif past_length < input_ids.shape[1]:
-            input_ids = input_ids[:, past_length:]
-
-        if (
-            max_cache_length is not None
-            and attention_mask is not None
-            and cache_length + input_ids.shape[1] > max_cache_length
-        ):
-            attention_mask = attention_mask[:, -max_cache_length:]
-
-    position_ids = kwargs.get("position_ids", None)
-    if attention_mask is not None and position_ids is None:
-        position_ids = attention_mask.long().cumsum(-1) - 1
-        position_ids.masked_fill_(attention_mask == 0, 1)
-        if past_key_values is not None:
-            position_ids = position_ids[:, -input_ids.shape[1] :]
-
-    if inputs_embeds is not None and (past_key_values is None or cache_length == 0):
-        model_inputs = {"inputs_embeds": inputs_embeds}
-    else:
-        model_inputs = {"input_ids": input_ids}
-
-    model_inputs.update(
-        {
-            "position_ids": position_ids,
-            "past_key_values": past_key_values,
-            "use_cache": kwargs.get("use_cache"),
-            "attention_mask": attention_mask,
-        }
+    return GenerationMixin.prepare_inputs_for_generation(
+        self,
+        input_ids,
+        next_sequence_length=next_sequence_length,
+        past_key_values=past_key_values,
+        attention_mask=attention_mask,
+        inputs_embeds=inputs_embeds,
+        is_first_iteration=is_first_iteration,
+        **kwargs,
     )
-    return model_inputs
 
 
 def load_model_and_tokenizer(
     model_path: str,
     dtype: str = "auto",
-    force_eager: bool = False,
+    attn_implementation: str | None = None,
 ):
     _ensure_transformers_remote_code_compat()
     config = _load_config_with_fallback(model_path, trust_remote_code=True)
     _normalize_legacy_remote_config(config)
-    if force_eager:
-        if hasattr(config, "_attn_implementation_internal"):
-            config._attn_implementation_internal = "eager"
-        if hasattr(config, "_attn_implementation"):
-            config._attn_implementation = "eager"
+    if attn_implementation is None:
+        raise ValueError("attn_implementation must be specified explicitly when loading a model.")
+    architectures = set(getattr(config, "architectures", []) or [])
     model_kwargs = {
         "torch_dtype": resolve_dtype(dtype),
         "config": config,
         "trust_remote_code": True,
         "low_cpu_mem_usage": True,
+        "attn_implementation": attn_implementation,
     }
-    if force_eager:
-        model_kwargs["attn_implementation"] = "eager"
-    architectures = set(getattr(config, "architectures", []) or [])
     is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
@@ -557,6 +705,42 @@ def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> l
     return [sorted(available_names)]
 
 
+def _build_dense_causal_mask(input_ids: torch.Tensor, embedding_module: nn.Module) -> torch.Tensor:
+    batch_size, sequence_length = input_ids.shape
+    if not hasattr(embedding_module, "weight"):
+        raise AttributeError(f"Embedding module {type(embedding_module)} does not expose a weight tensor.")
+    mask_dtype = embedding_module.weight.dtype
+    min_value = torch.finfo(mask_dtype).min
+    causal_mask = torch.zeros(
+        (sequence_length, sequence_length),
+        dtype=mask_dtype,
+        device=input_ids.device,
+    )
+    blocked = torch.triu(
+        torch.ones((sequence_length, sequence_length), dtype=torch.bool, device=input_ids.device),
+        diagonal=1,
+    )
+    causal_mask.masked_fill_(blocked, min_value)
+    return causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, sequence_length, sequence_length)
+
+
+def run_text_backbone_calibration_forward(model: nn.Module, backbone: TextBackbone, token_ids: torch.Tensor) -> None:
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type == "qwen2_5_vl":
+        dense_causal_mask = _build_dense_causal_mask(token_ids, backbone.embed_tokens)
+        attention_mask = {
+            "full_attention": dense_causal_mask,
+            "sliding_attention": dense_causal_mask,
+        }
+        backbone.root(input_ids=token_ids, attention_mask=attention_mask, use_cache=False)
+        return
+    model(input_ids=token_ids, use_cache=False)
+
+
+def _run_calibration_forward(model: nn.Module, backbone: TextBackbone, token_ids: torch.Tensor) -> None:
+    run_text_backbone_calibration_forward(model, backbone, token_ids)
+
+
 @torch.no_grad()
 def capture_first_block_inputs(
     model: nn.Module,
@@ -566,11 +750,8 @@ def capture_first_block_inputs(
 ):
     device = resolve_device(device)
     decoder_config = backbone.decoder_config
-    use_cache = getattr(decoder_config, "use_cache", getattr(model.config, "use_cache", False))
-    if hasattr(decoder_config, "use_cache"):
-        decoder_config.use_cache = False
-    if hasattr(model.config, "use_cache"):
-        model.config.use_cache = False
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
     blocks = backbone.layers
     backbone.move_front_modules(device)
     blocks[0] = blocks[0].to(device)
@@ -611,7 +792,7 @@ def capture_first_block_inputs(
     for token_ids, _labels in calibration_batches:
         try:
             with torch.no_grad():
-                model(input_ids=token_ids.to(device), use_cache=False)
+                _run_calibration_forward(model, backbone, token_ids.to(device))
         except ValueError:
             pass
 
@@ -619,8 +800,5 @@ def capture_first_block_inputs(
     blocks[0] = blocks[0].cpu()
     backbone.move_front_modules("cpu")
     empty_cache(device)
-    if hasattr(decoder_config, "use_cache"):
-        decoder_config.use_cache = use_cache
-    if hasattr(model.config, "use_cache"):
-        model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
     return inputs, dict(cached_kwargs)

@@ -51,6 +51,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model_path", required=True)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dtype", default="bfloat16", choices=["auto", "float16", "bfloat16"])
+    parser.add_argument(
+        "--attn_implementation",
+        default="flash_attention_2",
+        choices=["flash_attention_2", "sdpa", "eager"],
+    )
     parser.add_argument("--log_level", default="INFO")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hf_token", default=None)
@@ -92,6 +97,7 @@ def _add_pruning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--flap_metrics", default="WIFV", choices=["IFV", "WIFV", "WIFN"])
     parser.add_argument("--flap_remove_heads", type=int, default=8)
     parser.add_argument("--pseudo_pruning", type=_bool_flag, default=True)
+    parser.add_argument("--rho", type=float, default=0.1, help="Initial rho for ALPS ADMM optimization.")
 
 
 def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
@@ -112,6 +118,10 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--value_symmetric", type=_bool_flag, default=True)
     parser.add_argument("--weight_method", default="gptq", choices=["gptq", "rtn"])
     parser.add_argument("--use_activation_order", type=_bool_flag, default=False)
+    # SmoothQuant
+    parser.add_argument("--smoothquant_alpha", type=float, default=0.85)
+    parser.add_argument("--smoothquant_act_scales_from", default=None)
+    parser.add_argument("--smoothquant_save_act_scales", type=_bool_flag, default=True)
     # FlatQuant
     parser.add_argument("--flatquant_epochs", type=int, default=15)
     parser.add_argument("--flatquant_calibration_batch_size", type=int, default=4)
@@ -140,8 +150,8 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
 def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--execution_order", default="pruning_then_quantization", choices=EXECUTION_ORDER_CHOICES)
     # 单独指定时覆盖公共的 calibration 参数
-    parser.add_argument("--pruning_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval"])
-    parser.add_argument("--quantization_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval"])
+    parser.add_argument("--pruning_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"])
+    parser.add_argument("--quantization_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"])
     parser.add_argument("--pruning_calibration_samples", type=int, default=None)
     parser.add_argument("--quantization_calibration_samples", type=int, default=None)
     parser.add_argument("--pruning_damp_percent", type=float, default=None)
@@ -149,7 +159,8 @@ def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_io_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--calibration_dataset", default="c4", choices=["wikitext2", "c4", "pileval"])
+    parser.add_argument("--calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"],
+                        help="Calibration dataset. Each pruning/quantization method has its own default (e.g. shortgpt→pg19, flap→wikitext2).")
     parser.add_argument("--evaluation_dataset", default="wikitext2", choices=["wikitext2", "c4"])
     parser.add_argument("--calibration_samples", type=int, default=128)
     parser.add_argument("--damp_percent", type=float, default=0.01)
@@ -189,11 +200,10 @@ def build_run_config(args) -> WorkflowConfig:
     }
 
     if has_pruning:
-        prune_calib = args.pruning_calibration_dataset or args.calibration_dataset
+        pruning_method = get_pruning_method(args.pruning)
+        prune_calib = args.pruning_calibration_dataset or args.calibration_dataset or pruning_method.default_calibration_dataset
         prune_samples = args.pruning_calibration_samples or args.calibration_samples
         prune_damp = args.pruning_damp_percent if args.pruning_damp_percent is not None else args.damp_percent
-
-        pruning_method = get_pruning_method(args.pruning)
         pruning_args_dict = copy.deepcopy(base_common_args)
         pruning_args_dict.update({
             "model_path": args.model_path,
@@ -219,7 +229,8 @@ def build_run_config(args) -> WorkflowConfig:
         result_metadata["sparsity_ratio"] = args.sparsity_ratio
 
     if has_quantization:
-        quant_calib = args.quantization_calibration_dataset or ("pileval" if args.quantization in ("awq", "gptq", "flatquant") else args.calibration_dataset)
+        quant_method = get_quantization_method(args.quantization)
+        quant_calib = args.quantization_calibration_dataset or args.calibration_dataset or quant_method.default_calibration_dataset
         quant_samples = args.quantization_calibration_samples or args.calibration_samples
         quant_damp = args.quantization_damp_percent if args.quantization_damp_percent is not None else args.damp_percent
 

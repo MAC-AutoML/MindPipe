@@ -33,6 +33,7 @@ MindPipe/
 │       ├── registry.py       # 剪枝算法注册表
 │       ├── structured/
 │       │   ├── flap/         # FLAP
+│       │   ├── shortgpt/    # ShortGPT
 │       │   └── wanda_sp/     # Wanda-SP
 │       └── unstructured/
 │           ├── wanda/        # Wanda
@@ -59,21 +60,39 @@ MindPipe/
 | GPTQ | PTQ | W4 | - | - | 是 |
 | QuaRot | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
 | SpinQuant | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
-| FlatQuant | QAT | W4 | A4 | K4 V4 | 否（Hadamard + autocast 需验证） |
+| FlatQuant | QAT | W4 | A4 | K4 V4 | 是 |
 
 ### 剪枝
 
-| 算法 | 结构 | NPU 就绪 |
-|------|------|---------|
-| Wanda | 非结构化 | 是 |
-| SparseGPT | 非结构化 | 是 |
-| Wanda-SP | 结构化 | 是 |
-| FLAP | 结构化 | 是 |
+| 算法 | 结构 | NPU 就绪 | 推荐校准数据集 |
+|------|------|---------|--------------|
+| Wanda | 非结构化 | 是 | c4 |
+| SparseGPT | 非结构化 | 是 | c4 |
+| Wanda-SP | 结构化 | 是 | c4 |
+| FLAP | 结构化 | 是 | wikitext2 |
+| ShortGPT | 结构化（层剪枝） | 是 | pg19 |
+| ALPS | 非结构化 | 是 | c4 |
+
+所有剪枝方法均通过 `--calibration_dataset` 参数统一选择校准数据集（`wikitext2` / `c4` / `pileval` / `pg19`），推荐使用上表中的数据集以获得最佳效果。
+
+### 各方法 Reference 校准参数
+
+| 方法 | 校准集 | nsamples | seqlen |
+|------|--------|----------|--------|
+| FLAP | wikitext2 | 2048 | 128 |
+| Wanda | c4 | 128 | 模型 max_position_embeddings |
+| Wanda-SP | c4 | 128 | 模型 max_position_embeddings |
+| SparseGPT | c4 | 128 | 模型 max_position_embeddings |
+| ShortGPT | pg19 | 全量验证集 | stride=256 |
+| ALPS | c4 | 128 | 2048 |
+
+> **注意**：MindPipe 默认 `--calibration_samples 128`、`--sequence_length 2048`。FLAP 的 reference 用的是 nsamples=2048、seqlen=128，与默认值差异较大，跑 FLAP 实验时建议显式指定 `--calibration_samples 2048 --sequence_length 128`。
 
 ### 已验证模型
 
 - Qwen2.5-7B-Instruct
 - Qwen2.5-VL-7B-Instruct
+- Qwen2.5-7B-Instruct（FlatQuant / NPU）
 
 ## 快速开始
 
@@ -110,6 +129,7 @@ python main.py \
   --model_path /path/to/model \
   --device cuda:0 \
   --dtype float16 \
+  --calibration_dataset c4 \
   --calibration_samples 128 \
   --sequence_length 2048 \
   --sparsity_ratio 0.5 \
@@ -166,7 +186,7 @@ python main.py --quantization gptq --model_path /path/to/model --device auto ...
 
 ### NPU fail-fast
 
-未在 NPU 上验证的算法（QuaRot、SpinQuant、FlatQuant）设有 `npu_ready = False` 标记。在 NPU 上调用时会直接报错，避免静默出错：
+未在 NPU 上验证的算法（QuaRot、SpinQuant）设有 `npu_ready = False` 标记。在 NPU 上调用时会直接报错，避免静默出错：
 
 ```
 RuntimeError: Algorithm 'quarot' is not yet NPU-ready. Please use --device cuda:0 to run.
@@ -241,10 +261,12 @@ results/<model>/<algorithm>/metrics.json
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--pruning` | None | `wanda` / `sparsegpt` / `wanda_sp` / `flap` |
+| `--pruning` | None | `wanda` / `sparsegpt` / `wanda_sp` / `flap` / `shortgpt` / `alps` |
 | `--sparsity_ratio` | 0.5 | 稀疏率 |
 | `--structure_pattern` | `unstructured` | 剪枝结构模式 |
 | `--damp_percent` | 0.01 | Hessian 阻尼系数 |
+
+> **校准数据集选择**：各算法均支持 `wikitext2` / `c4` / `pileval` / `pg19` 四种校准数据集。上表"推荐校准数据集"列为各算法原始论文使用的默认数据集，效果最好。ShortGPT 强烈推荐 `pg19`（长文本书籍，Block Influence 统计更稳定），使用其他数据集不会报错但可能影响精度。`--calibration_samples` 控制采样窗口数，ShortGPT 适当增大（如 256 或 512）可提升重要性排序的稳定性。
 
 ### 组合参数
 
@@ -337,7 +359,6 @@ results/
 
 ## 当前已知限制
 
-- **FlatQuant** PPL 结果数值偏高，训练/重参数化路径仍需排查
+- **FlatQuant** 已支持 NPU 运行；若出现 PPL 偏高，优先排查训练/重参数化路径与数值稳定性
 - **QuaRot / SpinQuant** 的低比特 activation 配置尚未在 Qwen/Qwen2.5-VL 上做精细收敛
 - **SpinQuant** 默认使用 `identity-R2` fallback，learned rotation 训练链路尚未适配 Qwen
-- **AWQ** 完整 search 路径较重，当前默认使用 `--no-awq_search`

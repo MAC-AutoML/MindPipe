@@ -67,7 +67,8 @@ def _infer_direct_inv_from_checkpoint(checkpoint_root: str | None, checkpoint_na
 
 class FlatQuantMethod(BaseQuantizationMethod):
     name = "flatquant"
-    npu_ready = True  # Unified launcher uses backend-neutral Hadamard fallback and device-aware autocast
+    npu_ready = True  # NPU path is exercised in-tree; Hadamard uses the non-CUDA fallback implementation
+    default_calibration_dataset = "pileval"
 
     def resolve_output_dir(self, args) -> Path:
         model_name = model_slug(args.model_path)

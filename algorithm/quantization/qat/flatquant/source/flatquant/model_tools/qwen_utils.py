@@ -44,6 +44,16 @@ def _weight_device(module):
     return module.weight.device
 
 
+def _resolve_mrope_section(config):
+    rope_parameters = getattr(config, "rope_parameters", None)
+    if isinstance(rope_parameters, dict) and "mrope_section" in rope_parameters:
+        return rope_parameters["mrope_section"]
+    rope_scaling = getattr(config, "rope_scaling", None)
+    if isinstance(rope_scaling, dict) and "mrope_section" in rope_scaling:
+        return rope_scaling["mrope_section"]
+    raise KeyError("Qwen2.5-VL config is missing mrope_section in rope_parameters/rope_scaling.")
+
+
 class FlatQuantQwen2MLP(torch.nn.Module):
     def __init__(self, args, module: Qwen2MLP):
         super().__init__()
@@ -193,6 +203,7 @@ class _FlatQuantQwenAttentionMixin:
         self.rope_scaling = getattr(module, "rope_scaling", getattr(module.config, "rope_scaling", None))
         self.sliding_window = getattr(module, "sliding_window", None)
         self.is_causal = getattr(module, "is_causal", True)
+        self.mrope_section = _resolve_mrope_section(module.config) if isinstance(module, Qwen2_5_VLAttention) else None
         if hasattr(module, "rotary_emb"):
             self.rotary_emb = module.rotary_emb
 
@@ -520,7 +531,7 @@ class FlatQuantQwen2_5_VLAttention(_FlatQuantQwenAttentionMixin, Qwen2_5_VLAtten
             key_states,
             cos,
             sin,
-            self.rope_scaling["mrope_section"],
+            self.mrope_section,
         )
 
         if not self._ori_mode:

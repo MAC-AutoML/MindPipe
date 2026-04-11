@@ -3,11 +3,9 @@ import heapq
 import torch 
 import torch.nn as nn 
 from algorithm.common.device import empty_cache
-from .sparsegpt import SparseGPT 
+from .sparsegpt import SparseGPT
 from .layerwrapper import WrappedGPT
-from .data import get_loaders 
 
-from .ablate import AblateGPT 
 from .backend import move_optional_tensor
 from .backend import resolve_runtime_device
 from .backend import sparsity_threshold
@@ -113,8 +111,9 @@ def find_layers(module, layers=[nn.Linear], name=''):
     return res
 
 def check_sparsity(model):
-    use_cache = model.config.use_cache 
-    model.config.use_cache = False 
+    decoder_config = _get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
     layers = _get_decoder_root(model).layers
     count = 0 
@@ -135,14 +134,15 @@ def check_sparsity(model):
 
         print(f"layer {i} sparsity {float(sub_count)/sub_params:.6f}")
 
-    model.config.use_cache = use_cache 
+    decoder_config.use_cache = use_cache
     return float(count)/total_params 
 
 def prepare_calibration_input(model, dataloader, device):
     device = resolve_runtime_device(device)
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
     decoder_root = _get_decoder_root(model)
+    decoder_config = decoder_root.config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
     layers = decoder_root.layers
 
     # dev = model.hf_device_map["model.embed_tokens"]
@@ -158,7 +158,7 @@ def prepare_calibration_input(model, dataloader, device):
     if hasattr(decoder_root, "rotary_emb"):
         decoder_root.rotary_emb = decoder_root.rotary_emb.to(device)
     layers[0] = layers[0].to(device)
-    inps = torch.zeros((128, model.seqlen, model.config.hidden_size), dtype=dtype, device=device)
+    inps = torch.zeros((128, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=device)
     inps.requires_grad = False
     cache = {'i': 0, 'attention_mask': None, "position_ids": None, "cache_position": None}
 
@@ -197,7 +197,7 @@ def prepare_calibration_input(model, dataloader, device):
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
     position_ids = cache['position_ids']
-    model.config.use_cache = use_cache
+    decoder_config.use_cache = use_cache
 
     return inps, outs, attention_mask, position_ids, cache['cache_position'] 
 
@@ -209,37 +209,13 @@ def return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before):
     cur_sparsity = (W_mask==True).sum() / W_mask.numel()
     return W_mask, cur_sparsity
 
-def prune_magnitude(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
+
+def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, dataloader=None):
     device = resolve_runtime_device(device)
-    layers = _get_decoder_root(model).layers 
+    decoder_config = _get_decoder_root(model).config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
 
-    for i in range(len(layers)):
-        layer = layers[i]
-        subset = find_layers(layer)
-
-        for name in subset:
-            W = subset[name].weight.data 
-            W_metric = torch.abs(W)
-            if prune_n != 0:
-                W_mask = (torch.zeros_like(W)==1)
-                for ii in range(W_metric.shape[1]):
-                    if ii % prune_m == 0:
-                        tmp = W_metric[:,ii:(ii+prune_m)].float()
-                        W_mask.scatter_(1,ii+torch.topk(tmp, prune_n,dim=1, largest=False)[1], True)
-            else:
-                thresh = sparsity_threshold(W_metric, args.sparsity_ratio, device)
-                W_mask = (W_metric<=thresh)
-
-            W[W_mask] = 0
-
-def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
-    device = resolve_runtime_device(device)
-    use_cache = model.config.use_cache 
-    model.config.use_cache = False 
-
-    print("loading calibdation data")
-    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
-    print("dataset loading complete")
     with torch.no_grad():
         inps, outs, attention_mask, position_ids, cache_position = prepare_calibration_input(model, dataloader, device)
 
@@ -345,277 +321,5 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0):
         del layer
         empty_cache(dev)
 
-    model.config.use_cache = use_cache 
+    decoder_config.use_cache = use_cache
     empty_cache(device)
-
-
-@torch.no_grad()
-def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
-    ## SparseGPT code available at: https://github.com/IST-DASLab/sparsegpt/tree/f5c25005a61f96a0933ca2f95705a963585aafaa
-    print('Starting ...')
-    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
-
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
-    layers = _get_decoder_root(model).layers
-
-    dev = resolve_runtime_device(dev)
-    hf_device_map = _get_hf_device_map(model)
-    for candidate_key in ("model.embed_tokens", "language_model.embed_tokens", "model.language_model.embed_tokens"):
-        if candidate_key in hf_device_map:
-            dev = resolve_runtime_device(hf_device_map[candidate_key])
-            break
-
-    dtype = next(iter(model.parameters())).dtype
-    inps = torch.zeros(
-        (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
-    )
-    cache = {'i': 0, 'attention_mask': None, "position_ids": None, "cache_position": None}
-
-    class Catcher(nn.Module):
-        def __init__(self, module):
-            super().__init__()
-            self.module = module
-
-        def __getattr__(self, name):
-            try:
-                return super().__getattr__(name)
-            except AttributeError:
-                return getattr(self.module, name)
-
-        def forward(self, inp, **kwargs):
-            inps[cache['i']] = inp
-            cache['i'] += 1
-            cache['attention_mask'] = kwargs.get('attention_mask')
-            cache['position_ids'] = kwargs.get('position_ids')
-            cache['cache_position'] = kwargs.get('cache_position')
-            raise ValueError
-    layers[0] = Catcher(layers[0])
-    for batch in dataloader:
-        try:
-            model(batch[0].to(dev), use_cache=False)
-        except ValueError:
-            pass
-    layers[0] = layers[0].module
-    empty_cache(dev)
-
-    outs = torch.zeros_like(inps)
-    attention_mask = cache['attention_mask']
-    position_ids = cache['position_ids']
-    cache_position = cache['cache_position']
-
-    print('Ready.')
-
-    for i in range(len(layers)):
-        layer = layers[i]
-        dev = _resolve_layer_device(
-            hf_device_map,
-            (
-                f"model.layers.{i}",
-                f"language_model.layers.{i}",
-                f"model.language_model.layers.{i}",
-            ),
-            dev,
-        )
-        print(f"layer {i} device {dev}")
-        inps = inps.to(dev)
-        outs = outs.to(dev)
-        attention_mask = move_optional_tensor(attention_mask, dev)
-        position_ids = move_optional_tensor(position_ids, dev)
-        cache_position = move_optional_tensor(cache_position, dev)
-        layer = layer.to(dev)
-
-        subset = find_layers(layer)
-
-        gpts = {}
-        for name in subset:
-            gpts[name] = SparseGPT(subset[name])
-
-        def add_batch(name):
-            def tmp(_, inp, out):
-                gpts[name].add_batch(inp[0].data, out.data)
-            return tmp
-
-        handles = []
-        for name in gpts:
-            handles.append(subset[name].register_forward_hook(add_batch(name)))
-
-        for j in range(args.nsamples):
-            layer_kwargs = _build_layer_forward_kwargs(
-                model,
-                layer,
-                inps[j].unsqueeze(0),
-                attention_mask,
-                position_ids,
-                cache_position=cache_position,
-            )
-            outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
-        for h in handles:
-            h.remove()
-
-        for name in gpts:
-            print(i, name)
-            print('Pruning ...')
-
-            gpts[name].fasterprune(args.sparsity_ratio, prune_n=prune_n, prune_m=prune_m, percdamp=0.01, blocksize=128)
-            gpts[name].free()
-
-        for j in range(args.nsamples):
-            layer_kwargs = _build_layer_forward_kwargs(
-                model,
-                layer,
-                inps[j].unsqueeze(0),
-                attention_mask,
-                position_ids,
-                cache_position=cache_position,
-            )
-            outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
-
-        layers[i] = layer.cpu()
-        del layer
-        empty_cache(dev)
-
-        inps, outs = outs, inps
-
-    model.config.use_cache = use_cache
-    empty_cache(dev)
-
-
-
-@torch.no_grad()
-def prune_ablate(args, model, tokenizer, dev, prune_n=0, prune_m=0):
-    ## SparseGPT code available at: https://github.com/IST-DASLab/sparsegpt/tree/f5c25005a61f96a0933ca2f95705a963585aafaa
-    print('Starting ...')
-    dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=model.seqlen,tokenizer=tokenizer,data_path=getattr(args, 'data_path', None))
-
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
-    layers = _get_decoder_root(model).layers
-
-    dev = resolve_runtime_device(dev)
-    hf_device_map = _get_hf_device_map(model)
-    for candidate_key in ("model.embed_tokens", "language_model.embed_tokens", "model.language_model.embed_tokens"):
-        if candidate_key in hf_device_map:
-            dev = resolve_runtime_device(hf_device_map[candidate_key])
-            break
-
-    dtype = next(iter(model.parameters())).dtype
-    inps = torch.zeros(
-        (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
-    )
-    cache = {'i': 0, 'attention_mask': None, "position_ids": None, "cache_position": None}
-
-    class Catcher(nn.Module):
-        def __init__(self, module):
-            super().__init__()
-            self.module = module
-
-        def __getattr__(self, name):
-            try:
-                return super().__getattr__(name)
-            except AttributeError:
-                return getattr(self.module, name)
-
-        def forward(self, inp, **kwargs):
-            inps[cache['i']] = inp
-            cache['i'] += 1
-            cache['attention_mask'] = kwargs.get('attention_mask')
-            cache['position_ids'] = kwargs.get('position_ids')
-            cache['cache_position'] = kwargs.get('cache_position')
-            raise ValueError
-    layers[0] = Catcher(layers[0])
-    for batch in dataloader:
-        try:
-            model(batch[0].to(dev), use_cache=False)
-        except ValueError:
-            pass
-    layers[0] = layers[0].module
-    empty_cache(dev)
-
-    outs = torch.zeros_like(inps)
-    attention_mask = cache['attention_mask']
-    position_ids = cache['position_ids']
-    cache_position = cache['cache_position']
-
-    print('Ready.')
-
-    for i in range(len(layers)):
-        layer = layers[i]
-        dev = _resolve_layer_device(
-            hf_device_map,
-            (
-                f"model.layers.{i}",
-                f"language_model.layers.{i}",
-                f"model.language_model.layers.{i}",
-            ),
-            dev,
-        )
-        print(f"layer {i} device {dev}")
-        inps = inps.to(dev)
-        outs = outs.to(dev)
-        attention_mask = move_optional_tensor(attention_mask, dev)
-        position_ids = move_optional_tensor(position_ids, dev)
-        cache_position = move_optional_tensor(cache_position, dev)
-        layer = layer.to(dev)
-
-        subset = find_layers(layer)
-
-        gpts = {}
-        for name in subset:
-            gpts[name] = AblateGPT(subset[name])
-
-        def add_batch(name):
-            def tmp(_, inp, out):
-                gpts[name].add_batch(inp[0].data, out.data)
-            return tmp
-
-        handles = []
-        for name in gpts:
-            handles.append(subset[name].register_forward_hook(add_batch(name)))
-
-        for j in range(args.nsamples):
-            layer_kwargs = _build_layer_forward_kwargs(
-                model,
-                layer,
-                inps[j].unsqueeze(0),
-                attention_mask,
-                position_ids,
-                cache_position=cache_position,
-            )
-            outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
-        for h in handles:
-            h.remove()
-
-        for name in gpts:
-            print(i, name)
-            print('Pruning ...')
-
-            if args.prune_method == "ablate_wanda_seq":
-                prune_mask = gpts[name].get_wanda_mask(args.sparsity_ratio, prune_n, prune_m)
-            elif args.prune_method == "ablate_mag_seq":
-                prune_mask = gpts[name].get_mag_mask(args.sparsity_ratio, prune_n, prune_m)
-            elif "iter" in args.prune_method:
-                prune_mask = None 
-
-            gpts[name].fasterprune(args, args.sparsity_ratio, mask=prune_mask, prune_n=prune_n, prune_m=prune_m, percdamp=0.01, blocksize=128)
-            gpts[name].free()
-
-        for j in range(args.nsamples):
-            layer_kwargs = _build_layer_forward_kwargs(
-                model,
-                layer,
-                inps[j].unsqueeze(0),
-                attention_mask,
-                position_ids,
-                cache_position=cache_position,
-            )
-            outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
-
-        layers[i] = layer.cpu()
-        del layer
-        empty_cache(dev)
-
-        inps, outs = outs, inps
-
-    model.config.use_cache = use_cache
-    empty_cache(dev)

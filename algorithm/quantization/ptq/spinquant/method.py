@@ -24,6 +24,7 @@ from ...base import BaseQuantizationMethod
 class SpinQuantMethod(BaseQuantizationMethod):
     name = "spinquant"
     npu_ready = False  # Hadamard fallback 需在 NPU 上验证
+    default_calibration_dataset = "c4"
 
     @staticmethod
     def _try_get_hadK(hadamard_utils, size: int):
@@ -33,7 +34,11 @@ class SpinQuantMethod(BaseQuantizationMethod):
             return None, None
 
     def load_resources(self, args):
-        return load_model_and_tokenizer(args.model_path, dtype=args.dtype, force_eager=False)
+        return load_model_and_tokenizer(
+            args.model_path,
+            dtype=args.dtype,
+            attn_implementation=args.attn_implementation,
+        )
 
     def _build_source_args(self, args) -> SimpleNamespace:
         return SimpleNamespace(
