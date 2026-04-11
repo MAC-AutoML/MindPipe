@@ -341,7 +341,7 @@ class SplitQuantMiniCPMAttention(nn.Module):
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-            present_key_value = (key_states, value_states)
+            present_key_value = past_key_value
 
         key_states = self.repeat_kv(key_states, self.num_key_value_groups)
         value_states = self.repeat_kv(value_states, self.num_key_value_groups)
@@ -362,8 +362,8 @@ class SplitQuantMiniCPMAttention(nn.Module):
         attn_output = self._project_attn_output(attn_output)
 
         attn_weights = None
-        if use_cache and present_key_value is None:
-            present_key_value = (key_states, value_states)
+        if use_cache:
+            present_key_value = past_key_value
         return attn_output, attn_weights, present_key_value
 
     def reparameterize(self):
