@@ -305,7 +305,9 @@ class QKRotationWrapper(torch.nn.Module):
         
 
         if self.k_groupsize == -1: #token-wise quantization
-            token_wise_k = k.transpose(1, 2).reshape(-1, self.config.hidden_size)
+            # For GQA/MQA models, key heads can differ from attention heads.
+            # Flatten using the actual K tensor shape instead of config.hidden_size.
+            token_wise_k = k.transpose(1, 2).reshape(-1, num_heads * head_dim)
             self.k_quantizer.find_params(token_wise_k)
             k = self.k_quantizer(token_wise_k).reshape((bsz, seq_len, num_heads, head_dim)).transpose(1, 2).to(q)
         else: #head-wise quantization

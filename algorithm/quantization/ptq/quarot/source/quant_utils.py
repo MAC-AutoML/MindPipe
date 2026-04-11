@@ -3,7 +3,6 @@ import transformers
 import torch
 import utils
 import hadamard_utils
-from algorithm.common.hadamard import hadamard_transform
 
 def get_minq_maxq(bits, sym):
     if sym:
@@ -231,11 +230,10 @@ class ActQuantWrapper(torch.nn.Module):
                 x = x.float()
                 
             init_shape = x.shape
-            if self.K == 1:
-                x = hadamard_transform(x.reshape(-1, init_shape[-1]//self.had_dim, self.had_dim).transpose(1, 2),
-                                                               scale=1/math.sqrt(init_shape[-1]//self.had_dim)).transpose(1, 2)
-            else:
-                x = (self.had_K.to(x.dtype) @ x.reshape(-1, init_shape[-1]//self.had_dim, self.had_dim)) / math.sqrt(init_shape[-1]//self.had_dim)
+            num_had_chunks = init_shape[-1] // self.had_dim
+            x = x.reshape(-1, num_had_chunks, self.had_dim).transpose(1, 2).contiguous()
+            x = hadamard_utils.matmul_hadU_cuda(x, self.had_K, self.K)
+            x = x.transpose(1, 2).contiguous()
                 
             if self.fp32_had:
                 x = x.to(x_dtype)

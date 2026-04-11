@@ -95,7 +95,6 @@ class QuaRotFP16Qwen2VLAttention(Qwen2_5_VLAttention):
         past_key_values=None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        cache_position=None,
         position_embeddings=None,
         **kwargs,
     ):
@@ -115,20 +114,19 @@ class QuaRotFP16Qwen2VLAttention(Qwen2_5_VLAttention):
             key_states,
             cos,
             sin,
-            self.rope_scaling["mrope_section"],
+            self.config.rope_parameters["mrope_section"],
         )
 
         if past_key_values is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_values.update(
-                key_states,
-                value_states,
-                self.layer_idx,
-                cache_kwargs,
-            )
+            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
 
-        attention_interface = vl_eager_attention_forward
-        if self.config._attn_implementation != "eager":
+        if hasattr(ALL_ATTENTION_FUNCTIONS, "get_interface"):
+            attention_interface = ALL_ATTENTION_FUNCTIONS.get_interface(
+                self.config._attn_implementation, vl_eager_attention_forward
+            )
+        elif self.config._attn_implementation == "eager":
+            attention_interface = vl_eager_attention_forward
+        else:
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         attn_output, attn_weights = attention_interface(
@@ -190,10 +188,27 @@ def install_runtime_quarot_layers(model) -> None:
         return
 
     if model_type == "qwen2_5_vl":
-        root = model.language_model
-        config = root.config
-        root.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        for layer_idx, layer in enumerate(root.layers):
+        root = getattr(model, "language_model", None)
+        if root is None:
+            root = getattr(model, "model", None)
+        if root is None:
+            raise AttributeError("Qwen2.5-VL runtime install requires `language_model` or `model` on the HF module.")
+        text_root = None
+        candidates = [
+            root,
+            getattr(root, "language_model", None),
+            getattr(root, "model", None),
+            getattr(getattr(root, "model", None), "language_model", None),
+        ]
+        for candidate in candidates:
+            if candidate is not None and hasattr(candidate, "layers"):
+                text_root = candidate
+                break
+        if not hasattr(text_root, "layers"):
+            raise AttributeError("Unable to locate Qwen2.5-VL decoder layers for QuaRot runtime installation.")
+        config = text_root.config
+        text_root.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        for layer_idx, layer in enumerate(text_root.layers):
             new_attn = QuaRotFP16Qwen2VLAttention(config=config, layer_idx=layer_idx)
             _load_module_state(new_attn, layer.self_attn)
             layer.self_attn = new_attn
