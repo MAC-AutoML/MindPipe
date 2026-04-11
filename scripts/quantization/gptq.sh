@@ -3,11 +3,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct}"
+MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/openbmb/MiniCPM-V}"
 DEVICE="${DEVICE:-cuda:7}"
 DTYPE="${DTYPE:-float16}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 DATA_PATH="${DATA_PATH:-/mnt/42_store/lcw/data2/Huawei/datasets}"
+SEED="${SEED:-42}"
 CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}"
 EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
 CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-128}"
@@ -38,6 +39,7 @@ CMD=(
   --dtype "$DTYPE"
   --attn_implementation "$ATTN_IMPLEMENTATION"
   --data_path "$DATA_PATH"
+  --seed "$SEED"
   --calibration_dataset "$CALIBRATION_DATASET"
   --evaluation_dataset "$EVALUATION_DATASET"
   --calibration_samples "$CALIBRATION_SAMPLES"
