@@ -94,6 +94,19 @@ MindPipe/
 - Qwen2.5-VL-7B-Instruct
 - Qwen2.5-7B-Instruct（FlatQuant / NPU）
 
+## Qwen2.5-VL 说明
+
+不要再给 Qwen2.5-VL 的文本校准 / 搜索路径打手工 `dense_mask + language_model/backbone.root` 补丁。统一优先走官方 `model(input_ids=..., use_cache=False)`，不要绕过flashattn用eager。
+
+> 对 AWQ 来说，正确方向应该是：
+>
+> - 先删掉共享层和 AWQ 里这类手工 dense_mask + language_model/backbone.root 补丁
+> - 然后如果 AWQ 仍然有 Qwen2.5-VL 问题，就只在 AWQ 本地修
+> - 修法优先级应该是：
+>   - 第一选择：model(input_ids=..., use_cache=False)
+>   - 如果 NPU 上这个仍有真实问题，再试 model(input_ids=..., attention_mask=torch.ones_like(input_ids), use_cache=False)
+> - 不应该再用 model.model.language_model(..., attention_mask={...}) 这种手工接管内部协议的方式
+
 ## 快速开始
 
 ### 环境准备

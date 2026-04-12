@@ -14,7 +14,7 @@ class ALPS_prune:
 
     def __init__(self, layer, nsamples, seqlen, dev=None):
         self.layer = layer
-        self.dev = dev if dev is not None else self.layer.weight.device
+        self.dev = resolve_device(dev) if dev is not None else self.layer.weight.device
 
         self.nsamples = nsamples
         self.seqlen = seqlen
@@ -99,8 +99,9 @@ class ALPS_prune:
         D_supp = torch.zeros_like(B)
 
         totp, num_cout = B.shape
-        # 显式走 CPU float64 eigh，避免依赖 NPU 隐式 fallback 的 dtype 路径
-        L, Q = torch.linalg.eigh(self.XtX.cpu().double())
+        # CUDA keeps eigh on-device; NPU stays on the CPU float64 path.
+        eig_input = self.XtX.double() if self.dev.type == "cuda" else self.XtX.cpu().double()
+        L, Q = torch.linalg.eigh(eig_input)
         Q = Q.to(self.dev).float()
         L = L.to(self.dev).float()
         XTX_inv = (Q @ ((1/(L+(rho))) * Q).T).float()
