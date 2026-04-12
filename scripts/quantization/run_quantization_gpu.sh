@@ -32,6 +32,10 @@ AWQ_SEARCH="${AWQ_SEARCH:-true}"
 FLATQUANT_QUERY_BITS_DEFAULT=16
 FLATQUANT_KEY_BITS_DEFAULT=4
 FLATQUANT_VALUE_BITS_DEFAULT=4
+SMOOTHQUANT_QUERY_BITS_DEFAULT=16
+SMOOTHQUANT_KEY_BITS_DEFAULT=16
+SMOOTHQUANT_VALUE_BITS_DEFAULT=16
+SMOOTHQUANT_ALPHA_DEFAULT="${SMOOTHQUANT_ALPHA_DEFAULT:-0.85}"
 SPLITQUANT_GROUP_SIZE="${SPLITQUANT_GROUP_SIZE:-128}"
 SPLITQUANT_WEIGHT_GROUP_SIZE="${SPLITQUANT_WEIGHT_GROUP_SIZE:-$SPLITQUANT_GROUP_SIZE}"
 SPLITQUANT_ACTIVATION_GROUP_SIZE="${SPLITQUANT_ACTIVATION_GROUP_SIZE:-$SPLITQUANT_GROUP_SIZE}"
@@ -47,6 +51,9 @@ MODELS=(
 )
 AWQ_BITS=(2 3 4)
 GPTQ_BITS=(2 3 4)
+SMOOTHQUANT_CONFIGS=(
+  "8 8 16 16 16 ${SMOOTHQUANT_ALPHA_DEFAULT} w8a8"
+)
 FLATQUANT_CONFIGS=(
   "2 16 16 4 4 w2a16"
   "3 16 16 4 4 w3a16"
@@ -67,11 +74,13 @@ SPLITQUANT_CONFIGS=(
 # Worker scheduling
 ENABLE_AWQ="${ENABLE_AWQ:-false}"
 ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
+ENABLE_SMOOTHQUANT="${ENABLE_SMOOTHQUANT:-false}"
 ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-true}"
 ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-true}"
 
 AWQ_GPUS="${AWQ_GPUS:-6}"
 GPTQ_GPUS="${GPTQ_GPUS:-7}"
+SMOOTHQUANT_GPUS="${SMOOTHQUANT_GPUS:-7}"
 FLATQUANT_GPUS="${FLATQUANT_GPUS:-3,6}"
 SPLITQUANT_GPUS="${SPLITQUANT_GPUS:-3,6}"
 
@@ -90,18 +99,54 @@ output_root() {
 }
 
 
+format_alpha() {
+  local alpha="$1"
+  if [[ "$alpha" == *.* ]]; then
+    while [[ "$alpha" == *0 ]]; do
+      alpha="${alpha%0}"
+    done
+    alpha="${alpha%.}"
+  fi
+  printf '%s' "${alpha//./p}"
+}
+
+
 metrics_path_for() {
   local algorithm="$1"
   local model_path="$2"
   local weight_bits="$3"
   local activation_bits="$4"
-  local query_bits="${5:-$FLATQUANT_QUERY_BITS_DEFAULT}"
-  local key_bits="${6:-$FLATQUANT_KEY_BITS_DEFAULT}"
-  local value_bits="${7:-$FLATQUANT_VALUE_BITS_DEFAULT}"
+  local default_query_bits="$FLATQUANT_QUERY_BITS_DEFAULT"
+  local default_key_bits="$FLATQUANT_KEY_BITS_DEFAULT"
+  local default_value_bits="$FLATQUANT_VALUE_BITS_DEFAULT"
+  if [[ "$algorithm" == "smoothquant" ]]; then
+    default_query_bits="$SMOOTHQUANT_QUERY_BITS_DEFAULT"
+    default_key_bits="$SMOOTHQUANT_KEY_BITS_DEFAULT"
+    default_value_bits="$SMOOTHQUANT_VALUE_BITS_DEFAULT"
+  fi
+  local query_bits="${5:-$default_query_bits}"
+  local key_bits="${6:-$default_key_bits}"
+  local value_bits="${7:-$default_value_bits}"
+  local smoothquant_alpha="${8:-$SMOOTHQUANT_ALPHA_DEFAULT}"
   local out_root
   out_root="$(output_root)"
   local model_name
   model_name="$(basename "$model_path")"
+
+  if [[ "$algorithm" == "smoothquant" ]]; then
+    local alpha_tag
+    alpha_tag="$(format_alpha "$smoothquant_alpha")"
+    printf '%s/%s/%s/%s_w%sa%s_seq%s_alpha%s/metrics.json' \
+      "$out_root" \
+      "$model_name" \
+      "$algorithm" \
+      "$algorithm" \
+      "$weight_bits" \
+      "$activation_bits" \
+      "${SEQUENCE_LENGTH:-$SEQUENCE_LENGTH_DEFAULT}" \
+      "$alpha_tag"
+    return 0
+  fi
 
   if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" ]]; then
     printf '%s/%s/%s/%s_w%sa%s_q%sk%sv%s_seq%s/metrics.json' \
@@ -178,6 +223,8 @@ append_passthrough_env() {
   )
   local -a algorithm_keys=(
     AWQ_SEARCH
+    SMOOTHQUANT_SAVE_ACT_SCALES
+    SMOOTHQUANT_ACT_SCALES_FROM
   )
   local key
   for key in "${common_keys[@]}" "${zero_shot_keys[@]}" "${vlm_keys[@]}" "${algorithm_keys[@]}"; do
@@ -274,6 +321,7 @@ run_experiment() {
   local value_bits="$7"
   local label="$8"
   local gpu_spec="$9"
+  local smoothquant_alpha="${10:-$SMOOTHQUANT_ALPHA_DEFAULT}"
   local script_path="$REPO_ROOT/scripts/quantization/${algorithm}.sh"
   local model_name
   model_name="$(basename "$model_path")"
@@ -282,7 +330,7 @@ run_experiment() {
   local effective_eval_vlm="false"
   local out_root
   out_root="$(output_root)"
-  metrics_path="$(metrics_path_for "$algorithm" "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits")"
+  metrics_path="$(metrics_path_for "$algorithm" "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits" "$smoothquant_alpha")"
   if should_eval_vlm "$model_path"; then
     effective_eval_vlm="true"
   fi
@@ -305,13 +353,16 @@ run_experiment() {
     "OUTPUT_DIR=$out_root"
   )
   append_device_env env_vars "$gpu_spec"
-  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" ]]; then
+  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" || "$algorithm" == "smoothquant" ]]; then
     env_vars+=(
       "ACTIVATION_BITS=$activation_bits"
       "QUERY_BITS=$query_bits"
       "KEY_BITS=$key_bits"
       "VALUE_BITS=$value_bits"
     )
+  fi
+  if [[ "$algorithm" == "smoothquant" ]]; then
+    env_vars+=("SMOOTHQUANT_ALPHA=$smoothquant_alpha")
   fi
   if [[ "$algorithm" == "splitquant" ]]; then
     env_vars+=(
@@ -392,6 +443,24 @@ run_algorithm_queue() {
         for bit in "${GPTQ_BITS[@]}"; do
           if (( job_index % worker_count == worker_index )); then
             if ! run_experiment gptq "$model_path" "$bit" 16 16 16 16 "w${bit}a16" "$gpu_spec"; then
+              ((failure_count += 1))
+            fi
+            case "$LAST_RUN_STATUS" in
+              success) ((success_count += 1)) ;;
+              skip) ((skip_count += 1)) ;;
+            esac
+          fi
+          ((job_index += 1))
+        done
+      done
+      ;;
+    smoothquant)
+      for model_path in "${MODELS[@]}"; do
+        for config in "${SMOOTHQUANT_CONFIGS[@]}"; do
+          local smoothquant_alpha
+          read -r weight_bits activation_bits query_bits key_bits value_bits smoothquant_alpha label <<< "$config"
+          if (( job_index % worker_count == worker_index )); then
+            if ! run_experiment smoothquant "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits" "$label" "$gpu_spec" "$smoothquant_alpha"; then
               ((failure_count += 1))
             fi
             case "$LAST_RUN_STATUS" in
@@ -497,6 +566,10 @@ main() {
 
   if [[ "$ENABLE_GPTQ" == "true" ]]; then
     launch_algorithm_workers gptq "$GPTQ_GPUS"
+  fi
+
+  if [[ "$ENABLE_SMOOTHQUANT" == "true" ]]; then
+    launch_algorithm_workers smoothquant "$SMOOTHQUANT_GPUS"
   fi
 
   if [[ "$ENABLE_FLATQUANT" == "true" ]]; then
