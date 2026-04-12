@@ -91,7 +91,7 @@ def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
 def _add_pruning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pruning", default=None, choices=sorted(PRUNING_METHOD_REGISTRY))
     parser.add_argument("--sparsity_ratio", type=float, default=0.5)
-    parser.add_argument("--structure_pattern", default="unstructured")
+    parser.add_argument("--structure_pattern",default="unstructured",help="剪枝结构模式。当前仅对 wanda / sparsegpt / alps 生效，用于指定 n:m 半结构化剪枝；其他方法会忽略该参数。",)
     parser.add_argument("--block_size", type=int, default=128)
     parser.add_argument("--use_variant", type=_bool_flag, default=False)
     parser.add_argument("--flap_metrics", default="WIFV", choices=["IFV", "WIFV", "WIFN"])

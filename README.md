@@ -263,7 +263,7 @@ results/<model>/<algorithm>/metrics.json
 |------|--------|------|
 | `--pruning` | None | `wanda` / `sparsegpt` / `wanda_sp` / `flap` / `shortgpt` / `alps` |
 | `--sparsity_ratio` | 0.5 | 稀疏率 |
-| `--structure_pattern` | `unstructured` | 剪枝结构模式 |
+| `--structure_pattern` | `unstructured` | 剪枝结构模式；当前仅对 `wanda` / `sparsegpt` / `alps` 生效，用于指定 `n:m` 半结构化剪枝 |
 | `--damp_percent` | 0.01 | Hessian 阻尼系数 |
 
 > **校准数据集选择**：各算法均支持 `wikitext2` / `c4` / `pileval` / `pg19` 四种校准数据集。上表"推荐校准数据集"列为各算法原始论文使用的默认数据集，效果最好。ShortGPT 强烈推荐 `pg19`（长文本书籍，Block Influence 统计更稳定），使用其他数据集不会报错但可能影响精度。`--calibration_samples` 控制采样窗口数，ShortGPT 适当增大（如 256 或 512）可提升重要性排序的稳定性。
