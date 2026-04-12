@@ -75,6 +75,8 @@ def _temporary_env(**updates: str | None):
 
 
 def _load_vlmeval_modules(vlm_eval_kit_root: str) -> dict[str, Any]:
+    _ensure_vlmeval_transformers_compat()
+    _ensure_vlmeval_moviepy_compat()
     root = Path(vlm_eval_kit_root).expanduser().resolve()
     if not root.exists():
         raise FileNotFoundError(
@@ -89,17 +91,52 @@ def _load_vlmeval_modules(vlm_eval_kit_root: str) -> dict[str, Any]:
     inference_module = importlib.import_module("vlmeval.inference")
     smp_module = importlib.import_module("vlmeval.smp")
     base_module = importlib.import_module("vlmeval.vlm.base")
+    dataset_modality_resolver = getattr(dataset_module, "DATASET_MODALITY", None)
+    if dataset_modality_resolver is None:
+        dataset_modality_resolver = lambda _dataset_name: "IMAGE"
 
     return {
         "BaseModel": base_module.BaseModel,
         "build_dataset": dataset_module.build_dataset,
         "DATASET_TYPE": dataset_module.DATASET_TYPE,
-        "DATASET_MODALITY": dataset_module.DATASET_MODALITY,
+        "DATASET_MODALITY": dataset_modality_resolver,
         "infer_data_job": inference_module.infer_data_job,
-        "get_pred_file_path": smp_module.get_pred_file_path,
+        "get_pred_file_path": getattr(smp_module, "get_pred_file_path", None),
         "listinstr": smp_module.listinstr,
         "MMBenchOfficialServer": smp_module.MMBenchOfficialServer,
     }
+
+
+def _ensure_vlmeval_transformers_compat() -> None:
+    """Patch removed/renamed HF symbols expected by older VLMEvalKit revisions."""
+    import transformers
+
+    if not hasattr(transformers, "AutoModelForVision2Seq"):
+        fallback = getattr(transformers, "AutoModelForImageTextToText", None)
+        if fallback is not None:
+            transformers.AutoModelForVision2Seq = fallback
+
+
+def _ensure_vlmeval_moviepy_compat() -> None:
+    """Patch moviepy symbol locations expected by older VLMEvalKit revisions."""
+    try:
+        import moviepy
+    except Exception:
+        return
+
+    if hasattr(moviepy, "VideoFileClip") and hasattr(moviepy, "ImageSequenceClip"):
+        return
+
+    try:
+        from moviepy.editor import ImageSequenceClip
+        from moviepy.editor import VideoFileClip
+    except Exception:
+        return
+
+    if not hasattr(moviepy, "VideoFileClip"):
+        moviepy.VideoFileClip = VideoFileClip
+    if not hasattr(moviepy, "ImageSequenceClip"):
+        moviepy.ImageSequenceClip = ImageSequenceClip
 
 
 def _resolve_work_dir(common_args: dict[str, Any]) -> Path:
@@ -516,6 +553,26 @@ def _eval_skip_reason(dataset_name: str, mmbench_official_server) -> str | None:
     return None
 
 
+def _resolve_result_file_path(
+    modules: dict[str, Any],
+    work_dir: Path,
+    model_name: str,
+    dataset_name: str,
+    pred_format: str,
+) -> str:
+    getter = modules.get("get_pred_file_path")
+    if callable(getter):
+        try:
+            return getter(str(work_dir), model_name, dataset_name, use_env_format=True)
+        except TypeError:
+            try:
+                return getter(str(work_dir), model_name, dataset_name)
+            except TypeError:
+                pass
+    # Backward-compat for older VLMEvalKit revisions.
+    return str(Path(work_dir) / f"{model_name}_{dataset_name}.{pred_format}")
+
+
 def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[str, Any]:
     dataset_names = list(common_args.get("vlm_datasets") or [])
     if not dataset_names:
@@ -559,11 +616,13 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
                     dataset.data = dataset.data.head(int(num_samples))
                 print(f"[vlm_eval] Dataset {dataset_name}: {original_len} -> {len(dataset)} samples (num_samples={num_samples})")
 
-            result_file = modules["get_pred_file_path"](
-                str(work_dir),
-                model_name,
-                dataset_name,
-                use_env_format=True,
+            pred_format = str(common_args.get("vlm_pred_format", "xlsx"))
+            result_file = _resolve_result_file_path(
+                modules=modules,
+                work_dir=work_dir,
+                model_name=model_name,
+                dataset_name=dataset_name,
+                pred_format=pred_format,
             )
             record: dict[str, Any] = {
                 "dataset_type": dataset_type,
@@ -572,16 +631,18 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
             }
 
             if mode != "eval":
-                wrapper = modules["infer_data_job"](
-                    wrapper,
-                    work_dir=str(work_dir),
-                    model_name=model_name,
-                    dataset=dataset,
-                    verbose=bool(common_args.get("vlm_verbose", False)),
-                    api_nproc=int(common_args.get("vlm_api_nproc", 4)),
-                    ignore_failed=bool(common_args.get("vlm_ignore_failed", False)),
-                    use_vllm=False,
-                )
+                infer_fn = modules["infer_data_job"]
+                infer_kwargs = {
+                    "work_dir": str(work_dir),
+                    "model_name": model_name,
+                    "dataset": dataset,
+                    "verbose": bool(common_args.get("vlm_verbose", False)),
+                    "api_nproc": int(common_args.get("vlm_api_nproc", 4)),
+                    "ignore_failed": bool(common_args.get("vlm_ignore_failed", False)),
+                }
+                if "use_vllm" in inspect.signature(infer_fn).parameters:
+                    infer_kwargs["use_vllm"] = False
+                wrapper = infer_fn(wrapper, **infer_kwargs)
                 record["inference_completed"] = True
 
             if mode != "infer":
