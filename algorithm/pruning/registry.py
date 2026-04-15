@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .structured.flap.method import FLAPMethod
+from .structured.llm_pruner.method import LLMPrunerMethod
 from .structured.shortgpt.method import ShortGPTMethod
 from .structured.wanda_sp.method import WandaSPMethod
 from .unstructured.alps.method import ALPSMethod
@@ -13,6 +14,7 @@ from .unstructured.wanda.method import WandaMethod
 METHOD_REGISTRY = {
     "alps": ALPSMethod,
     "flap": FLAPMethod,
+    "llm_pruner": LLMPrunerMethod,
     "shortgpt": ShortGPTMethod,
     "sparsegpt": SparseGPTMethod,
     "wanda": WandaMethod,

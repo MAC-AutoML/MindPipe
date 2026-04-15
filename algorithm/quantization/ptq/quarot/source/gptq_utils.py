@@ -168,8 +168,8 @@ def gptq_fwrd(model, dataloader, dev, args):
         def forward(self, inp, **kwargs):
             inps[cache['i']] = inp
             cache['i'] += 1
-            cache['attention_mask'] = kwargs['attention_mask']
-            cache['position_ids'] = kwargs['position_ids']
+            cache['attention_mask'] = kwargs.get('attention_mask')
+            cache['position_ids'] = kwargs.get('position_ids')
             raise ValueError
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
