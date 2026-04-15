@@ -98,6 +98,15 @@ def _add_pruning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--flap_remove_heads", type=int, default=8)
     parser.add_argument("--pseudo_pruning", type=_bool_flag, default=True)
     parser.add_argument("--rho", type=float, default=0.1, help="Initial rho for ALPS ADMM optimization.")
+    parser.add_argument("--llmpruner_pruner_type", default="taylor", choices=["l2", "taylor"],
+                        help="LLM-Pruner importance type: l2 (magnitude) or taylor.")
+    parser.add_argument("--llmpruner_taylor", default="param_first",
+                        choices=["param_first"],
+                        help="LLM-Pruner Taylor expansion mode (only param_first supported currently).")
+    parser.add_argument("--llmpruner_min_attention_heads", type=int, default=1,
+                        help="LLM-Pruner: minimum attention groups to keep per layer.")
+    parser.add_argument("--llmpruner_min_mlp_neurons", type=int, default=8,
+                        help="LLM-Pruner: minimum MLP neurons to keep per layer.")
 
 
 def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
@@ -150,8 +159,8 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
 def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--execution_order", default="pruning_then_quantization", choices=EXECUTION_ORDER_CHOICES)
     # 单独指定时覆盖公共的 calibration 参数
-    parser.add_argument("--pruning_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"])
-    parser.add_argument("--quantization_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"])
+    parser.add_argument("--pruning_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19", "bookcorpus"])
+    parser.add_argument("--quantization_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19", "bookcorpus"])
     parser.add_argument("--pruning_calibration_samples", type=int, default=None)
     parser.add_argument("--quantization_calibration_samples", type=int, default=None)
     parser.add_argument("--pruning_damp_percent", type=float, default=None)
@@ -159,7 +168,7 @@ def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_io_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"],
+    parser.add_argument("--calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19", "bookcorpus"],
                         help="Calibration dataset. Each pruning/quantization method has its own default (e.g. shortgpt→pg19, flap→wikitext2).")
     parser.add_argument("--evaluation_dataset", default="wikitext2", choices=["wikitext2", "c4"])
     parser.add_argument("--calibration_samples", type=int, default=128)

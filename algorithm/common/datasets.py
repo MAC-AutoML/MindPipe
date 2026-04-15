@@ -58,6 +58,15 @@ def _load_local_pileval(data_path: Path):
     return load_dataset("json", data_files={"train": str(file_path)}, split="train")
 
 
+def _load_local_bookcorpus(data_path: Path):
+    bookcorpus_dir = data_path / "bookcorpus"
+    if not bookcorpus_dir.exists():
+        return None
+    from datasets import load_from_disk
+
+    return load_from_disk(str(bookcorpus_dir))
+
+
 def _sample_train_chunks(encoded, sample_count: int, seed: int, sequence_length: int):
     random.seed(seed)
     calibration_batches = []
@@ -173,6 +182,28 @@ def _load_pg19(tokenizer, sequence_length: int, sample_count: int, seed: int, da
     return calibration_batches, None
 
 
+def _load_bookcorpus(tokenizer, sequence_length: int, sample_count: int, seed: int, data_path: Path):
+    bookcorpus = _load_local_bookcorpus(data_path)
+    if bookcorpus is None:
+        bookcorpus = load_dataset("bookcorpus", split="train", trust_remote_code=True)
+
+    random.seed(seed)
+    calibration_batches = []
+    for _ in range(sample_count):
+        while True:
+            sample_index = random.randint(0, len(bookcorpus) - 1)
+            encoded = tokenizer(bookcorpus[sample_index]["text"], return_tensors="pt")
+            if encoded.input_ids.shape[1] >= sequence_length:
+                break
+        start = random.randint(0, encoded.input_ids.shape[1] - sequence_length)
+        end = start + sequence_length
+        input_ids = encoded.input_ids[:, start:end]
+        labels = input_ids.clone()
+        labels[:, :-1] = -100
+        calibration_batches.append((input_ids, labels))
+    return calibration_batches, None
+
+
 def get_calibration_and_evaluation_data(
     tokenizer,
     dataset_name: str,
@@ -191,6 +222,8 @@ def get_calibration_and_evaluation_data(
         return _load_pileval(tokenizer, sequence_length, sample_count, seed, data_path)
     if normalized_name == "pg19":
         return _load_pg19(tokenizer, sequence_length, sample_count, seed, data_path)
+    if normalized_name == "bookcorpus":
+        return _load_bookcorpus(tokenizer, sequence_length, sample_count, seed, data_path)
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 
