@@ -58,7 +58,7 @@ MindPipe/
 |------|------|------|------|----------|---------|
 | AWQ | PTQ | W4 | - | - | 是 |
 | GPTQ | PTQ | W4 | - | - | 是 |
-| QuaRot | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
+| QuaRot | PTQ | W4 | A4 | K16 V16 | 否（Hadamard 需验证） |
 | SpinQuant | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
 | FlatQuant | QAT | W4 | A4 | K4 V4 | 是 |
 

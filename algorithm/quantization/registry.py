@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .ptq.awq.method import AWQMethod
 from .ptq.gptq.method import GPTQMethod
+from .ptq.mquant.method import MQuantMethod
 from .ptq.quarot.method import QuaRotMethod
 from .ptq.smoothquant.method import SmoothQuantMethod
 from .ptq.spinquant.method import SpinQuantMethod
@@ -15,6 +16,7 @@ METHOD_REGISTRY = {
     "awq": AWQMethod,
     "flatquant": FlatQuantMethod,
     "gptq": GPTQMethod,
+    "mquant": MQuantMethod,
     "quarot": QuaRotMethod,
     "smoothquant": SmoothQuantMethod,
     "splitquant": SplitQuantMethod,
