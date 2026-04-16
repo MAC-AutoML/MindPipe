@@ -59,6 +59,11 @@ GPTQ_BITS=(4)
 SMOOTHQUANT_CONFIGS=(
   "8 8 16 16 16 ${SMOOTHQUANT_ALPHA_DEFAULT} w8a8"
 )
+OMNIQUANT_CONFIGS=(
+  "4 16 16 16 16 w4a16"
+  "16 4 16 16 16 w16a4"
+  "4 4 16 16 16 w4a4"
+)
 FLATQUANT_CONFIGS=(
   "2 16 16 4 4 w2a16"
   "3 16 16 4 4 w3a16"
@@ -80,12 +85,14 @@ SPLITQUANT_CONFIGS=(
 ENABLE_AWQ="${ENABLE_AWQ:-true}"
 ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
 ENABLE_SMOOTHQUANT="${ENABLE_SMOOTHQUANT:-false}"
+ENABLE_OMNIQUANT="${ENABLE_OMNIQUANT:-false}"
 ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-false}"
 ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-false}"
 
 AWQ_NPUS="${AWQ_NPUS:-0}"
 GPTQ_NPUS="${GPTQ_NPUS:-1}"
 SMOOTHQUANT_NPUS="${SMOOTHQUANT_NPUS:-1}"
+OMNIQUANT_NPUS="${OMNIQUANT_NPUS:-1}"
 FLATQUANT_NPUS="${FLATQUANT_NPUS:-1}"
 SPLITQUANT_NPUS="${SPLITQUANT_NPUS:-1}"
 
@@ -234,6 +241,22 @@ append_passthrough_env() {
     AWQ_SEARCH
     SMOOTHQUANT_SAVE_ACT_SCALES
     SMOOTHQUANT_ACT_SCALES_FROM
+    OMNIQUANT_EPOCHS
+    OMNIQUANT_ALPHA
+    OMNIQUANT_LET
+    OMNIQUANT_LWC
+    OMNIQUANT_LET_LR
+    OMNIQUANT_LWC_LR
+    OMNIQUANT_WEIGHT_DECAY
+    OMNIQUANT_AUG_LOSS
+    OMNIQUANT_SAVE_ACT_STATS
+    OMNIQUANT_SAVE_DIAGNOSTICS
+    OMNIQUANT_DISABLE_ZERO_POINT
+    OMNIQUANT_DEACTIVE_AMP
+    OMNIQUANT_WEIGHT_SYMMETRIC
+    OMNIQUANT_RESUME_FROM
+    OMNIQUANT_ACT_SCALES_FROM
+    OMNIQUANT_ACT_SHIFTS_FROM
   )
   local key
   for key in "${common_keys[@]}" "${zero_shot_keys[@]}" "${vlm_keys[@]}" "${algorithm_keys[@]}"; do
@@ -362,7 +385,7 @@ run_experiment() {
     "OUTPUT_DIR=$out_root"
   )
   append_device_env env_vars "$npu_spec"
-  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" || "$algorithm" == "smoothquant" ]]; then
+  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" || "$algorithm" == "smoothquant" || "$algorithm" == "omniquant" ]]; then
     env_vars+=(
       "ACTIVATION_BITS=$activation_bits"
       "QUERY_BITS=$query_bits"
@@ -481,6 +504,23 @@ run_algorithm_queue() {
         done
       done
       ;;
+    omniquant)
+      for model_path in "${MODELS[@]}"; do
+        for config in "${OMNIQUANT_CONFIGS[@]}"; do
+          read -r weight_bits activation_bits query_bits key_bits value_bits label <<< "$config"
+          if (( job_index % worker_count == worker_index )); then
+            if ! run_experiment omniquant "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits" "$label" "$npu_spec"; then
+              ((failure_count += 1))
+            fi
+            case "$LAST_RUN_STATUS" in
+              success) ((success_count += 1)) ;;
+              skip) ((skip_count += 1)) ;;
+            esac
+          fi
+          ((job_index += 1))
+        done
+      done
+      ;;
     flatquant)
       for model_path in "${MODELS[@]}"; do
         for config in "${FLATQUANT_CONFIGS[@]}"; do
@@ -579,6 +619,10 @@ main() {
 
   if [[ "$ENABLE_SMOOTHQUANT" == "true" ]]; then
     launch_algorithm_workers smoothquant "$SMOOTHQUANT_NPUS"
+  fi
+
+  if [[ "$ENABLE_OMNIQUANT" == "true" ]]; then
+    printf '[worker-skip] omniquant is currently CUDA-only and will not be launched from run_quantization_npu.sh\n'
   fi
 
   if [[ "$ENABLE_FLATQUANT" == "true" ]]; then
