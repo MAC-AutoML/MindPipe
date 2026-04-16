@@ -17,11 +17,8 @@ METHOD_REGISTRY = {
     "awq": AWQMethod,
     "flatquant": FlatQuantMethod,
     "gptq": GPTQMethod,
-<<<<<<< HEAD
     "omniquant": OmniQuantMethod,
-=======
     "mquant": MQuantMethod,
->>>>>>> b868a7172abdb1df3d18ce053dacefed36ede994
     "quarot": QuaRotMethod,
     "smoothquant": SmoothQuantMethod,
     "splitquant": SplitQuantMethod,

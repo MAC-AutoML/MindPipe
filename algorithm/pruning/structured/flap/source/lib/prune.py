@@ -193,7 +193,7 @@ def prepare_calibration_input(model, dataloader, device):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(device))
+            model(batch[0].to(device), use_cache=False)
         except ValueError:
             pass 
     layers[0] = layers[0].module

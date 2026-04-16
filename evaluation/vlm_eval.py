@@ -444,6 +444,116 @@ def _build_minicpm_wrapper(
 
     return MindPipeMiniCPMVWrapper()
 
+def _build_qwen3_wrapper(
+    model,
+    tokenizer_bundle,
+    common_args: dict[str, Any],
+    base_model_cls,
+    dataset_type_resolver,
+):
+    """构建 Qwen3-VL / Qwen3.5-VL 的 VLMEvalKit wrapper。
+
+    Qwen3-VL 与 Qwen2-VL 的 API 有以下关键差异：
+    - apply_chat_template 接收 messages 而非 [messages]
+    - process_vision_info 返回 3 个值（多了 video_kwargs），且需要额外参数
+    - videos 返回格式为 (video, metadata) 元组，需要解包
+    - processor 调用需要 video_metadata、do_resize=False 等额外参数
+    - inputs 需要转为 model.dtype
+    """
+    source_model = getattr(model, "_source_model", model)
+    processor = tokenizer_bundle.processor
+    tokenizer = tokenizer_bundle.tokenizer
+    if processor is None:
+        raise ValueError("Qwen3-VL evaluation requires TokenizerBundle.processor.")
+    target_device = resolve_device(common_args.get("device", "auto"))
+
+    class MindPipeQwen3VLWrapper(base_model_cls):
+        INTERLEAVE = True
+
+        def __init__(self):
+            super().__init__()
+            self.model = source_model
+            self.processor = processor
+            self.tokenizer = tokenizer
+            self.target_device = target_device
+            self._model_prepared = False
+
+        def use_custom_prompt(self, dataset):
+            return False
+
+        def build_prompt(self, line, dataset):
+            raise NotImplementedError("MindPipe Qwen3-VL wrapper relies on dataset prompts.")
+
+        def _ensure_model_ready(self):
+            if self._model_prepared:
+                return
+            if not getattr(self.model, "hf_device_map", None):
+                self.model.to(self.target_device)
+            if hasattr(self.model, "config"):
+                self.model.config.use_cache = False
+            self.model.eval()
+            self._model_prepared = True
+
+        def generate_inner(self, message, dataset=None):
+            try:
+                from qwen_vl_utils import process_vision_info
+            except Exception as err:
+                logging.critical("qwen_vl_utils not found, please install it via 'pip install qwen-vl-utils'")
+                raise err
+            self._ensure_model_ready()
+            messages = _build_qwen2_messages(message, dataset)
+            # Qwen3-VL: messages 直接传，不包 list
+            text = self.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            # Qwen3-VL: 返回 3 个值，需要额外参数
+            images, videos, video_kwargs = process_vision_info(
+                messages,
+                image_patch_size=16,
+                return_video_kwargs=True,
+                return_video_metadata=True,
+            )
+            video_metadatas = None
+            if videos is not None:
+                videos, video_metadatas = zip(*videos)
+                videos, video_metadatas = list(videos), list(video_metadatas)
+
+            inputs = self.processor(
+                text=text,
+                images=images,
+                videos=videos,
+                video_metadata=video_metadatas,
+                do_resize=False,
+                return_tensors="pt",
+                padding=True,
+                **(video_kwargs or {}),
+            )
+            model_device = _model_input_device(self.model, self.target_device)
+            inputs = _maybe_to_device(inputs, model_device)
+            if hasattr(self.model, "dtype"):
+                inputs = inputs.to(self.model.dtype)
+            input_ids = inputs["input_ids"] if isinstance(inputs, dict) else inputs.input_ids
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=_default_max_new_tokens(dataset, dataset_type_resolver(dataset)),
+                do_sample=False,
+            )
+            trimmed_ids = [
+                output_ids[len(input_row):]
+                for input_row, output_ids in zip(input_ids, generated_ids)
+            ]
+            responses = self.tokenizer.batch_decode(
+                trimmed_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            return responses[0].strip()
+
+    return MindPipeQwen3VLWrapper()
+
+
 def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules: dict[str, Any]):
     config = getattr(getattr(model, "_source_model", model), "config", getattr(model, "config", None))
     model_type = getattr(config, "model_type", "") if config is not None else ""
@@ -452,6 +562,14 @@ def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules
 
     if model_type in {"qwen2_vl", "qwen2_5_vl"}:
         return _build_qwen2_wrapper(
+            model,
+            tokenizer_bundle,
+            common_args,
+            base_model_cls,
+            dataset_type_resolver,
+        )
+    if model_type in {"qwen3_vl", "qwen3_5"}:
+        return _build_qwen3_wrapper(
             model,
             tokenizer_bundle,
             common_args,
@@ -467,7 +585,7 @@ def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules
             dataset_type_resolver,
         )
     raise NotImplementedError(
-        "VLM benchmark evaluation currently supports Qwen2/Qwen2.5-VL and MiniCPM-V style models only."
+        "VLM benchmark evaluation currently supports Qwen2/2.5/3-VL and MiniCPM-V style models only."
     )
 
 
