@@ -191,12 +191,18 @@ def _accumulate_taylor_gradients(model, calibration_batches, device):
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
 
-    # Enable gradient checkpointing to reduce activation memory
+    # 开启 gradient checkpointing 以降低激活值显存
     was_checkpointing = getattr(model, "is_gradient_checkpointing", False)
     if hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
 
-    # Zero existing gradients
+    # gradient checkpointing 只有在 self.training=True 时才会生效
+    # （见 transformers.modeling_layers.GradientCheckpointingLayer.__call__）。
+    # 模型从 method.py 进入时处于 eval 模式，因此必须在梯度累积循环前
+    # 切换到 train 模式。本函数末尾的 model.eval() 会恢复回 eval 状态。
+    model.train()
+
+    # 清零已有梯度
     model.zero_grad()
 
     for input_ids, _ in tqdm(calibration_batches, desc="Taylor gradient accumulation"):
