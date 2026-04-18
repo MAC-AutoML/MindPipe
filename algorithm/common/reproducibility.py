@@ -30,7 +30,8 @@ def set_global_seed(seed: int, device: str | None = None) -> None:
     
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.enabled = False  # 禁用cudnn
+    # 不要全局关闭 cuDNN；Qwen3-VL 的视觉前端在关闭后会退化到极慢路径。
+    torch.backends.cudnn.enabled = True
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
 
