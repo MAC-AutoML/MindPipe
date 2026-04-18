@@ -66,6 +66,23 @@ def _build_qwen2_5_vl_position_ids(hidden_states, position_ids, cache_position):
     raise ValueError(f"Unsupported cache_position shape for Qwen2.5-VL: {tuple(cache_position.shape)}")
 
 
+def _build_qwen2_vl_position_ids(hidden_states, position_ids, cache_position):
+    if position_ids is not None:
+        if position_ids.ndim == 3 and position_ids.shape[0] == 4:
+            return position_ids[1:]
+        if position_ids.ndim == 3:
+            return position_ids
+        if position_ids.ndim == 2:
+            return position_ids.unsqueeze(0).expand(3, position_ids.shape[0], -1)
+    if cache_position is None:
+        cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
+    if cache_position.ndim == 1:
+        return cache_position.view(1, 1, -1).expand(3, hidden_states.shape[0], -1)
+    if cache_position.ndim == 2:
+        return cache_position.unsqueeze(0).expand(3, -1, -1)
+    raise ValueError(f"Unsupported cache_position shape for Qwen2-VL: {tuple(cache_position.shape)}")
+
+
 def _filter_kwargs_for_layer(layer, kwargs):
     signature = inspect.signature(layer.forward)
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
@@ -115,6 +132,10 @@ def build_layer_forward_kwargs(model, layer, hidden_states, layer_kwargs, batch_
 
     if model_type == "qwen2_5_vl":
         rotary_position_ids = _build_qwen2_5_vl_position_ids(hidden_states, position_ids, cache_position)
+        if position_ids is None or (position_ids.ndim == 3 and position_ids.shape[0] == 3):
+            kwargs["position_ids"] = None
+    elif model_type == "qwen2_vl":
+        rotary_position_ids = _build_qwen2_vl_position_ids(hidden_states, position_ids, cache_position)
         if position_ids is None or (position_ids.ndim == 3 and position_ids.shape[0] == 3):
             kwargs["position_ids"] = None
     elif rotary_position_ids is None:
