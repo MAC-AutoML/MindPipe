@@ -4,8 +4,37 @@ from algorithm.common.device import empty_cache
 from .quantizer import pseudo_quantize_tensor
 import gc
 from ..utils.device import resolve_device
+try:
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5DecoderLayer
+except ImportError:
+    Qwen3_5DecoderLayer = tuple()  # type: ignore[assignment]
 
 __all__ = ["auto_clip_block"]
+
+
+def _normalize_clip_targets(clip_targets) -> str:
+    value = str(clip_targets or "auto").strip()
+    return value or "auto"
+
+
+def _resolve_explicit_targets(clip_targets: str) -> set[str]:
+    if clip_targets in {"auto", "none", "all"}:
+        return set()
+    return {item.strip() for item in clip_targets.split(",") if item.strip()}
+
+
+def _should_clip_linear(name: str, module, clip_targets: str) -> bool:
+    if clip_targets == "none":
+        return False
+    if clip_targets == "auto":
+        if isinstance(module, Qwen3_5DecoderLayer):
+            # Qwen3.5 is highly sensitive to clipping on gate/up projections,
+            # and linear-attention blocks do not benefit from down_proj clipping either.
+            return getattr(module, "layer_type", None) == "full_attention" and name == "mlp.down_proj"
+        return True
+    if clip_targets == "all":
+        return True
+    return name in _resolve_explicit_targets(clip_targets)
 
 
 # weight quantization
@@ -26,13 +55,20 @@ def auto_clip_layer(
     input_feat = input_feat[:, 0::sample_step]
     w = w.reshape(w.shape[0], 1, -1, group_size)
 
-    oc_batch_size = 256 if w.shape[0] % 256 == 0 else 64  # prevent OOM
-    assert w.shape[0] % oc_batch_size == 0
+    # prevent OOM while supporting arbitrary output-channel sizes
+    if w.shape[0] >= 256 and w.shape[0] % 256 == 0:
+        oc_batch_size = 256
+    elif w.shape[0] >= 64 and w.shape[0] % 64 == 0:
+        oc_batch_size = 64
+    else:
+        oc_batch_size = min(64, w.shape[0])
     w_all = w
+    total_out_channels = w.shape[0]
     best_max_val_all = []
 
-    for i_b in range(w.shape[0] // oc_batch_size):
-        w = w_all[i_b * oc_batch_size : (i_b + 1) * oc_batch_size]
+    for start in range(0, total_out_channels, oc_batch_size):
+        end = min(start + oc_batch_size, total_out_channels)
+        w = w_all[start:end]
 
         org_max_val = w.abs().amax(dim=-1, keepdim=True)  # co, 1, n_group, 1
 
@@ -60,23 +96,27 @@ def auto_clip_layer(
     best_max_val = torch.cat(best_max_val_all, dim=0)
 
     del input_feat
-    del org_out
     gc.collect()
     empty_cache(w_all.device)
     return best_max_val.squeeze(1)
 
 
 @torch.no_grad()
-def auto_clip_block(module, w_bit, q_config, input_feat, device=None):
+def auto_clip_block(module, w_bit, q_config, input_feat, device=None, model=None, clip_targets="auto"):
     runtime_device = resolve_device(device)
+    clip_targets = _normalize_clip_targets(clip_targets)
     named_linears = {
-        name: m for name, m in module.named_modules() if isinstance(m, nn.Linear)
+        name: m
+        for name, m in module.named_modules()
+        if isinstance(m, nn.Linear) and name in input_feat
     }
 
     clip_list = []
     for name in named_linears:
         # due to qk bmm, it is hard to clip precisely
         if any([_ in name for _ in ["q_", "k_", "query", "key", "Wqkv"]]):
+            continue
+        if not _should_clip_linear(name, module, clip_targets):
             continue
         named_linears[name].to(runtime_device)
         max_val = auto_clip_layer(

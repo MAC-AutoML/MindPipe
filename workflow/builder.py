@@ -168,6 +168,33 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--static_groups", type=_bool_flag, default=False)
     # AWQ
     parser.add_argument("--awq_search", type=_bool_flag, default=True)
+    parser.add_argument(
+        "--awq_search_sequence_length",
+        type=int,
+        default=512,
+        help="Calibration sequence length used by AWQ search. Kept separate from the global evaluation sequence length to match upstream AWQ defaults.",
+    )
+    parser.add_argument(
+        "--awq_auto_scale",
+        type=_bool_flag,
+        default=True,
+        help="Enable AWQ scale search during run_awq.",
+    )
+    parser.add_argument(
+        "--awq_mse_range",
+        type=_bool_flag,
+        default=True,
+        help="Enable AWQ clipping (MSE range search) during run_awq.",
+    )
+    parser.add_argument(
+        "--awq_clip_targets",
+        default="auto",
+        help=(
+            "AWQ clip target selection. "
+            "Use 'auto' for model-specific defaults, 'none' to disable clip, 'all' for all supported linears, "
+            "or a comma-separated list such as 'self_attn.v_proj,self_attn.o_proj,mlp.down_proj'."
+        ),
+    )
     # QuaRot / SpinQuant
     parser.add_argument("--rotation_mode", default="hadamard", choices=["hadamard", "random"])
     parser.add_argument("--rotation_checkpoint", default=None)

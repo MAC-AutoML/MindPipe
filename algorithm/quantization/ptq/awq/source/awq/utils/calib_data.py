@@ -61,12 +61,20 @@ def get_calib_dataset(
         if not line:
             continue
         encoded = tokenizer.encode(line)
-        if len(encoded) < block_size:
-            continue
-        if len(encoded) > block_size:
-            start = random.randint(0, len(encoded) - block_size)
-            encoded = encoded[start : start + block_size]
+        if data == "pileval":
+            # Match upstream llm-awq behavior more closely: keep shorter lines and
+            # drop overly long samples instead of random-cropping them.
+            if len(encoded) > block_size:
+                continue
+        else:
+            if len(encoded) < block_size:
+                continue
+            if len(encoded) > block_size:
+                start = random.randint(0, len(encoded) - block_size)
+                encoded = encoded[start : start + block_size]
         sample = torch.tensor([encoded])
+        if sample.numel() == 0:
+            continue
         samples.append(sample)
         sample_count += 1
         if sample_count == n_samples:
@@ -79,6 +87,10 @@ def get_calib_dataset(
 
     cat_samples = torch.cat(samples, dim=1)
     split_count = cat_samples.shape[1] // block_size
+    if split_count == 0:
+        raise ValueError(
+            f"Calibration samples from {data} were insufficient to form a block of size {block_size}."
+        )
     print(f" * Split into {split_count} blocks")
     return [
         cat_samples[:, i * block_size : (i + 1) * block_size]
