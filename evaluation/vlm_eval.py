@@ -158,7 +158,7 @@ def _resolve_model_name(common_args: dict[str, Any]) -> str:
 
 def _default_max_new_tokens(dataset_name: str | None, dataset_type: str) -> int:
     if dataset_name == "OCRBench":
-        return 128
+        return 32
     if dataset_name == "ChartQA_TEST":
         return 16
     if dataset_name in {"TextVQA_VAL", "InfoVQA_VAL"}:
@@ -199,8 +199,166 @@ def _open_image(image_path: str) -> Image.Image:
     return Image.open(image_path).convert("RGB")
 
 
-def _attach_generation_cleanup(wrapper, device):
+def _build_internvl_transform(input_size: int):
+    try:
+        import torchvision.transforms as T
+        from torchvision.transforms.functional import InterpolationMode
+    except Exception as err:
+        raise RuntimeError(
+            "InternVL2 VLMEval wrapper requires torchvision for image preprocessing."
+        ) from err
+
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+    return T.Compose(
+        [
+            T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
+            T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
+            T.ToTensor(),
+            T.Normalize(mean=mean, std=std),
+        ]
+    )
+
+
+def _find_internvl_closest_aspect_ratio(
+    aspect_ratio: float,
+    target_ratios: list[tuple[int, int]],
+    width: int,
+    height: int,
+    image_size: int,
+) -> tuple[int, int]:
+    best_ratio_diff = float("inf")
+    best_ratio = (1, 1)
+    area = width * height
+    for ratio in target_ratios:
+        target_aspect_ratio = ratio[0] / ratio[1]
+        ratio_diff = abs(aspect_ratio - target_aspect_ratio)
+        if ratio_diff < best_ratio_diff:
+            best_ratio_diff = ratio_diff
+            best_ratio = ratio
+        elif ratio_diff == best_ratio_diff:
+            if area > 0.5 * image_size * image_size * ratio[0] * ratio[1]:
+                best_ratio = ratio
+    return best_ratio
+
+
+def _dynamic_preprocess_internvl_image(
+    image: Image.Image,
+    *,
+    min_num: int = 1,
+    max_num: int = 12,
+    image_size: int = 448,
+    use_thumbnail: bool = True,
+) -> list[Image.Image]:
+    orig_width, orig_height = image.size
+    aspect_ratio = orig_width / orig_height
+
+    target_ratios = set()
+    for n in range(min_num, max_num + 1):
+        for i in range(1, n + 1):
+            for j in range(1, n + 1):
+                blocks = i * j
+                if min_num <= blocks <= max_num:
+                    target_ratios.add((i, j))
+    sorted_ratios = sorted(target_ratios, key=lambda ratio: ratio[0] * ratio[1])
+
+    target_aspect_ratio = _find_internvl_closest_aspect_ratio(
+        aspect_ratio,
+        sorted_ratios,
+        orig_width,
+        orig_height,
+        image_size,
+    )
+
+    target_width = image_size * target_aspect_ratio[0]
+    target_height = image_size * target_aspect_ratio[1]
+    blocks = target_aspect_ratio[0] * target_aspect_ratio[1]
+
+    resized = image.resize((target_width, target_height))
+    processed_images: list[Image.Image] = []
+    grid_width = target_width // image_size
+    for block_idx in range(blocks):
+        box = (
+            (block_idx % grid_width) * image_size,
+            (block_idx // grid_width) * image_size,
+            ((block_idx % grid_width) + 1) * image_size,
+            ((block_idx // grid_width) + 1) * image_size,
+        )
+        processed_images.append(resized.crop(box))
+    if use_thumbnail and len(processed_images) != 1:
+        processed_images.append(image.resize((image_size, image_size)))
+    return processed_images
+
+
+def _load_internvl_image(
+    image_path: str,
+    *,
+    input_size: int,
+    max_num: int,
+    use_thumbnail: bool,
+    transform=None,
+) -> tuple[torch.Tensor, int]:
+    image = _open_image(image_path)
+    transform = transform or _build_internvl_transform(input_size)
+    processed_images = _dynamic_preprocess_internvl_image(
+        image,
+        image_size=input_size,
+        max_num=max_num,
+        use_thumbnail=use_thumbnail,
+    )
+    pixel_values = torch.stack([transform(item) for item in processed_images])
+    return pixel_values, pixel_values.size(0)
+
+
+def _internvl_prompt_from_message(message, dataset: str | None) -> tuple[str, int]:
+    image_num = len([item for item in message if item["type"] == "image"])
+    if image_num == 1:
+        prompt = "<image>\n" + "\n".join(
+            item["value"] for item in message if item["type"] == "text"
+        )
+    else:
+        prompt = ""
+        image_idx = 1
+        for item in message:
+            if item["type"] == "text":
+                prompt += item["value"]
+            elif item["type"] == "image":
+                prompt += f"<image-{image_idx}>"
+                image_idx += 1
+            elif item["type"] == "video":
+                raise NotImplementedError("MindPipe VLM evaluation does not support video datasets yet.")
+            else:
+                raise ValueError(f"Unsupported message item: {item}")
+        if image_num > 1:
+            prompt = (
+                " ".join(f"<image-{index + 1}>: <image>" for index in range(image_num))
+                + "\n"
+                + prompt
+            )
+    if image_num == 0:
+        prompt = "\n".join(item["value"] for item in message if item["type"] == "text")
+    if dataset == "OCRBench":
+        prompt = (
+            prompt.rstrip()
+            + "\nAnswer with the exact text only. Reply with a short phrase only. Do not explain."
+        )
+    return prompt.strip(), image_num
+
+
+def _internvl_default_max_num(dataset: str | None) -> int:
+    if dataset in {"ChartQA_TEST", "MMMU_DEV_VAL"}:
+        return 12
+    if dataset in {"DocVQA_VAL", "DocVQA_TEST"}:
+        return 18
+    if dataset in {"InfoVQA_VAL", "InfoVQA_TEST", "OCRBench", "HRBench4K", "HRBench8K"}:
+        return 24
+    return 6
+
+
+def _attach_generation_cleanup(wrapper, device, *, enabled: bool = True):
     """给任意兼容 VLMEvalKit 的 wrapper 统一挂上样本级清理逻辑。"""
+    if not enabled:
+        return wrapper
     original_generate_inner = wrapper.generate_inner
 
     def wrapped_generate_inner(message, dataset=None):
@@ -233,6 +391,15 @@ def _build_qwen2_messages(message, dataset: str | None):
         if item["type"] == "video":
             raise NotImplementedError("MindPipe VLM evaluation does not support video datasets yet.")
         raise ValueError(f"Unsupported message item: {item}")
+    if dataset == "OCRBench":
+        # OCRBench uses exact matching; verbose chain-of-thought style answers hurt both
+        # accuracy and throughput for Qwen3-VL style instruction-tuned checkpoints.
+        conversation.append(
+            {
+                "type": "text",
+                "text": "Answer with the exact text only. Reply with a short phrase only. Do not explain.",
+            }
+        )
     return [{"role": "user", "content": conversation}]
 
 
@@ -249,6 +416,11 @@ def _build_qwen2_wrapper(
     if processor is None:
         raise ValueError("Qwen2/Qwen2.5-VL evaluation requires TokenizerBundle.processor.")
     target_device = resolve_device(common_args.get("device", "auto"))
+    use_cache = bool(common_args.get("vlm_use_cache", False))
+    max_new_tokens_override = common_args.get("vlm_max_new_tokens")
+    max_new_tokens_override = (
+        int(max_new_tokens_override) if max_new_tokens_override is not None else None
+    )
 
     class MindPipeQwen2VLWrapper(base_model_cls):
         INTERLEAVE = True
@@ -273,12 +445,12 @@ def _build_qwen2_wrapper(
             if not getattr(self.model, "hf_device_map", None):
                 self.model.to(self.target_device)
             if hasattr(self.model, "config"):
-                self.model.config.use_cache = False
+                self.model.config.use_cache = use_cache
             if hasattr(self.model, "llm"):
                 if hasattr(self.model.llm, "config"):
-                    self.model.llm.config.use_cache = False
+                    self.model.llm.config.use_cache = use_cache
                 if getattr(self.model.llm, "generation_config", None) is not None:
-                    self.model.llm.generation_config.use_cache = False
+                    self.model.llm.generation_config.use_cache = use_cache
             self.model.eval()
             self._model_prepared = True
 
@@ -305,10 +477,16 @@ def _build_qwen2_wrapper(
             )
             inputs = _maybe_to_device(inputs, _model_input_device(self.model, self.target_device))
             input_ids = inputs["input_ids"] if isinstance(inputs, dict) else inputs.input_ids
+            max_new_tokens = (
+                max_new_tokens_override
+                if max_new_tokens_override is not None
+                else _default_max_new_tokens(dataset, dataset_type_resolver(dataset))
+            )
             generated_ids = self.model.generate(
                 **inputs,
-                max_new_tokens=_default_max_new_tokens(dataset, dataset_type_resolver(dataset)),
+                max_new_tokens=max_new_tokens,
                 do_sample=False,
+                use_cache=use_cache,
             )
             trimmed_ids = [
                 output_ids[len(input_row):]
@@ -324,6 +502,129 @@ def _build_qwen2_wrapper(
     return MindPipeQwen2VLWrapper()
 
 
+def _build_qwen3_wrapper(
+    model,
+    tokenizer_bundle,
+    common_args: dict[str, Any],
+    base_model_cls,
+    dataset_type_resolver,
+):
+    source_model = getattr(model, "_source_model", model)
+    processor = tokenizer_bundle.processor
+    tokenizer = tokenizer_bundle.tokenizer
+    if processor is None:
+        raise ValueError("Qwen3/Qwen3.5-VL evaluation requires TokenizerBundle.processor.")
+    target_device = resolve_device(common_args.get("device", "auto"))
+    model_type = getattr(getattr(source_model, "config", None), "model_type", "")
+    disable_thinking = model_type == "qwen3_5"
+    use_cache = bool(common_args.get("vlm_use_cache", False))
+    max_new_tokens_override = common_args.get("vlm_max_new_tokens")
+    max_new_tokens_override = (
+        int(max_new_tokens_override) if max_new_tokens_override is not None else None
+    )
+
+    class MindPipeQwen3VLWrapper(base_model_cls):
+        INTERLEAVE = True
+
+        def __init__(self):
+            super().__init__()
+            self.model = source_model
+            self.processor = processor
+            self.tokenizer = tokenizer
+            self.target_device = target_device
+            self._model_prepared = False
+
+        def use_custom_prompt(self, dataset):
+            return False
+
+        def build_prompt(self, line, dataset):
+            raise NotImplementedError("MindPipe Qwen3/Qwen3.5-VL wrapper relies on dataset prompts.")
+
+        def _ensure_model_ready(self):
+            if self._model_prepared:
+                return
+            if not getattr(self.model, "hf_device_map", None):
+                self.model.to(self.target_device)
+            if hasattr(self.model, "config") and hasattr(self.model.config, "use_cache"):
+                self.model.config.use_cache = use_cache
+            if getattr(self.model, "generation_config", None) is not None:
+                self.model.generation_config.use_cache = use_cache
+            if hasattr(self.model, "llm"):
+                if hasattr(self.model.llm, "config") and hasattr(self.model.llm.config, "use_cache"):
+                    self.model.llm.config.use_cache = use_cache
+                if getattr(self.model.llm, "generation_config", None) is not None:
+                    self.model.llm.generation_config.use_cache = use_cache
+            self.model.eval()
+            self._model_prepared = True
+
+        def generate_inner(self, message, dataset=None):
+            try:
+                from qwen_vl_utils import process_vision_info
+            except Exception as err:
+                logging.critical("qwen_vl_utils not found, please install it via 'pip install qwen-vl-utils'")
+                raise err
+            self._ensure_model_ready()
+            messages = _build_qwen2_messages(message, dataset)
+            chat_template_kwargs = {
+                "tokenize": False,
+                "add_generation_prompt": True,
+            }
+            if disable_thinking:
+                chat_template_kwargs["enable_thinking"] = False
+            prompt = self.processor.apply_chat_template(
+                messages,
+                **chat_template_kwargs,
+            )
+            images, videos, video_kwargs = process_vision_info(
+                messages,
+                image_patch_size=16,
+                return_video_kwargs=True,
+                return_video_metadata=True,
+            )
+            video_metadatas = None
+            if videos is not None:
+                videos, video_metadatas = zip(*videos)
+                videos, video_metadatas = list(videos), list(video_metadatas)
+            inputs = self.processor(
+                text=prompt,
+                images=images,
+                videos=videos,
+                video_metadata=video_metadatas,
+                do_resize=False,
+                return_tensors="pt",
+                padding=True,
+                **(video_kwargs or {}),
+            )
+            model_device = _model_input_device(self.model, self.target_device)
+            inputs = _maybe_to_device(inputs, model_device)
+            if hasattr(inputs, "to") and hasattr(self.model, "dtype"):
+                inputs = inputs.to(dtype=self.model.dtype)
+            input_ids = inputs["input_ids"] if isinstance(inputs, dict) else inputs.input_ids
+            max_new_tokens = (
+                max_new_tokens_override
+                if max_new_tokens_override is not None
+                else _default_max_new_tokens(dataset, dataset_type_resolver(dataset))
+            )
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                use_cache=use_cache,
+            )
+            trimmed_ids = [
+                output_ids[len(input_row):]
+                for input_row, output_ids in zip(input_ids, generated_ids)
+            ]
+            responses = self.tokenizer.batch_decode(
+                trimmed_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            return responses[0].strip()
+
+    return MindPipeQwen3VLWrapper()
+
+
 def _build_minicpm_wrapper(
     model,
     tokenizer_bundle,
@@ -336,6 +637,11 @@ def _build_minicpm_wrapper(
     if not isinstance(tokenizer, MiniCPMTokenizerAdapter):
         tokenizer = MiniCPMTokenizerAdapter(tokenizer)
     target_device = resolve_device(common_args.get("device", "auto"))
+    use_cache = bool(common_args.get("vlm_use_cache", False))
+    max_new_tokens_override = common_args.get("vlm_max_new_tokens")
+    max_new_tokens_override = (
+        int(max_new_tokens_override) if max_new_tokens_override is not None else None
+    )
     try:
         chat_signature = inspect.signature(source_model.chat)
     except (TypeError, ValueError):
@@ -363,12 +669,12 @@ def _build_minicpm_wrapper(
             if not getattr(self.model, "hf_device_map", None):
                 self.model.to(self.target_device)
             if hasattr(self.model, "config") and hasattr(self.model.config, "use_cache"):
-                self.model.config.use_cache = False
+                self.model.config.use_cache = use_cache
             if hasattr(self.model, "llm"):
                 if hasattr(self.model.llm, "config") and hasattr(self.model.llm.config, "use_cache"):
-                    self.model.llm.config.use_cache = False
+                    self.model.llm.config.use_cache = use_cache
                 if getattr(self.model.llm, "generation_config", None) is not None:
-                    self.model.llm.generation_config.use_cache = False
+                    self.model.llm.generation_config.use_cache = use_cache
             self.model.eval()
             self._model_prepared = True
 
@@ -398,7 +704,7 @@ def _build_minicpm_wrapper(
                     max_new_tokens=max_new_tokens,
                     sampling=False,
                     num_beams=1,
-                    use_cache=False,
+                    use_cache=use_cache,
                     )
                 )
 
@@ -425,14 +731,18 @@ def _build_minicpm_wrapper(
                         max_new_tokens=max_new_tokens,
                         sampling=False,
                         num_beams=1,
-                        use_cache=False,
+                        use_cache=use_cache,
                     )
                 )
 
         def generate_inner(self, message, dataset=None):
             self._ensure_model_ready()
             dataset_type = dataset_type_resolver(dataset)
-            max_new_tokens = _default_max_new_tokens(dataset, dataset_type)
+            max_new_tokens = (
+                max_new_tokens_override
+                if max_new_tokens_override is not None
+                else _default_max_new_tokens(dataset, dataset_type)
+            )
             prompt = "\n".join(item["value"] for item in message if item["type"] == "text")
             images = [_open_image(item["value"]) for item in message if item["type"] == "image"]
             if chat_signature is not None and "image" in chat_signature.parameters:
@@ -443,6 +753,143 @@ def _build_minicpm_wrapper(
                 return self._generate_interleaved(message=message, max_new_tokens=max_new_tokens)
 
     return MindPipeMiniCPMVWrapper()
+
+
+def _build_internvl_wrapper(
+    model,
+    tokenizer_bundle,
+    common_args: dict[str, Any],
+    base_model_cls,
+    dataset_type_resolver,
+):
+    source_model = getattr(model, "_source_model", model)
+    tokenizer = tokenizer_bundle.tokenizer
+    target_device = resolve_device(common_args.get("device", "auto"))
+    use_cache = bool(common_args.get("vlm_use_cache", False))
+    max_new_tokens_override = common_args.get("vlm_max_new_tokens")
+    max_new_tokens_override = (
+        int(max_new_tokens_override) if max_new_tokens_override is not None else None
+    )
+    default_input_size = getattr(
+        getattr(getattr(source_model, "config", None), "vision_config", None),
+        "image_size",
+        448,
+    )
+    input_size = int(common_args.get("internvl_image_size", default_input_size))
+    use_thumbnail = bool(common_args.get("internvl_use_thumbnail", True))
+    explicit_max_num = common_args.get("internvl_max_num")
+    chat_signature = None
+    try:
+        chat_signature = inspect.signature(source_model.chat)
+    except (TypeError, ValueError):
+        pass
+
+    class MindPipeInternVLWrapper(base_model_cls):
+        INTERLEAVE = True
+
+        def __init__(self):
+            super().__init__()
+            self.model = source_model
+            self.tokenizer = tokenizer
+            self.target_device = target_device
+            self.input_size = input_size
+            self.use_thumbnail = use_thumbnail
+            self._transform = _build_internvl_transform(self.input_size)
+            self._model_prepared = False
+
+        def use_custom_prompt(self, dataset):
+            return False
+
+        def build_prompt(self, line, dataset):
+            raise NotImplementedError("MindPipe InternVL2 wrapper relies on dataset prompts.")
+
+        def _ensure_model_ready(self):
+            if self._model_prepared:
+                return
+            if not getattr(self.model, "hf_device_map", None):
+                self.model.to(self.target_device)
+            if hasattr(self.model, "config") and hasattr(self.model.config, "use_cache"):
+                self.model.config.use_cache = use_cache
+            language_model = getattr(self.model, "language_model", None)
+            if language_model is not None:
+                if hasattr(language_model, "config") and hasattr(language_model.config, "use_cache"):
+                    language_model.config.use_cache = use_cache
+                if getattr(language_model, "generation_config", None) is not None:
+                    language_model.generation_config.use_cache = use_cache
+            self.model.eval()
+            self._model_prepared = True
+
+        def _model_dtype(self):
+            model_dtype = getattr(self.model, "dtype", None)
+            if isinstance(model_dtype, torch.dtype) and model_dtype.is_floating_point:
+                return model_dtype
+            try:
+                parameter_dtype = next(self.model.parameters()).dtype
+                if parameter_dtype.is_floating_point:
+                    return parameter_dtype
+            except Exception:
+                pass
+            return torch.bfloat16
+
+        def generate_inner(self, message, dataset=None):
+            self._ensure_model_ready()
+            prompt, image_num = _internvl_prompt_from_message(message, dataset)
+            image_paths = [item["value"] for item in message if item["type"] == "image"]
+            max_num = (
+                int(explicit_max_num)
+                if explicit_max_num is not None
+                else _internvl_default_max_num(dataset)
+            )
+            model_device = _model_input_device(self.model, self.target_device)
+            model_dtype = self._model_dtype()
+
+            pixel_values = None
+            num_patches_list: list[int] = []
+            if image_paths:
+                pixel_values_list = []
+                for image_path in image_paths:
+                    current_pixels, num_patches = _load_internvl_image(
+                        image_path,
+                        input_size=self.input_size,
+                        max_num=max_num,
+                        use_thumbnail=self.use_thumbnail,
+                        transform=self._transform,
+                    )
+                    pixel_values_list.append(current_pixels)
+                    num_patches_list.append(num_patches)
+                pixel_values = torch.cat(pixel_values_list, dim=0).to(
+                    device=model_device,
+                    dtype=model_dtype,
+                )
+
+            generation_config = {
+                "max_new_tokens": (
+                    max_new_tokens_override
+                    if max_new_tokens_override is not None
+                    else _default_max_new_tokens(dataset, dataset_type_resolver(dataset))
+                ),
+                "do_sample": False,
+                "num_beams": 1,
+            }
+            chat_kwargs: dict[str, Any] = {
+                "tokenizer": self.tokenizer,
+                "pixel_values": pixel_values,
+                "question": prompt,
+                "generation_config": generation_config,
+            }
+            if image_num > 0 and chat_signature is not None and "num_patches_list" in chat_signature.parameters:
+                chat_kwargs["num_patches_list"] = num_patches_list
+            if chat_signature is not None and "verbose" in chat_signature.parameters:
+                chat_kwargs["verbose"] = False
+
+            with torch.no_grad():
+                response = self.model.chat(**chat_kwargs)
+            if isinstance(response, tuple) and response:
+                response = response[0]
+            return str(response).strip()
+
+    return MindPipeInternVLWrapper()
+
 
 def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules: dict[str, Any]):
     config = getattr(getattr(model, "_source_model", model), "config", getattr(model, "config", None))
@@ -458,6 +905,22 @@ def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules
             base_model_cls,
             dataset_type_resolver,
         )
+    if model_type in {"qwen3_vl", "qwen3_5"}:
+        return _build_qwen3_wrapper(
+            model,
+            tokenizer_bundle,
+            common_args,
+            base_model_cls,
+            dataset_type_resolver,
+        )
+    if model_type == "internvl_chat":
+        return _build_internvl_wrapper(
+            model,
+            tokenizer_bundle,
+            common_args,
+            base_model_cls,
+            dataset_type_resolver,
+        )
     if hasattr(getattr(model, "_source_model", model), "chat") or "minicpm" in str(model_type):
         return _build_minicpm_wrapper(
             model,
@@ -467,7 +930,7 @@ def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules
             dataset_type_resolver,
         )
     raise NotImplementedError(
-        "VLM benchmark evaluation currently supports Qwen2/Qwen2.5-VL and MiniCPM-V style models only."
+        "VLM benchmark evaluation currently supports Qwen2/Qwen2.5/Qwen3-VL/Qwen3.5, InternVL2, and MiniCPM-V style models only."
     )
 
 
@@ -573,6 +1036,17 @@ def _resolve_result_file_path(
     return str(Path(work_dir) / f"{model_name}_{dataset_name}.{pred_format}")
 
 
+def _resolve_existing_result_file(result_file: str) -> str:
+    candidate = Path(result_file)
+    if candidate.exists():
+        return str(candidate)
+    for suffix in ("xlsx", "json", "jsonl", "tsv", "csv"):
+        alternate = candidate.with_suffix(f".{suffix}")
+        if alternate.exists():
+            return str(alternate)
+    return str(candidate)
+
+
 def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[str, Any]:
     dataset_names = list(common_args.get("vlm_datasets") or [])
     if not dataset_names:
@@ -587,7 +1061,11 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
     wrapper = _build_wrapper(model, tokenizer_bundle, common_args, modules)
     # 把清理逻辑放在模型 wrapper 外层，后续新接入的 VLM 模型也能直接复用，
     # 不需要在每个模型分支里重复写一套显存回收代码。
-    wrapper = _attach_generation_cleanup(wrapper, common_args.get("device", "auto"))
+    wrapper = _attach_generation_cleanup(
+        wrapper,
+        common_args.get("device", "auto"),
+        enabled=bool(common_args.get("vlm_sample_cleanup", True)),
+    )
 
     results: dict[str, Any] = {}
     with _temporary_env(PRED_FORMAT=str(common_args.get("vlm_pred_format", "xlsx"))):
@@ -643,6 +1121,8 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
                 if "use_vllm" in inspect.signature(infer_fn).parameters:
                     infer_kwargs["use_vllm"] = False
                 wrapper = infer_fn(wrapper, **infer_kwargs)
+                result_file = _resolve_existing_result_file(result_file)
+                record["result_file"] = result_file
                 record["inference_completed"] = True
 
             if mode != "infer":
