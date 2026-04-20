@@ -77,12 +77,19 @@ def ampscaler_get_grad_norm(parameters, norm_type: float = 2.0) -> torch.Tensor:
     )
 
 
+def _project_smoothing_scale(parameter: torch.Tensor, min_scale: float = 1e-2) -> torch.Tensor:
+    # LET scales are multiplicative equalization factors. Keep them strictly
+    # positive before temporary/in-place reparameterization to avoid sign flips
+    # and divisions by tiny negative values during smoothing.
+    return truncate_number(parameter.abs(), threshold=min_scale).clamp(min=min_scale)
+
+
 def smooth_and_quant_temporary(model, args):
     if args.let:
         with torch.no_grad():
             for name, parameter in model.named_parameters():
                 if "smooth_scale" in name:
-                    parameter.data = truncate_number(parameter)
+                    parameter.data = _project_smoothing_scale(parameter)
         q_proj_scales = model.self_attn.expand_kv_to_attention(model.qkt_smooth_scale)
         o_proj_scales = model.self_attn.expand_kv_to_attention(model.out_smooth_scale)
         o_proj_shifts = model.self_attn.expand_kv_to_attention(model.out_smooth_shift)
@@ -138,7 +145,7 @@ def smooth_and_quant_inplace(model, args):
     if args.let:
         for name, parameter in model.named_parameters():
             if "smooth_scale" in name:
-                parameter.data = truncate_number(parameter)
+                parameter.data = _project_smoothing_scale(parameter)
         q_proj_scales = model.self_attn.expand_kv_to_attention(model.qkt_smooth_scale)
         o_proj_scales = model.self_attn.expand_kv_to_attention(model.out_smooth_scale)
         o_proj_shifts = model.self_attn.expand_kv_to_attention(model.out_smooth_shift)

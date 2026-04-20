@@ -147,6 +147,7 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--omniquant_resume_from", default=None)
     parser.add_argument("--omniquant_act_scales_from", default=None)
     parser.add_argument("--omniquant_act_shifts_from", default=None)
+    parser.add_argument("--omniquant_use_shift", type=_bool_flag, default=False)
     parser.add_argument("--omniquant_save_act_stats", type=_bool_flag, default=True)
     # FlatQuant
     parser.add_argument("--flatquant_epochs", type=int, default=15)

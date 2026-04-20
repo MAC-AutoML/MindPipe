@@ -3,8 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct}"
-DEVICE="${DEVICE:-cuda:3}"
+MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/openbmb/MiniCPM-V}"
+DEVICE="${DEVICE:-cuda:4}"
 DTYPE="${DTYPE:-float16}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 DATA_PATH="${DATA_PATH:-/mnt/42_store/lcw/data2/Huawei/datasets}"
@@ -27,12 +27,18 @@ EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
 ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte winogrande arc_easy arc_challenge openbookqa}"
 ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
 ZERO_SHOT_NUM_FEWSHOT="${ZERO_SHOT_NUM_FEWSHOT:-0}"
-EVAL_VLM="${EVAL_VLM:-false}"
+EVAL_VLM="${EVAL_VLM:-true}"
 VLM_DATASETS="${VLM_DATASETS:-OCRBench TextVQA_VAL ChartQA_TEST InfoVQA_VAL}"
 VLM_MODE="${VLM_MODE:-all}"
 VLM_API_NPROC="${VLM_API_NPROC:-4}"
 VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
 OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT:-$REPO_ROOT/new_results/quantization}}"
+
+if [[ "$WEIGHT_BITS" != "8" || "$ACTIVATION_BITS" != "8" ]]; then
+  printf 'Warning: SmoothQuant currently supports only W8A8 in MindPipe; got W%sA%s.\n' \
+    "$WEIGHT_BITS" "$ACTIVATION_BITS" >&2
+  exit 2
+fi
 
 CMD=(
   python "$REPO_ROOT/main.py"

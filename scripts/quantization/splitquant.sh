@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/openbmb/MiniCPM-V}"
-DEVICE="${DEVICE:-cuda:6}"
+DEVICE="${DEVICE:-cuda:2}"
 DTYPE="${DTYPE:-float16}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 DATA_PATH="${DATA_PATH:-/mnt/42_store/lcw/data2/Huawei/datasets}"
@@ -55,7 +55,7 @@ VLM_DATASETS="${VLM_DATASETS:-OCRBench TextVQA_VAL ChartQA_TEST InfoVQA_VAL}"
 VLM_MODE="${VLM_MODE:-all}"
 VLM_API_NPROC="${VLM_API_NPROC:-4}"
 VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
-OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT:-$REPO_ROOT/new_results/quantization}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT:-/mnt/82_store/wxx/HWQuant/Mindpipe/results}}"
 
 if [[ "$WEIGHT_BITS" -lt 16 && "$WEIGHT_GROUP_SIZE" -le 0 ]]; then
   echo "splitquant requires WEIGHT_GROUP_SIZE>0 when WEIGHT_BITS<16" >&2

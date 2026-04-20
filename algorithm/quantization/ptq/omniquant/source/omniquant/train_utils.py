@@ -8,12 +8,17 @@ from pathlib import Path
 import torch
 
 from algorithm.common.device import empty_cache
-from algorithm.common.modeling import capture_first_block_inputs
+from algorithm.common.device import resolve_device
 from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import unwrap_layer_output
 
+from omniquant.calibration import run_omniquant_calibration_forward
 from omniquant.model_tools.llama_utils import QuantLlamaDecoderLayer
-from omniquant.model_tools.llama_utils import initialize_omni_parameters
+from omniquant.model_tools.llama_utils import initialize_omni_parameters as initialize_llama_omni_parameters
+from omniquant.model_tools.minicpm_utils import QuantMiniCPMDecoderLayer
+from omniquant.model_tools.minicpm_utils import initialize_omni_parameters as initialize_minicpm_omni_parameters
+from omniquant.model_tools.qwen_utils import QuantQwenDecoderLayer
+from omniquant.model_tools.qwen_utils import initialize_omni_parameters as initialize_qwen_omni_parameters
 from omniquant.utils import ampscaler_get_grad_norm
 from omniquant.utils import clear_temp_variable
 from omniquant.utils import get_named_linears
@@ -46,6 +51,10 @@ def _expand_for_batch(value, batch_size: int):
         if value.dim() > 0 and value.shape[0] == 1 and batch_size > 1:
             repeat_dims = [batch_size] + [1] * (value.dim() - 1)
             return value.repeat(*repeat_dims)
+        if value.dim() > 1 and value.shape[1] == 1 and value.shape[0] in (2, 3) and batch_size > 1:
+            repeat_dims = [1] * value.dim()
+            repeat_dims[1] = batch_size
+            return value.repeat(*repeat_dims)
         return value
     if isinstance(value, tuple):
         return tuple(_expand_for_batch(item, batch_size) for item in value)
@@ -62,8 +71,177 @@ def _autocast_context(enabled: bool):
     return torch.cuda.amp.autocast()
 
 
+@torch.no_grad()
+def _capture_first_block_inputs(model, backbone, calibration_batches, device):
+    device = resolve_device(device)
+    decoder_config = backbone.decoder_config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
+    blocks = backbone.layers
+    backbone.move_front_modules(device)
+    blocks[0] = blocks[0].to(device)
+
+    dtype = next(iter(model.parameters())).dtype
+    sample_count = len(calibration_batches)
+    sequence_length = calibration_batches[0][0].shape[1]
+    inputs = torch.zeros(
+        sample_count,
+        sequence_length,
+        backbone.hidden_size,
+        dtype=dtype,
+        device=device,
+    )
+    cached_kwargs: dict[str, object] = {}
+    input_index = 0
+
+    class Catcher(torch.nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+        def __getattr__(self, name: str):
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.module, name)
+
+        def forward(self, hidden_states, **kwargs):
+            nonlocal input_index
+            inputs[input_index] = hidden_states
+            input_index += 1
+            cached_kwargs.clear()
+            cached_kwargs.update(kwargs)
+            raise ValueError
+
+    blocks[0] = Catcher(blocks[0])
+    for token_ids, _labels in calibration_batches:
+        try:
+            run_omniquant_calibration_forward(model, token_ids.to(device))
+        except ValueError:
+            pass
+
+    blocks[0] = blocks[0].module
+    blocks[0] = blocks[0].cpu()
+    backbone.move_front_modules("cpu")
+    empty_cache(device)
+    decoder_config.use_cache = use_cache
+    return inputs, dict(cached_kwargs)
+
+
+def _resolve_omniquant_impl(model_type: str):
+    if model_type == "llama":
+        return QuantLlamaDecoderLayer, initialize_llama_omni_parameters
+    if model_type in {"qwen2", "qwen2_5_vl"}:
+        return QuantQwenDecoderLayer, initialize_qwen_omni_parameters
+    if model_type in {"minicpm", "minicpmv"}:
+        return QuantMiniCPMDecoderLayer, initialize_minicpm_omni_parameters
+    raise NotImplementedError(
+        f"OmniQuant currently supports LLaMA-, Qwen-, and MiniCPM-style decoders only; got model_type={model_type!r}."
+    )
+
+
 def _tensor_mse(lhs: torch.Tensor, rhs: torch.Tensor) -> float:
     return float(torch.nn.functional.mse_loss(lhs.float(), rhs.float()).detach().cpu())
+
+
+def _tensor_summary(name: str, tensor: torch.Tensor) -> dict[str, object]:
+    detached = tensor.detach()
+    finite_mask = torch.isfinite(detached)
+    finite_count = int(finite_mask.sum().item())
+    total_count = int(detached.numel())
+    summary: dict[str, object] = {
+        "name": name,
+        "shape": list(detached.shape),
+        "dtype": str(detached.dtype),
+        "device": str(detached.device),
+        "total_count": total_count,
+        "finite_count": finite_count,
+        "nonfinite_count": total_count - finite_count,
+    }
+    if detached.is_floating_point() or detached.is_complex():
+        summary["nan_count"] = int(torch.isnan(detached).sum().item())
+        summary["inf_count"] = int(torch.isinf(detached).sum().item())
+    else:
+        summary["nan_count"] = 0
+        summary["inf_count"] = 0
+    if finite_count > 0:
+        finite_values = detached[finite_mask].float()
+        summary.update(
+            {
+                "finite_min": float(finite_values.min().item()),
+                "finite_max": float(finite_values.max().item()),
+                "finite_mean": float(finite_values.mean().item()),
+                "finite_abs_max": float(finite_values.abs().max().item()),
+            }
+        )
+    return summary
+
+
+def _value_summary(name: str, value):
+    if torch.is_tensor(value):
+        return _tensor_summary(name, value)
+    if isinstance(value, dict):
+        return {key: _value_summary(f"{name}.{key}", item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_value_summary(f"{name}[{index}]", item) for index, item in enumerate(value)]
+    if isinstance(value, list):
+        return [_value_summary(f"{name}[{index}]", item) for index, item in enumerate(value)]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return repr(value)
+
+
+def _omni_parameter_summaries(model, use_shift: bool) -> dict[str, dict[str, object]]:
+    summaries: dict[str, dict[str, object]] = {}
+    template = "smooth" if use_shift else "smooth_scale"
+    for name, parameter in model.named_parameters():
+        if "bound_factor" not in name and template not in name:
+            continue
+        summaries[name] = _tensor_summary(name, parameter)
+    return summaries
+
+
+def _write_nonfinite_diagnostics(
+    output_dir: str | Path,
+    *,
+    layer_index: int,
+    phase: str,
+    payload: dict[str, object],
+    epoch: int | None = None,
+    batch_start: int | None = None,
+    batch_end: int | None = None,
+) -> Path:
+    filename_parts = [f"nonfinite_layer{layer_index}", phase]
+    if epoch is not None:
+        filename_parts.append(f"epoch{epoch}")
+    if batch_start is not None and batch_end is not None:
+        filename_parts.append(f"batch{batch_start}_{batch_end}")
+    diagnostics_path = Path(output_dir) / ("_".join(filename_parts) + ".json")
+    diagnostics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return diagnostics_path
+
+
+def _raise_nonfinite_error(
+    output_dir: str | Path,
+    *,
+    layer_index: int,
+    phase: str,
+    message: str,
+    payload: dict[str, object],
+    epoch: int | None = None,
+    batch_start: int | None = None,
+    batch_end: int | None = None,
+):
+    diagnostics_path = _write_nonfinite_diagnostics(
+        output_dir,
+        layer_index=layer_index,
+        phase=phase,
+        payload=payload,
+        epoch=epoch,
+        batch_start=batch_start,
+        batch_end=batch_end,
+    )
+    raise RuntimeError(f"{message} Diagnostics saved to {diagnostics_path}.")
 
 
 def _collect_layer_outputs(layer, inputs, layer_kwargs, autocast_enabled: bool, batch_size: int):
@@ -92,12 +270,14 @@ def _collect_temporary_quant_outputs(layer, args, inputs, layer_kwargs, autocast
 
 def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_shifts, logger):
     backbone = get_text_backbone(model)
+    model_type = getattr(model.config, "model_type", None)
+    quant_decoder_layer_cls, initialize_omni_parameters = _resolve_omniquant_impl(model_type)
     model_dtype = next(model.parameters()).dtype
     quantized_linear_artifacts: dict[str, dict[str, object]] = {}
     diagnostics_enabled = bool(getattr(args, "save_diagnostics", False))
     diagnostics_path = Path(args.output_dir) / "layer_diagnostics.json"
     diagnostics_records: list[dict[str, object]] = []
-    input_states, layer_kwargs = capture_first_block_inputs(
+    input_states, layer_kwargs = _capture_first_block_inputs(
         model=model,
         backbone=backbone,
         calibration_batches=calibration_batches,
@@ -122,8 +302,25 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
 
     for layer_index, layer in enumerate(backbone.layers):
         logger.info("========= Layer %s =========", layer_index)
+        if not torch.isfinite(quant_inps).all():
+            _raise_nonfinite_error(
+                args.output_dir,
+                layer_index=layer_index,
+                phase="layer_input",
+                message=f"OmniQuant received non-finite quantized inputs at layer {layer_index}.",
+                payload={
+                    "layer_index": layer_index,
+                    "phase": "layer_input",
+                    "autocast_enabled": autocast_enabled,
+                    "quant_inps": _tensor_summary("quant_inps", quant_inps),
+                    "fp_inps": _tensor_summary("fp_inps", fp_inps),
+                    "layer_kwargs": _value_summary("layer_kwargs", layer_kwargs),
+                },
+            )
         layer = layer.to(device)
-        qlayer = QuantLlamaDecoderLayer(layer, args).to(device)
+        qlayer = quant_decoder_layer_cls(layer, args).to(device)
+        if args.deactive_amp:
+            qlayer = qlayer.float()
         qlayer.eval()
         set_quant_state(qlayer, weight_quant=False, act_quant=False)
         layer_diagnostics: dict[str, object] | None = None
@@ -152,14 +349,14 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                     batch_size=int(args.batch_size),
                 )
 
-        # Upstream OmniQuant disables learned shift updates for LLaMA-family models.
-        use_shift = False
+        use_shift = bool(getattr(args, "use_shift", False))
         initialize_omni_parameters(
             qlayer,
             f"{backbone.prefix}.layers.{layer_index}",
             args,
             act_scales,
             act_shifts,
+            use_shift=use_shift,
         )
         if resume_parameters is not None:
             qlayer.load_state_dict(resume_parameters[layer_index], strict=False)
@@ -205,8 +402,51 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                         loss = mse_loss(fp_outs[start:end], quant_out)
                         if args.aug_loss and fp_outs_2 is not None:
                             loss = loss + mse_loss(fp_outs_2[start:end], quant_out)
+                    if not torch.isfinite(quant_out).all():
+                        _raise_nonfinite_error(
+                            args.output_dir,
+                            layer_index=layer_index,
+                            phase="temporary_forward",
+                            message=f"OmniQuant temporary forward produced non-finite outputs at layer {layer_index}.",
+                            payload={
+                                "layer_index": layer_index,
+                                "phase": "temporary_forward",
+                                "epoch": epoch,
+                                "batch_range": [start, end],
+                                "autocast_enabled": autocast_enabled,
+                                "quant_inps": _tensor_summary("quant_inps", quant_inps[start:end]),
+                                "fp_outs": _tensor_summary("fp_outs", fp_outs[start:end]),
+                                "quant_out": _tensor_summary("quant_out", quant_out),
+                                "layer_kwargs": _value_summary("layer_kwargs", batch_kwargs),
+                                "trainable_parameters": _omni_parameter_summaries(qlayer, use_shift=use_shift),
+                            },
+                            epoch=epoch,
+                            batch_start=start,
+                            batch_end=end,
+                        )
                     if not math.isfinite(loss.item()):
-                        raise RuntimeError(f"OmniQuant loss became non-finite at layer {layer_index}, epoch {epoch}.")
+                        _raise_nonfinite_error(
+                            args.output_dir,
+                            layer_index=layer_index,
+                            phase="loss",
+                            message=f"OmniQuant loss became non-finite at layer {layer_index}, epoch {epoch}.",
+                            payload={
+                                "layer_index": layer_index,
+                                "phase": "loss",
+                                "epoch": epoch,
+                                "batch_range": [start, end],
+                                "autocast_enabled": autocast_enabled,
+                                "loss": float(loss.detach().float().cpu().item()),
+                                "quant_inps": _tensor_summary("quant_inps", quant_inps[start:end]),
+                                "fp_outs": _tensor_summary("fp_outs", fp_outs[start:end]),
+                                "quant_out": _tensor_summary("quant_out", quant_out),
+                                "layer_kwargs": _value_summary("layer_kwargs", batch_kwargs),
+                                "trainable_parameters": _omni_parameter_summaries(qlayer, use_shift=use_shift),
+                            },
+                            epoch=epoch,
+                            batch_start=start,
+                            batch_end=end,
+                        )
                     grad_scaler.scale(loss).backward()
                     grad_scaler.unscale_(optimizer)
                     grad_norm = ampscaler_get_grad_norm(get_omni_parameters(qlayer, use_shift=use_shift)).detach().cpu()
@@ -248,7 +488,8 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
             )
             layer_diagnostics["pre_train_temporary_mse"] = _tensor_mse(fp_outs, pre_train_outputs)
 
-        qlayer = qlayer.to(dtype=model_dtype)
+        if not args.deactive_amp:
+            qlayer = qlayer.to(dtype=model_dtype)
         smooth_and_quant_inplace(qlayer, args)
 
         quant_outs = None
@@ -260,6 +501,23 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                 autocast_enabled=autocast_enabled,
                 batch_size=int(args.batch_size),
             )
+            if not torch.isfinite(quant_outs).all():
+                _raise_nonfinite_error(
+                    args.output_dir,
+                    layer_index=layer_index,
+                    phase="post_inplace",
+                    message=f"OmniQuant post-inplace outputs became non-finite at layer {layer_index}.",
+                    payload={
+                        "layer_index": layer_index,
+                        "phase": "post_inplace",
+                        "autocast_enabled": autocast_enabled,
+                        "quant_inps": _tensor_summary("quant_inps", quant_inps),
+                        "fp_outs": _tensor_summary("fp_outs", fp_outs) if fp_outs is not None else None,
+                        "quant_outs": _tensor_summary("quant_outs", quant_outs),
+                        "layer_kwargs": _value_summary("layer_kwargs", layer_kwargs),
+                        "trainable_parameters": _omni_parameter_summaries(qlayer, use_shift=use_shift),
+                    },
+                )
             if diagnostics_enabled and layer_diagnostics is not None and fp_outs is not None:
                 layer_diagnostics["post_inplace_mse"] = _tensor_mse(fp_outs, quant_outs)
                 diagnostics_records.append(layer_diagnostics)
