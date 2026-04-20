@@ -244,6 +244,21 @@ def build_run_config(args) -> WorkflowConfig:
     if not has_pruning and not has_quantization and args.eval_ppl is False and args.eval_zero_shot is False and args.eval_vlm is False:
         raise ValueError("At least one of --pruning, --quantization, or an evaluation flag must be specified.")
 
+    # n:m 半结构化剪枝仅对 wanda / sparsegpt / alps 生效，仅支持 2:4 和 4:8，且稀疏率必须为 0.5（与原 repo 一致）
+    _nm_methods = {"wanda", "sparsegpt", "alps"}
+    _valid_nm_patterns = {"2:4", "4:8"}
+    if has_pruning and args.pruning in _nm_methods and args.structure_pattern != "unstructured":
+        if args.structure_pattern not in _valid_nm_patterns:
+            raise ValueError(
+                f"不支持的 n:m 模式: {args.structure_pattern}，"
+                f"仅支持 {', '.join(sorted(_valid_nm_patterns))}"
+            )
+        if args.sparsity_ratio != 0.5:
+            raise ValueError(
+                f"n:m 半结构化剪枝 ({args.structure_pattern}) 的稀疏率必须为 0.5，"
+                f"当前为 {args.sparsity_ratio}"
+            )
+
     model_name = model_slug(args.model_path)
     base_common_args = vars(args).copy()
 
