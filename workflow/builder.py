@@ -109,13 +109,22 @@ def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
 def _add_pruning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pruning", default=None, choices=sorted(PRUNING_METHOD_REGISTRY))
     parser.add_argument("--sparsity_ratio", type=float, default=0.5)
-    parser.add_argument("--structure_pattern", default="unstructured")
+    parser.add_argument("--structure_pattern",default="unstructured",help="剪枝结构模式。当前仅对 wanda / sparsegpt / alps 生效，用于指定 n:m 半结构化剪枝；其他方法会忽略该参数。",)
     parser.add_argument("--block_size", type=int, default=128)
     parser.add_argument("--use_variant", type=_bool_flag, default=False)
     parser.add_argument("--flap_metrics", default="WIFV", choices=["IFV", "WIFV", "WIFN"])
     parser.add_argument("--flap_remove_heads", type=int, default=8)
     parser.add_argument("--pseudo_pruning", type=_bool_flag, default=True)
     parser.add_argument("--rho", type=float, default=0.1, help="Initial rho for ALPS ADMM optimization.")
+    parser.add_argument("--llmpruner_pruner_type", default="taylor", choices=["l2", "taylor"],
+                        help="LLM-Pruner importance type: l2 (magnitude) or taylor.")
+    parser.add_argument("--llmpruner_taylor", default="param_first",
+                        choices=["param_first"],
+                        help="LLM-Pruner Taylor expansion mode (only param_first supported currently).")
+    parser.add_argument("--llmpruner_min_attention_heads", type=int, default=1,
+                        help="LLM-Pruner: minimum attention groups to keep per layer.")
+    parser.add_argument("--llmpruner_min_mlp_neurons", type=int, default=8,
+                        help="LLM-Pruner: minimum MLP neurons to keep per layer.")
 
 
 def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
@@ -160,6 +169,7 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--omniquant_resume_from", default=None)
     parser.add_argument("--omniquant_act_scales_from", default=None)
     parser.add_argument("--omniquant_act_shifts_from", default=None)
+    parser.add_argument("--omniquant_use_shift", type=_bool_flag, default=False)
     parser.add_argument("--omniquant_save_act_stats", type=_bool_flag, default=True)
     # FlatQuant
     parser.add_argument("--flatquant_epochs", type=int, default=15)
@@ -498,8 +508,8 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
 def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--execution_order", default="pruning_then_quantization", choices=EXECUTION_ORDER_CHOICES)
     # 单独指定时覆盖公共的 calibration 参数
-    parser.add_argument("--pruning_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"])
-    parser.add_argument("--quantization_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"])
+    parser.add_argument("--pruning_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19", "bookcorpus"])
+    parser.add_argument("--quantization_calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19", "bookcorpus"])
     parser.add_argument("--pruning_calibration_samples", type=int, default=None)
     parser.add_argument("--quantization_calibration_samples", type=int, default=None)
     parser.add_argument("--pruning_damp_percent", type=float, default=None)
@@ -507,7 +517,7 @@ def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_io_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19"],
+    parser.add_argument("--calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19", "bookcorpus"],
                         help="Calibration dataset. Each pruning/quantization method has its own default (e.g. shortgpt→pg19, flap→wikitext2).")
     parser.add_argument("--evaluation_dataset", default="wikitext2", choices=["wikitext2", "c4"])
     parser.add_argument("--calibration_samples", type=int, default=128)
@@ -538,6 +548,21 @@ def build_run_config(args) -> WorkflowConfig:
     # 校验
     if not has_pruning and not has_quantization and args.eval_ppl is False and args.eval_zero_shot is False and args.eval_vlm is False:
         raise ValueError("At least one of --pruning, --quantization, or an evaluation flag must be specified.")
+
+    # n:m 半结构化剪枝仅对 wanda / sparsegpt / alps 生效，仅支持 2:4 和 4:8，且稀疏率必须为 0.5（与原 repo 一致）
+    _nm_methods = {"wanda", "sparsegpt", "alps"}
+    _valid_nm_patterns = {"2:4", "4:8"}
+    if has_pruning and args.pruning in _nm_methods and args.structure_pattern != "unstructured":
+        if args.structure_pattern not in _valid_nm_patterns:
+            raise ValueError(
+                f"不支持的 n:m 模式: {args.structure_pattern}，"
+                f"仅支持 {', '.join(sorted(_valid_nm_patterns))}"
+            )
+        if args.sparsity_ratio != 0.5:
+            raise ValueError(
+                f"n:m 半结构化剪枝 ({args.structure_pattern}) 的稀疏率必须为 0.5，"
+                f"当前为 {args.sparsity_ratio}"
+            )
 
     model_name = model_slug(args.model_path)
     base_common_args = vars(args).copy()

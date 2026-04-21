@@ -12,6 +12,14 @@ try:
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLRMSNorm
 except ImportError:
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2RMSNorm as Qwen2_5_VLRMSNorm
+try:
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5DecoderLayer
+except ImportError:
+    Qwen3_5DecoderLayer = tuple()  # type: ignore[assignment]
+try:
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNorm
+except ImportError:
+    Qwen3_5RMSNorm = tuple()  # type: ignore[assignment]
 
 from .qmodule import ScaledActivation
 from .forward_utils import forward_in_chunks
@@ -66,7 +74,13 @@ def scale_ln_fcs(ln, fcs, scales):
 
     scales = scales.to(ln.weight.device).to(ln.weight.dtype)
 
-    ln.weight.div_(scales)
+    if isinstance(ln, Qwen3_5RMSNorm):
+        # Qwen3.5 RMSNorm applies (1 + weight) instead of weight directly.
+        # AWQ needs to divide the effective gain by `scales`, not the raw parameter.
+        effective_weight = (ln.weight.float() + 1.0).div_(scales.float()).sub_(1.0)
+        ln.weight.copy_(effective_weight.to(ln.weight.dtype))
+    else:
+        ln.weight.div_(scales)
     if hasattr(ln, "bias") and ln.bias is not None:
         ln.bias.div_(scales)
 
@@ -237,7 +251,10 @@ def auto_scale_block(model, module, module_kwargs, w_bit, q_config, input_feat):
             )
         )
 
-    elif isinstance(module, (LlamaDecoderLayer, Qwen2DecoderLayer, Qwen2_5_VLDecoderLayer)) or _is_llama_family_decoder(module):
+    elif (
+        isinstance(module, (LlamaDecoderLayer, Qwen2DecoderLayer, Qwen2_5_VLDecoderLayer))
+        or _is_llama_family_decoder(module)
+    ) and not isinstance(module, Qwen3_5DecoderLayer):
         # attention input
         scales_list.append(
             _auto_get_scale(
@@ -279,6 +296,26 @@ def auto_scale_block(model, module, module_kwargs, w_bit, q_config, input_feat):
                 inp=input_feat["mlp.down_proj"],
             )
         )
+    elif isinstance(module, Qwen3_5DecoderLayer):
+        # Keep Qwen3.5 attention projections in higher precision for stability.
+        # AWQ scaling only applies to MLP linears.
+        if "mlp.gate_proj" in input_feat:
+            scales_list.append(
+                _auto_get_scale(
+                    prev_op=module.post_attention_layernorm,
+                    layers=[module.mlp.gate_proj, module.mlp.up_proj],
+                    inp=input_feat["mlp.gate_proj"],
+                    module2inspect=module.mlp,
+                )
+            )
+        if "mlp.down_proj" in input_feat:
+            scales_list.append(
+                _auto_get_scale(
+                    prev_op=module.mlp.up_proj,
+                    layers=[module.mlp.down_proj],
+                    inp=input_feat["mlp.down_proj"],
+                )
+            )
 
     elif isinstance(module, BloomBlock):
         # attention input

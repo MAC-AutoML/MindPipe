@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 
 from algorithm.common.modeling import get_text_backbone
-from algorithm.common.modeling import run_text_backbone_calibration_forward
 
 
 @torch.no_grad()
@@ -33,7 +32,7 @@ def get_act_scales(model, calibration_batches, device):
             hooks.append(module.register_forward_hook(functools.partial(stat_input_hook, name=qualified_name)))
 
     for token_ids, _labels in calibration_batches:
-        run_text_backbone_calibration_forward(model, backbone, token_ids.to(device))
+        model(input_ids=token_ids.to(device), use_cache=False)
 
     for hook in hooks:
         hook.remove()

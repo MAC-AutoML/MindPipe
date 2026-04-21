@@ -58,7 +58,7 @@ MindPipe/
 |------|------|------|------|----------|---------|
 | AWQ | PTQ | W4 | - | - | 是 |
 | GPTQ | PTQ | W4 | - | - | 是 |
-| QuaRot | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
+| QuaRot | PTQ | W4 | A4 | K16 V16 | 否（Hadamard 需验证） |
 | SpinQuant | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
 | FlatQuant | QAT | W4 | A4 | K4 V4 | 是 |
 
@@ -93,6 +93,19 @@ MindPipe/
 - Qwen2.5-7B-Instruct
 - Qwen2.5-VL-7B-Instruct
 - Qwen2.5-7B-Instruct（FlatQuant / NPU）
+
+## Qwen2.5-VL 说明
+
+不要再给 Qwen2.5-VL 的文本校准 / 搜索路径打手工 `dense_mask + language_model/backbone.root` 补丁。统一优先走官方 `model(input_ids=..., use_cache=False)`，不要绕过flashattn用eager。
+
+> 对 AWQ 来说，正确方向应该是：
+>
+> - 先删掉共享层和 AWQ 里这类手工 dense_mask + language_model/backbone.root 补丁
+> - 然后如果 AWQ 仍然有 Qwen2.5-VL 问题，就只在 AWQ 本地修
+> - 修法优先级应该是：
+>   - 第一选择：model(input_ids=..., use_cache=False)
+>   - 如果 NPU 上这个仍有真实问题，再试 model(input_ids=..., attention_mask=torch.ones_like(input_ids), use_cache=False)
+> - 不应该再用 model.model.language_model(..., attention_mask={...}) 这种手工接管内部协议的方式
 
 ## 快速开始
 
@@ -263,7 +276,7 @@ results/<model>/<algorithm>/metrics.json
 |------|--------|------|
 | `--pruning` | None | `wanda` / `sparsegpt` / `wanda_sp` / `flap` / `shortgpt` / `alps` |
 | `--sparsity_ratio` | 0.5 | 稀疏率 |
-| `--structure_pattern` | `unstructured` | 剪枝结构模式 |
+| `--structure_pattern` | `unstructured` | 剪枝结构模式；当前仅对 `wanda` / `sparsegpt` / `alps` 生效，用于指定 `n:m` 半结构化剪枝 |
 | `--damp_percent` | 0.01 | Hessian 阻尼系数 |
 
 > **校准数据集选择**：各算法均支持 `wikitext2` / `c4` / `pileval` / `pg19` 四种校准数据集。上表"推荐校准数据集"列为各算法原始论文使用的默认数据集，效果最好。ShortGPT 强烈推荐 `pg19`（长文本书籍，Block Influence 统计更稳定），使用其他数据集不会报错但可能影响精度。`--calibration_samples` 控制采样窗口数，ShortGPT 适当增大（如 256 或 512）可提升重要性排序的稳定性。

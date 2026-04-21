@@ -193,10 +193,20 @@ def prepare_calibration_input(model, dataloader, device):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(device))
+            model(batch[0].to(device), use_cache=False)
         except ValueError:
             pass 
     layers[0] = layers[0].module
+
+    # 将所有层和 embedding 移回 CPU，释放显存（后续逐层搬入 GPU 处理）
+    for li in range(len(layers)):
+        layers[li] = layers[li].cpu()
+    decoder_root = get_decoder_root(model)
+    if hasattr(decoder_root, "embed_tokens"):
+        decoder_root.embed_tokens = decoder_root.embed_tokens.cpu()
+    if hasattr(decoder_root, "rotary_emb"):
+        decoder_root.rotary_emb = decoder_root.rotary_emb.cpu()
+    empty_cache(device)
 
     outs = torch.zeros_like(inps)
     decoder_config.use_cache = use_cache
@@ -526,10 +536,14 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
         layer = layers[i]
         subset = get_projection_subset(layer)
 
-        if f"model.layers.{i}" in getattr(model, 'hf_device_map', {}):   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
-            dev = model.hf_device_map[f"model.layers.{i}"]
-            inps, outs = inps.to(dev), outs.to(dev)
-            layer_kwargs = move_layer_kwargs(layer_kwargs, dev)
+        # 确定目标设备，将当前层和输入数据搬到 GPU
+        if f"model.layers.{i}" in getattr(model, 'hf_device_map', {}):
+            target_dev = model.hf_device_map[f"model.layers.{i}"]
+        else:
+            target_dev = device
+        layer = layer.to(target_dev)
+        inps, outs = inps.to(target_dev), outs.to(target_dev)
+        layer_kwargs = move_layer_kwargs(layer_kwargs, target_dev)
 
         wrapped_layers = {}
         for name in subset:
@@ -583,6 +597,10 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
 
         inps, outs = outs, inps # Use the original output as input to the next layer
         empty_cache(next(iter(subset.values())).weight.device if subset else device)
+        # 将当前层移回 CPU，释放显存
+        layers[i] = layer.cpu()
+        del layer
+        empty_cache(device)
 
     standarlization = lambda x: (x - torch.mean(x, axis=1, keepdim=True)) / torch.std(x, axis=1, keepdim=True)
 
@@ -643,15 +661,19 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
         mlp_mask = torch.stack(mlp_mask)
     
     for idx in range(len(layers)):
-        if f"model.layers.{idx}" in getattr(model, 'hf_device_map', {}): 
-            compress(layers[idx], attn_mask[idx], None, attn_baseline_inp_list[idx], None, model.hf_device_map[f"model.layers.{idx}"], unstr=args.unstr)
+        # 确定目标设备，将当前层搬到 GPU 进行 compress
+        if f"model.layers.{idx}" in getattr(model, 'hf_device_map', {}):
+            target_dev = model.hf_device_map[f"model.layers.{idx}"]
         else:
-            compress(layers[idx], attn_mask[idx], None, attn_baseline_inp_list[idx], None, device, unstr=args.unstr)
-                
-        if f"model.layers.{idx}" in getattr(model, 'hf_device_map', {}): 
-            compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], model.hf_device_map[f"model.layers.{idx}"], unstr=args.unstr)
-        else:
-            compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], device, unstr=args.unstr)
+            target_dev = device
+        layers[idx] = layers[idx].to(target_dev)
+
+        compress(layers[idx], attn_mask[idx], None, attn_baseline_inp_list[idx], None, target_dev, unstr=args.unstr)
+        compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], target_dev, unstr=args.unstr)
+
+        # 将当前层移回 CPU，释放显存
+        layers[idx] = layers[idx].cpu()
+        empty_cache(target_dev)
                 
     decoder_config.use_cache = use_cache
     empty_cache(device)

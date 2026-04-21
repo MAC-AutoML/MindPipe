@@ -25,8 +25,20 @@ from ..utils.device import resolve_device
 __all__ = ["run_awq"]
 
 
-def get_named_linears(module):
-    return {name: m for name, m in module.named_modules() if isinstance(m, nn.Linear)}
+def _is_qwen3_5_model(model) -> bool:
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    return str(model_type) in {"qwen3_5", "qwen3_5_text"}
+
+
+def get_named_linears(module, model=None):
+    linears = {name: m for name, m in module.named_modules() if isinstance(m, nn.Linear)}
+    if model is not None and _is_qwen3_5_model(model):
+        # Qwen3.5 attention projections (both linear/full attention token mixer)
+        # are highly sensitive under current AWQ settings.
+        # Keep attention in higher precision and quantize MLP only.
+        if getattr(module, "layer_type", None) in {"linear_attention", "full_attention"}:
+            linears = {name: m for name, m in linears.items() if name.startswith("mlp.")}
+    return linears
 
 
 def get_blocks(model):
@@ -178,6 +190,7 @@ def run_awq(
     seqlen=512,
     auto_scale=True,
     mse_range=True,
+    clip_targets="auto",
     # some configs for ablation study
     calib_data="pileval",
     device=None,
@@ -251,7 +264,7 @@ def run_awq(
     for i in tqdm.tqdm(range(len(layers)), desc="Running AWQ..."):
         layer = layers[i]
         layer = layer.to(runtime_device)
-        named_linears = get_named_linears(layer)
+        named_linears = get_named_linears(layer, model=model)
 
         # firstly, get input features of all linear layers
         def cache_input_hook(m, x, y, name, feat_dict):
@@ -309,6 +322,8 @@ def run_awq(
                 q_config=q_config,
                 input_feat=input_feat,
                 device=runtime_device,
+                model=model,
+                clip_targets=clip_targets,
             )
             apply_clip(layer, clip_list, device=runtime_device)
             # append prefix to make names global

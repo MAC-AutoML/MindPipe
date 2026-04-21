@@ -114,10 +114,20 @@ def prepare_calibration_input(model, dataloader, device):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(device))
+            model(batch[0].to(device), use_cache=False)
         except ValueError:
             pass
     layers[0] = layers[0].module
+
+    # 将所有层和 embedding 移回 CPU，释放显存（后续逐层搬入 GPU 处理）
+    for li in range(len(layers)):
+        layers[li] = layers[li].cpu()
+    decoder_root = get_decoder_root(model)
+    if hasattr(decoder_root, "embed_tokens"):
+        decoder_root.embed_tokens = decoder_root.embed_tokens.cpu()
+    if hasattr(decoder_root, "rotary_emb"):
+        decoder_root.rotary_emb = decoder_root.rotary_emb.cpu()
+    empty_cache(device)
 
     outs = torch.zeros_like(inps)
     decoder_config.use_cache = use_cache
@@ -271,10 +281,14 @@ def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
         layer = layers[i]
         subset = get_projection_subset(layer)
 
+        # 确定目标设备，将当前层和输入数据搬到 GPU
         if f"model.layers.{i}" in getattr(model, "hf_device_map", {}):
-            dev = model.hf_device_map[f"model.layers.{i}"]
-            inps, outs = inps.to(dev), outs.to(dev)
-            layer_kwargs = move_layer_kwargs(layer_kwargs, dev)
+            target_dev = model.hf_device_map[f"model.layers.{i}"]
+        else:
+            target_dev = device
+        layer = layer.to(target_dev)
+        inps, outs = inps.to(target_dev), outs.to(target_dev)
+        layer_kwargs = move_layer_kwargs(layer_kwargs, target_dev)
 
         wrapped_layers = {name: WrappedGPT(module) for name, module in subset.items()}
 
@@ -301,12 +315,12 @@ def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
                 W_metric = aggregate_attention_metric(layer, W_metric.mean(axis=0))
                 thresh = torch.sort(W_metric)[0][int(args.pruning_ratio * W_metric.numel())]
                 W_mask = W_metric >= thresh
-                compress(layer, W_mask, None, None, None, device, bias=False, unstr=args.unstr)
+                compress(layer, W_mask, None, None, None, target_dev, bias=False, unstr=args.unstr)
             else:
                 W_metric = W_metric.mean(axis=0)
                 thresh = torch.sort(W_metric)[0][int(W_metric.numel() * args.pruning_ratio)]
                 W_mask = W_metric >= thresh
-                compress(layer, None, W_mask, None, None, device, bias=False, unstr=args.unstr)
+                compress(layer, None, W_mask, None, None, target_dev, bias=False, unstr=args.unstr)
 
             wrapped_layers[name].free()
 
@@ -315,6 +329,10 @@ def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
                 outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
         inps, outs = outs, inps
         empty_cache(next(iter(subset.values())).weight.device if subset else device)
+        # 将当前层移回 CPU，释放显存
+        layers[i] = layer.cpu()
+        del layer
+        empty_cache(device)
 
     decoder_config.use_cache = use_cache
     empty_cache(device)

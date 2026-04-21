@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Shared experiment defaults
-OUTPUT_ROOT_DEFAULT="$REPO_ROOT/new_results/quantization"
+OUTPUT_ROOT_DEFAULT="/mnt/82_store/wxx/HWQuant/Mindpipe/results"
 DATA_PATH_DEFAULT="/mnt/42_store/lcw/data2/Huawei/datasets"
 SEQUENCE_LENGTH_DEFAULT=512
 DATA_PATH="${DATA_PATH:-$DATA_PATH_DEFAULT}"
@@ -30,8 +30,8 @@ VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
 # Algorithm-specific defaults
 AWQ_SEARCH="${AWQ_SEARCH:-true}"
 FLATQUANT_QUERY_BITS_DEFAULT=16
-FLATQUANT_KEY_BITS_DEFAULT=4
-FLATQUANT_VALUE_BITS_DEFAULT=4
+FLATQUANT_KEY_BITS_DEFAULT=16
+FLATQUANT_VALUE_BITS_DEFAULT=16
 SMOOTHQUANT_QUERY_BITS_DEFAULT=16
 SMOOTHQUANT_KEY_BITS_DEFAULT=16
 SMOOTHQUANT_VALUE_BITS_DEFAULT=16
@@ -46,13 +46,21 @@ MODELS=(
   "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct"
   "/mnt/82_store/LLM-weights/Llama-2-7b-hf"
   "/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct"
-  # "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
-  # "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
+  "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
+  "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
 )
 AWQ_BITS=(2 3 4)
 GPTQ_BITS=(2 3 4)
 SMOOTHQUANT_CONFIGS=(
   "8 8 16 16 16 ${SMOOTHQUANT_ALPHA_DEFAULT} w8a8"
+)
+OMNIQUANT_CONFIGS=(
+  # "2 16 16 16 16 w2a16"
+  "3 16 16 16 16 w3a16"
+  # "4 16 16 16 16 w4a16"
+  # "8 8 16 16 16 w8a8"
+  # "6 6 16 16 16 w6a6"
+  # "4 4 16 16 16 w4a4"
 )
 FLATQUANT_CONFIGS=(
   "2 16 16 4 4 w2a16"
@@ -63,26 +71,28 @@ FLATQUANT_CONFIGS=(
   "16 16 16 16 16 w16a16"
 )
 SPLITQUANT_CONFIGS=(
-  "2 16 16 4 4 w2a16"
-  "3 16 16 4 4 w3a16"
-  "4 16 16 4 4 w4a16"
-  "4 4 16 4 4 w4a4"
-  "8 8 16 4 4 w8a8"
-  "16 16 16 16 16 w16a16"
+  # "2 16 16 4 4 w2a16"
+  "3 16 16 16 16 w3a16"
+  "4 16 16 16 16 w4a16"
+  "4 4 16 16 16 w4a4"
+  "8 8 16 16 16 w8a8"
+  # "16 16 16 16 16 w16a16"
 )
 
 # Worker scheduling
 ENABLE_AWQ="${ENABLE_AWQ:-false}"
 ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
 ENABLE_SMOOTHQUANT="${ENABLE_SMOOTHQUANT:-false}"
-ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-true}"
-ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-true}"
+ENABLE_OMNIQUANT="${ENABLE_OMNIQUANT:-true}"
+ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-false}"
+ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-false}"
 
-AWQ_GPUS="${AWQ_GPUS:-6}"
-GPTQ_GPUS="${GPTQ_GPUS:-7}"
-SMOOTHQUANT_GPUS="${SMOOTHQUANT_GPUS:-7}"
-FLATQUANT_GPUS="${FLATQUANT_GPUS:-3,6}"
-SPLITQUANT_GPUS="${SPLITQUANT_GPUS:-3,6}"
+AWQ_GPUS="${AWQ_GPUS:-0,1,3,4}"
+GPTQ_GPUS="${GPTQ_GPUS:-5,6,7}"
+SMOOTHQUANT_GPUS="${SMOOTHQUANT_GPUS:-1,4}"
+OMNIQUANT_GPUS="${OMNIQUANT_GPUS:-0,1,2}"
+FLATQUANT_GPUS="${FLATQUANT_GPUS:-4,5,6,7}"
+SPLITQUANT_GPUS="${SPLITQUANT_GPUS:-1,2,3,4}"
 
 # Execution control
 FORCE_RERUN="${FORCE_RERUN:-false}"
@@ -225,6 +235,22 @@ append_passthrough_env() {
     AWQ_SEARCH
     SMOOTHQUANT_SAVE_ACT_SCALES
     SMOOTHQUANT_ACT_SCALES_FROM
+    OMNIQUANT_EPOCHS
+    OMNIQUANT_ALPHA
+    OMNIQUANT_LET
+    OMNIQUANT_LWC
+    OMNIQUANT_LET_LR
+    OMNIQUANT_LWC_LR
+    OMNIQUANT_WEIGHT_DECAY
+    OMNIQUANT_AUG_LOSS
+    OMNIQUANT_SAVE_ACT_STATS
+    OMNIQUANT_SAVE_DIAGNOSTICS
+    OMNIQUANT_DISABLE_ZERO_POINT
+    OMNIQUANT_DEACTIVE_AMP
+    OMNIQUANT_WEIGHT_SYMMETRIC
+    OMNIQUANT_RESUME_FROM
+    OMNIQUANT_ACT_SCALES_FROM
+    OMNIQUANT_ACT_SHIFTS_FROM
   )
   local key
   for key in "${common_keys[@]}" "${zero_shot_keys[@]}" "${vlm_keys[@]}" "${algorithm_keys[@]}"; do
@@ -353,7 +379,7 @@ run_experiment() {
     "OUTPUT_DIR=$out_root"
   )
   append_device_env env_vars "$gpu_spec"
-  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" || "$algorithm" == "smoothquant" ]]; then
+  if [[ "$algorithm" == "flatquant" || "$algorithm" == "splitquant" || "$algorithm" == "smoothquant" || "$algorithm" == "omniquant" ]]; then
     env_vars+=(
       "ACTIVATION_BITS=$activation_bits"
       "QUERY_BITS=$query_bits"
@@ -472,6 +498,23 @@ run_algorithm_queue() {
         done
       done
       ;;
+    omniquant)
+      for model_path in "${MODELS[@]}"; do
+        for config in "${OMNIQUANT_CONFIGS[@]}"; do
+          read -r weight_bits activation_bits query_bits key_bits value_bits label <<< "$config"
+          if (( job_index % worker_count == worker_index )); then
+            if ! run_experiment omniquant "$model_path" "$weight_bits" "$activation_bits" "$query_bits" "$key_bits" "$value_bits" "$label" "$gpu_spec"; then
+              ((failure_count += 1))
+            fi
+            case "$LAST_RUN_STATUS" in
+              success) ((success_count += 1)) ;;
+              skip) ((skip_count += 1)) ;;
+            esac
+          fi
+          ((job_index += 1))
+        done
+      done
+      ;;
     flatquant)
       for model_path in "${MODELS[@]}"; do
         for config in "${FLATQUANT_CONFIGS[@]}"; do
@@ -570,6 +613,10 @@ main() {
 
   if [[ "$ENABLE_SMOOTHQUANT" == "true" ]]; then
     launch_algorithm_workers smoothquant "$SMOOTHQUANT_GPUS"
+  fi
+
+  if [[ "$ENABLE_OMNIQUANT" == "true" ]]; then
+    launch_algorithm_workers omniquant "$OMNIQUANT_GPUS"
   fi
 
   if [[ "$ENABLE_FLATQUANT" == "true" ]]; then

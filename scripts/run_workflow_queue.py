@@ -114,7 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--value_symmetric", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--weight_method", default="gptq", choices=["gptq", "rtn"])
     parser.add_argument("--sparsity_ratio", type=float, default=0.5)
-    parser.add_argument("--structure_pattern", default="unstructured")
+    parser.add_argument(
+        "--structure_pattern",
+        default="unstructured",
+        help="剪枝结构模式。当前仅对 wanda / sparsegpt / alps 生效，用于指定 n:m 半结构化剪枝；其他方法会忽略该参数。",
+    )
     parser.add_argument("--quantization_calibration_dataset", default="pileval", choices=["wikitext2", "c4", "pileval"])
     parser.add_argument("--pruning_calibration_dataset", default="c4", choices=["wikitext2", "c4", "pileval"])
     parser.add_argument("--quantization_calibration_samples", type=int, default=128)

@@ -1,17 +1,12 @@
-import time 
-import heapq 
-import torch 
-import torch.nn as nn 
+import torch
+import torch.nn as nn
 from algorithm.common.device import empty_cache
-from .sparsegpt import SparseGPT
 from .layerwrapper import WrappedGPT
-
-from .backend import move_optional_tensor
 from .backend import resolve_runtime_device
-from .backend import sparsity_threshold
 
 
 def _get_decoder_root(model):
+    """获取解码器根模块，兼容多模态和纯文本模型。"""
     if hasattr(model, "model") and hasattr(model.model, "language_model"):
         return model.model.language_model
     if hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
@@ -21,86 +16,8 @@ def _get_decoder_root(model):
     raise NotImplementedError(f"Unsupported decoder backbone: {type(model)}")
 
 
-def _get_hf_device_map(model):
-    return getattr(model, "hf_device_map", {}) or {}
-
-
-def _resolve_layer_device(hf_device_map, candidate_keys, default_device):
-    for candidate_key in candidate_keys:
-        if candidate_key in hf_device_map:
-            return resolve_runtime_device(hf_device_map[candidate_key])
-    return resolve_runtime_device(default_device)
-
-
-def _module_device(module):
-    if module is None:
-        return None
-    parameter = next(module.parameters(), None)
-    if parameter is not None:
-        return parameter.device
-    buffer = next(module.buffers(), None)
-    if buffer is not None:
-        return buffer.device
-    return None
-
-
-def _build_qwen2_5_vl_position_ids(hidden_states, position_ids, cache_position):
-    if position_ids is not None:
-        if position_ids.ndim == 3 and position_ids.shape[0] == 4:
-            return position_ids[1:]
-        if position_ids.ndim == 3:
-            return position_ids
-        if position_ids.ndim == 2:
-            return position_ids.unsqueeze(0).expand(3, position_ids.shape[0], -1)
-    if cache_position is None:
-        cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
-    if cache_position.ndim == 1:
-        return cache_position.view(1, 1, -1).expand(3, hidden_states.shape[0], -1)
-    if cache_position.ndim == 2:
-        return cache_position.unsqueeze(0).expand(3, -1, -1)
-    raise ValueError(f"Unsupported cache_position shape for Qwen2.5-VL: {tuple(cache_position.shape)}")
-
-
-def _build_layer_forward_kwargs(model, layer, hidden_states, attention_mask, position_ids, cache_position=None):
-    kwargs = {"attention_mask": attention_mask, "position_ids": position_ids}
-    if cache_position is not None:
-        kwargs["cache_position"] = cache_position
-    model_type = getattr(model.config, "model_type", None)
-    if model_type == "minicpmv":
-        kwargs.pop("cache_position", None)
-        kwargs["use_cache"] = False
-        return kwargs
-    decoder_root = _get_decoder_root(model)
-    layer_rotary_embedding = getattr(getattr(layer, "self_attn", None), "rotary_emb", None)
-    decoder_rotary_embedding = getattr(decoder_root, "rotary_emb", None)
-    if model_type == "qwen2_5_vl":
-        rotary_embedding = layer_rotary_embedding or decoder_rotary_embedding
-    else:
-        rotary_embedding = decoder_rotary_embedding or layer_rotary_embedding
-    rotary_device = _module_device(rotary_embedding)
-    if rotary_embedding is not None and rotary_device is not None and rotary_device != hidden_states.device:
-        rotary_embedding = rotary_embedding.to(hidden_states.device)
-    rotary_position_ids = position_ids
-    if model_type == "qwen2_5_vl":
-        rotary_position_ids = _build_qwen2_5_vl_position_ids(hidden_states, position_ids, cache_position)
-        if position_ids is None or (position_ids.ndim == 3 and position_ids.shape[0] == 3):
-            kwargs["position_ids"] = None
-    if rotary_embedding is not None and rotary_position_ids is not None:
-        kwargs["position_embeddings"] = rotary_embedding(hidden_states, rotary_position_ids)
-    return kwargs
-
 def find_layers(module, layers=[nn.Linear], name=''):
-    """
-    Recursively find the layers of a certain type in a module.
-
-    Args:
-        module (nn.Module): PyTorch module.
-        layers (list): List of layer types to find.
-        name (str): Name of the module.
-
-    Returns:
-        dict: Dictionary of layers of the given type(s) within the module.
-    """
+    """递归查找模块中的特定类型层。"""
     if type(module) in layers:
         return {name: module}
     res = {}
@@ -110,13 +27,31 @@ def find_layers(module, layers=[nn.Linear], name=''):
         ))
     return res
 
+
+def _move_layer_kwargs(layer_kwargs, device):
+    """将 layer_kwargs 中的张量移动到指定设备。"""
+    moved = {}
+    for key, value in layer_kwargs.items():
+        if torch.is_tensor(value):
+            moved[key] = value.to(device)
+        elif isinstance(value, tuple):
+            moved[key] = tuple(
+                item.to(device) if torch.is_tensor(item) else item
+                for item in value
+            )
+        else:
+            moved[key] = value
+    return moved
+
+
 def check_sparsity(model):
+    """检查模型权重的稀疏度。"""
     decoder_config = _get_decoder_root(model).config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
 
     layers = _get_decoder_root(model).layers
-    count = 0 
+    count = 0
     total_params = 0
     for i in range(len(layers)):
         layer = layers[i]
@@ -135,9 +70,16 @@ def check_sparsity(model):
         print(f"layer {i} sparsity {float(sub_count)/sub_params:.6f}")
 
     decoder_config.use_cache = use_cache
-    return float(count)/total_params 
+    return float(count)/total_params
+
 
 def prepare_calibration_input(model, dataloader, device):
+    """
+    准备校准输入数据。
+
+    通过 Catcher 模式直接捕获模型传给 decoder layer 的全部参数，
+    包括 position_embeddings 等，无需针对不同模型手动构建 kwargs。
+    """
     device = resolve_runtime_device(device)
     decoder_root = _get_decoder_root(model)
     decoder_config = decoder_root.config
@@ -145,8 +87,8 @@ def prepare_calibration_input(model, dataloader, device):
     decoder_config.use_cache = False
     layers = decoder_root.layers
 
-    # dev = model.hf_device_map["model.embed_tokens"]
-    hf_device_map = _get_hf_device_map(model)
+    # 定位 embedding 层的设备
+    hf_device_map = getattr(model, "hf_device_map", {}) or {}
     for candidate_key in ("model.embed_tokens", "language_model.embed_tokens", "model.language_model.embed_tokens"):
         if candidate_key in hf_device_map:
             device = resolve_runtime_device(hf_device_map[candidate_key])
@@ -158,9 +100,11 @@ def prepare_calibration_input(model, dataloader, device):
     if hasattr(decoder_root, "rotary_emb"):
         decoder_root.rotary_emb = decoder_root.rotary_emb.to(device)
     layers[0] = layers[0].to(device)
-    inps = torch.zeros((128, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=device)
+
+    sample_count = len(dataloader)
+    inps = torch.zeros((sample_count, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=device)
     inps.requires_grad = False
-    cache = {'i': 0, 'attention_mask': None, "position_ids": None, "cache_position": None}
+    cache = {'i': 0, 'layer_kwargs': {}}
 
     class Catcher(nn.Module):
         def __init__(self, module):
@@ -176,16 +120,15 @@ def prepare_calibration_input(model, dataloader, device):
         def forward(self, inp, **kwargs):
             inps[cache['i']] = inp
             cache['i'] += 1
-            cache['attention_mask'] = kwargs.get('attention_mask')
-            cache['position_ids'] = kwargs.get('position_ids')
-            cache['cache_position'] = kwargs.get('cache_position')
+            cache['layer_kwargs'] = dict(kwargs)
             raise ValueError
+
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
             model(batch[0].to(device), use_cache=False)
         except ValueError:
-            pass 
+            pass
     layers[0] = layers[0].module
     layers[0] = layers[0].cpu()
     if hasattr(decoder_root, "embed_tokens"):
@@ -195,14 +138,13 @@ def prepare_calibration_input(model, dataloader, device):
     empty_cache(device)
 
     outs = torch.zeros_like(inps)
-    attention_mask = cache['attention_mask']
-    position_ids = cache['position_ids']
     decoder_config.use_cache = use_cache
 
-    return inps, outs, attention_mask, position_ids, cache['cache_position'] 
+    return inps, outs, dict(cache['layer_kwargs'])
+
 
 def return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before):
-    thres_cumsum = sum_before * alpha 
+    thres_cumsum = sum_before * alpha
     sort_mask = tmp_metric <= thres_cumsum.reshape((-1,1))
     thres = torch.gather(sort_res[0], dim=1, index=sort_mask.sum(dim=1, keepdims=True)-1)
     W_mask = (W_metric <= thres)
@@ -211,32 +153,21 @@ def return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before):
 
 
 def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, dataloader=None):
+    """Wanda 剪枝主函数。"""
     device = resolve_runtime_device(device)
     decoder_config = _get_decoder_root(model).config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
 
     with torch.no_grad():
-        inps, outs, attention_mask, position_ids, cache_position = prepare_calibration_input(model, dataloader, device)
+        inps, outs, layer_kwargs = prepare_calibration_input(model, dataloader, device)
 
     layers = _get_decoder_root(model).layers
-    hf_device_map = _get_hf_device_map(model)
     for i in range(len(layers)):
-        dev = _resolve_layer_device(
-            hf_device_map,
-            (
-                f"model.layers.{i}",
-                f"language_model.layers.{i}",
-                f"model.language_model.layers.{i}",
-            ),
-            device,
-        )
-        inps = inps.to(dev)
-        outs = outs.to(dev)
-        attention_mask = move_optional_tensor(attention_mask, dev)
-        position_ids = move_optional_tensor(position_ids, dev)
-        cache_position = move_optional_tensor(cache_position, dev)
-        layer = layers[i].to(dev)
+        inps = inps.to(device)
+        outs = outs.to(device)
+        layer_kwargs = _move_layer_kwargs(layer_kwargs, device)
+        layer = layers[i].to(device)
         subset = find_layers(layer)
 
         wrapped_layers = {}
@@ -253,14 +184,6 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
             handles.append(subset[name].register_forward_hook(add_batch(name)))
         for j in range(args.nsamples):
             with torch.no_grad():
-                layer_kwargs = _build_layer_forward_kwargs(
-                    model,
-                    layer,
-                    inps[j].unsqueeze(0),
-                    attention_mask,
-                    position_ids,
-                    cache_position=cache_position,
-                )
                 outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
         for h in handles:
             h.remove()
@@ -269,9 +192,9 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
             print(f"pruning layer {i} name {name}")
             W_metric = torch.abs(subset[name].weight.data) * torch.sqrt(wrapped_layers[name].scaler_row.reshape((1,-1)))
 
-            W_mask = (torch.zeros_like(W_metric) == 1)  ## initialize a mask to be all False
+            W_mask = (torch.zeros_like(W_metric) == 1)  ## 初始化全 False 的 mask
             if prune_n != 0:
-                # structured n:m sparsity
+                # n:m 半结构化剪枝
                 for ii in range(W_metric.shape[1]):
                     if ii % prune_m == 0:
                         tmp = W_metric[:,ii:(ii+prune_m)].float()
@@ -280,7 +203,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
                 sort_res = torch.sort(W_metric, dim=-1, stable=True)
 
                 if args.use_variant:
-                    # wanda variant 
+                    # wanda 变体
                     tmp_metric = torch.cumsum(sort_res[0], dim=1)
                     sum_before = W_metric.sum(dim=1)
 
@@ -295,31 +218,23 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
                             alpha_new = (alpha + alpha_hist[1]) / 2.0
                             alpha_hist[0] = alpha
 
-                        alpha = alpha_new 
+                        alpha = alpha_new
                         W_mask, cur_sparsity = return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before)
                     print(f"alpha found {alpha} sparsity {cur_sparsity:.6f}")
                 else:
-                    # unstructured pruning
+                    # 非结构化剪枝
                     indices = sort_res[1][:,:int(W_metric.shape[1]*args.sparsity_ratio)]
                     W_mask.scatter_(1, indices, True)
 
-            subset[name].weight.data[W_mask] = 0  ## set weights to zero 
+            subset[name].weight.data[W_mask] = 0  ## 将权重置零
 
         for j in range(args.nsamples):
             with torch.no_grad():
-                layer_kwargs = _build_layer_forward_kwargs(
-                    model,
-                    layer,
-                    inps[j].unsqueeze(0),
-                    attention_mask,
-                    position_ids,
-                    cache_position=cache_position,
-                )
                 outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
         inps, outs = outs, inps
         layers[i] = layer.cpu()
         del layer
-        empty_cache(dev)
+        empty_cache(device)
 
     decoder_config.use_cache = use_cache
     empty_cache(device)

@@ -199,6 +199,40 @@ def _open_image(image_path: str) -> Image.Image:
     return Image.open(image_path).convert("RGB")
 
 
+@contextlib.contextmanager
+def _temporary_generation_cache(model):
+    states = []
+    visited = set()
+    stack = [model]
+
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in visited:
+            continue
+        visited.add(id(current))
+
+        config = getattr(current, "config", None)
+        if config is not None and hasattr(config, "use_cache"):
+            states.append((config, "use_cache", config.use_cache))
+            config.use_cache = True
+
+        generation_config = getattr(current, "generation_config", None)
+        if generation_config is not None and hasattr(generation_config, "use_cache"):
+            states.append((generation_config, "use_cache", generation_config.use_cache))
+            generation_config.use_cache = True
+
+        for attr_name in ("llm", "language_model", "model"):
+            nested = getattr(current, attr_name, None)
+            if nested is not None and nested is not current:
+                stack.append(nested)
+
+    try:
+        yield
+    finally:
+        for target, attr_name, value in reversed(states):
+            setattr(target, attr_name, value)
+
+
 def _build_internvl_transform(input_size: int):
     try:
         import torchvision.transforms as T
@@ -356,14 +390,15 @@ def _internvl_default_max_num(dataset: str | None) -> int:
 
 
 def _attach_generation_cleanup(wrapper, device, *, enabled: bool = True):
-    """给任意兼容 VLMEvalKit 的 wrapper 统一挂上样本级清理逻辑。"""
+    """给任意兼容 VLMEvalKit 的 wrapper 统一挂上生成期 cache 与样本级清理逻辑。"""
     if not enabled:
         return wrapper
     original_generate_inner = wrapper.generate_inner
 
     def wrapped_generate_inner(message, dataset=None):
         try:
-            return original_generate_inner(message, dataset)
+            with _temporary_generation_cache(getattr(wrapper, "model", None)):
+                return original_generate_inner(message, dataset)
         finally:
             gc.collect()
             empty_cache(device)
@@ -753,7 +788,6 @@ def _build_minicpm_wrapper(
                 return self._generate_interleaved(message=message, max_new_tokens=max_new_tokens)
 
     return MindPipeMiniCPMVWrapper()
-
 
 def _build_internvl_wrapper(
     model,
