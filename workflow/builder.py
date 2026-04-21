@@ -282,6 +282,12 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         help="QuaRot only: run online Hadamard transforms in FP32 to match upstream paper settings.",
     )
     parser.add_argument(
+        "--quarot_disable_hidden_hadamard",
+        type=_bool_flag,
+        default=None,
+        help="QuaRot only: disable language-side hidden Hadamard compensation and keep only the orthogonal basis rotation.",
+    )
+    parser.add_argument(
         "--quarot_qwen2_5_vl_rotate_visual_branch",
         type=_bool_flag,
         default=True,
@@ -310,6 +316,12 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help="QuaRot only: override activation bits for Qwen2.5-VL language decoder layer 0 inputs. Useful for protecting the visual-to-text bridge while keeping deeper layers low-bit.",
+    )
+    parser.add_argument(
+        "--quarot_qwen3_vl_down_proj_rtn_fallback",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: experiment flag for Qwen3-VL GPTQ runs. Quantize online-Hadamard down_proj with RTN instead of GPTQ.",
     )
     # MQuant GPTQ-specific calibration (multimodal datasets)
     parser.add_argument(
