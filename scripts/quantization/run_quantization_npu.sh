@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Shared experiment defaults
 OUTPUT_ROOT_DEFAULT="$REPO_ROOT/my_results/quantization/npu"
 DATA_PATH_DEFAULT="/home/ma-user/work/data"
-SEQUENCE_LENGTH_DEFAULT=2048
+SEQUENCE_LENGTH_DEFAULT=512
 DATA_PATH="${DATA_PATH:-$DATA_PATH_DEFAULT}"
 CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}"
 EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
@@ -47,10 +47,10 @@ SPLITQUANT_KV_GROUP_SIZE="${SPLITQUANT_KV_GROUP_SIZE:-128}"
 # Experiment matrix
 MODELS=(
   "/home/ma-user/work/modelzoo/Qwen/Qwen2.5-VL-7B-Instruct"
-  # "/home/ma-user/work/modelzoo/Qwen/Qwen2.5-7B-Instruct"
-  # "/home/ma-user/work/modelzoo/Meta/Llama-2-7b-hf"
-  # "/home/ma-user/work/modelzoo/Meta/Meta-Llama-3.1-8B-Instruct"
-  # "/home/ma-user/work/modelzoo/openbmb/MiniCPM-V"
+  "/home/ma-user/work/modelzoo/Qwen/Qwen2.5-7B-Instruct"
+  "/home/ma-user/work/modelzoo/Meta/Llama-2-7b-hf"
+  "/home/ma-user/work/modelzoo/Meta/Meta-Llama-3.1-8B-Instruct"
+  "/home/ma-user/work/modelzoo/openbmb/MiniCPM-V"
 )
 # AWQ_BITS=(2 3 4)
 # GPTQ_BITS=(2 3 4)
@@ -60,9 +60,10 @@ SMOOTHQUANT_CONFIGS=(
   "8 8 16 16 16 ${SMOOTHQUANT_ALPHA_DEFAULT} w8a8"
 )
 OMNIQUANT_CONFIGS=(
+  "3 16 16 16 16 w3a16"
   "4 16 16 16 16 w4a16"
-  "16 4 16 16 16 w16a4"
-  "4 4 16 16 16 w4a4"
+  "6 6 16 16 16 w6a6"
+  "8 8 16 16 16 w8a8"
 )
 FLATQUANT_CONFIGS=(
   "2 16 16 4 4 w2a16"
@@ -82,17 +83,17 @@ SPLITQUANT_CONFIGS=(
 )
 
 # Worker scheduling
-ENABLE_AWQ="${ENABLE_AWQ:-true}"
+ENABLE_AWQ="${ENABLE_AWQ:-false}"
 ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
 ENABLE_SMOOTHQUANT="${ENABLE_SMOOTHQUANT:-false}"
-ENABLE_OMNIQUANT="${ENABLE_OMNIQUANT:-false}"
+ENABLE_OMNIQUANT="${ENABLE_OMNIQUANT:-true}"
 ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-false}"
 ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-false}"
 
 AWQ_NPUS="${AWQ_NPUS:-0}"
 GPTQ_NPUS="${GPTQ_NPUS:-1}"
 SMOOTHQUANT_NPUS="${SMOOTHQUANT_NPUS:-1}"
-OMNIQUANT_NPUS="${OMNIQUANT_NPUS:-1}"
+OMNIQUANT_NPUS="${OMNIQUANT_NPUS:-0,1,2,3}"
 FLATQUANT_NPUS="${FLATQUANT_NPUS:-1}"
 SPLITQUANT_NPUS="${SPLITQUANT_NPUS:-1}"
 
@@ -249,6 +250,7 @@ append_passthrough_env() {
     OMNIQUANT_LWC_LR
     OMNIQUANT_WEIGHT_DECAY
     OMNIQUANT_AUG_LOSS
+    OMNIQUANT_USE_SHIFT
     OMNIQUANT_SAVE_ACT_STATS
     OMNIQUANT_SAVE_DIAGNOSTICS
     OMNIQUANT_DISABLE_ZERO_POINT
@@ -622,7 +624,7 @@ main() {
   fi
 
   if [[ "$ENABLE_OMNIQUANT" == "true" ]]; then
-    printf '[worker-skip] omniquant is currently CUDA-only and will not be launched from run_quantization_npu.sh\n'
+    launch_algorithm_workers omniquant "$OMNIQUANT_NPUS"
   fi
 
   if [[ "$ENABLE_FLATQUANT" == "true" ]]; then

@@ -51,7 +51,7 @@ def _format_group_suffix(group_size: int | None) -> str:
 
 class OmniQuantMethod(BaseQuantizationMethod):
     name = "omniquant"
-    npu_ready = False
+    npu_ready = True
     default_calibration_dataset = "wikitext2"
 
     def _resolve_weight_symmetric(self, args) -> bool:
@@ -181,10 +181,14 @@ class OmniQuantMethod(BaseQuantizationMethod):
         source_args = self._build_source_args(args, output_dir)
         weight_symmetric = self._resolve_weight_symmetric(args)
         runtime_device = resolve_device(args.device)
-        if runtime_device.type != "cuda":
-            raise NotImplementedError("OmniQuant in MindPipe currently requires CUDA execution.")
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
+        if runtime_device.type not in {"cuda", "npu"}:
+            raise NotImplementedError(
+                "OmniQuant in MindPipe currently supports accelerator execution only; "
+                f"got device type {runtime_device.type!r}."
+            )
+        if runtime_device.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
 
         if source_args.wbits >= 16 and source_args.abits >= 16:
             return {

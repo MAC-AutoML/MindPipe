@@ -65,10 +65,18 @@ def _expand_for_batch(value, batch_size: int):
     return value
 
 
-def _autocast_context(enabled: bool):
+def _autocast_context(enabled: bool, device_type: str, dtype: torch.dtype):
     if not enabled:
         return nullcontext()
-    return torch.cuda.amp.autocast()
+    return torch.amp.autocast(device_type=device_type, dtype=dtype)
+
+
+def _max_memory_allocated_mib(device: torch.device) -> float | None:
+    if device.type == "cuda" and hasattr(torch.cuda, "max_memory_allocated"):
+        return float(torch.cuda.max_memory_allocated(device) / 1024**2)
+    if device.type == "npu" and hasattr(torch, "npu") and hasattr(torch.npu, "max_memory_allocated"):
+        return float(torch.npu.max_memory_allocated(device) / 1024**2)
+    return None
 
 
 @torch.no_grad()
@@ -246,22 +254,26 @@ def _raise_nonfinite_error(
 
 def _collect_layer_outputs(layer, inputs, layer_kwargs, autocast_enabled: bool, batch_size: int):
     outputs = torch.zeros_like(inputs)
+    model_dtype = next(iter(layer.parameters())).dtype
+    device_type = inputs.device.type
     with torch.no_grad():
         for start in range(0, inputs.shape[0], batch_size):
             end = min(start + batch_size, inputs.shape[0])
             batch_kwargs = _expand_for_batch(layer_kwargs, end - start)
-            with _autocast_context(autocast_enabled):
+            with _autocast_context(autocast_enabled, device_type, model_dtype):
                 outputs[start:end] = unwrap_layer_output(layer(inputs[start:end], **batch_kwargs))
     return outputs
 
 
 def _collect_temporary_quant_outputs(layer, args, inputs, layer_kwargs, autocast_enabled: bool, batch_size: int):
     outputs = torch.zeros_like(inputs)
+    model_dtype = next(iter(layer.parameters())).dtype
+    device_type = inputs.device.type
     with torch.no_grad():
         for start in range(0, inputs.shape[0], batch_size):
             end = min(start + batch_size, inputs.shape[0])
             batch_kwargs = _expand_for_batch(layer_kwargs, end - start)
-            with _autocast_context(autocast_enabled):
+            with _autocast_context(autocast_enabled, device_type, model_dtype):
                 smooth_and_quant_temporary(layer, args)
                 outputs[start:end] = unwrap_layer_output(layer(inputs[start:end], **batch_kwargs))
             clear_temp_variable(layer)
@@ -269,10 +281,12 @@ def _collect_temporary_quant_outputs(layer, args, inputs, layer_kwargs, autocast
 
 
 def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_shifts, logger):
+    device = resolve_device(device)
     backbone = get_text_backbone(model)
     model_type = getattr(model.config, "model_type", None)
     quant_decoder_layer_cls, initialize_omni_parameters = _resolve_omniquant_impl(model_type)
     model_dtype = next(model.parameters()).dtype
+    device_type = device.type
     quantized_linear_artifacts: dict[str, dict[str, object]] = {}
     diagnostics_enabled = bool(getattr(args, "save_diagnostics", False))
     diagnostics_path = Path(args.output_dir) / "layer_diagnostics.json"
@@ -387,7 +401,8 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                 raise ValueError("No OmniQuant trainable parameters were created for layer calibration.")
 
             optimizer = torch.optim.AdamW(parameter_groups, weight_decay=args.wd)
-            grad_scaler = torch.cuda.amp.GradScaler(enabled=autocast_enabled)
+            use_grad_scaler = bool(autocast_enabled and device_type == "cuda")
+            grad_scaler = torch.cuda.amp.GradScaler(enabled=True) if use_grad_scaler else None
 
             for epoch in range(args.epochs):
                 loss_values = []
@@ -396,7 +411,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                     end = min(start + args.batch_size, args.nsamples)
                     batch_kwargs = _expand_for_batch(layer_kwargs, end - start)
                     optimizer.zero_grad(set_to_none=True)
-                    with _autocast_context(autocast_enabled):
+                    with _autocast_context(autocast_enabled, device_type, model_dtype):
                         smooth_and_quant_temporary(qlayer, args)
                         quant_out = unwrap_layer_output(qlayer(quant_inps[start:end], **batch_kwargs))
                         loss = mse_loss(fp_outs[start:end], quant_out)
@@ -447,20 +462,32 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                             batch_start=start,
                             batch_end=end,
                         )
-                    grad_scaler.scale(loss).backward()
-                    grad_scaler.unscale_(optimizer)
+                    if use_grad_scaler and grad_scaler is not None:
+                        grad_scaler.scale(loss).backward()
+                        grad_scaler.unscale_(optimizer)
+                    else:
+                        loss.backward()
                     grad_norm = ampscaler_get_grad_norm(get_omni_parameters(qlayer, use_shift=use_shift)).detach().cpu()
-                    grad_scaler.step(optimizer)
-                    grad_scaler.update()
+                    if use_grad_scaler and grad_scaler is not None:
+                        grad_scaler.step(optimizer)
+                        grad_scaler.update()
+                    else:
+                        optimizer.step()
                     loss_values.append(loss.detach().cpu())
                     norm_values.append(grad_norm)
+                max_memory_mib = _max_memory_allocated_mib(device)
+                memory_fragment = (
+                    f" max_memory_allocated {max_memory_mib:.2f} MiB"
+                    if max_memory_mib is not None
+                    else ""
+                )
                 logger.info(
-                    "layer %s iter %s loss:%s norm:%s max_memory_allocated %.2f MiB",
+                    "layer %s iter %s loss:%s norm:%s%s",
                     layer_index,
                     epoch,
                     torch.stack(loss_values).mean().item(),
                     torch.stack(norm_values).mean().item(),
-                    torch.cuda.max_memory_allocated(device) / 1024**2,
+                    memory_fragment,
                 )
             if diagnostics_enabled and layer_diagnostics is not None and fp_outs is not None:
                 post_train_outputs = _collect_temporary_quant_outputs(
