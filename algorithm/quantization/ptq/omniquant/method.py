@@ -18,7 +18,7 @@ from ...base import BaseQuantizationMethod
 
 
 LOGGER = logging.getLogger(__name__)
-SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen2_5_vl", "minicpm", "minicpmv"}
+SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen2_5_vl", "qwen3", "qwen3_vl", "qwen3_5", "minicpm", "minicpmv"}
 
 
 def _purge_conflicting_modules(module_name: str, allowed_root: Path) -> None:
@@ -81,6 +81,11 @@ class OmniQuantMethod(BaseQuantizationMethod):
             raise NotImplementedError(
                 "OmniQuant currently supports LLaMA-, Qwen-, and MiniCPM-style text decoders only; "
                 f"got model_type={model_type!r}."
+            )
+        if model_type == "qwen3_5" and bool(args.omniquant_let):
+            raise ValueError(
+                "Qwen3.5 OmniQuant support in MindPipe currently follows the conservative LWC-only path; "
+                "set --omniquant_let false."
             )
         if int(args.query_bits) < 16 or int(args.key_bits) < 16 or int(args.value_bits) < 16:
             raise ValueError(

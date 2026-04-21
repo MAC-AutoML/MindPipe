@@ -86,6 +86,12 @@ class SplitQuantMethod(BaseQuantizationMethod):
                 "SplitQuant requires --weight_group_size and --activation_group_size to match when both weights and activations are quantized."
             )
 
+        model_type = getattr(getattr(args, "model_config", None), "model_type", None)
+        if model_type == "qwen3_5" and (args.query_bits < 16 or args.key_bits < 16 or args.value_bits < 16):
+            raise ValueError(
+                "SplitQuant Qwen3.5 support currently covers weight/activation quantization only; keep --query_bits/--key_bits/--value_bits at 16."
+            )
+
     def _build_source_args(self, args, output_dir: Path) -> SimpleNamespace:
         split_group_size = _resolve_split_group_size(args)
         return SimpleNamespace(
@@ -204,6 +210,7 @@ class SplitQuantMethod(BaseQuantizationMethod):
             from splitquant.split_utils import reparameterize_splitquant_model
             from splitquant.split_utils import save_splitquant_matrices
             from splitquant.model_tools.minicpm_split_utils import apply_splitquant_to_minicpm
+            from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3
             from splitquant.model_tools.qwen_split_utils import apply_splitquant_to_qwen
             from splitquant.train_utils import cali_split_quant
 
@@ -222,6 +229,12 @@ class SplitQuantMethod(BaseQuantizationMethod):
                 apply_wrapper = apply_splitquant_to_minicpm
             elif model_type in {"qwen2", "qwen2_5_vl"}:
                 apply_wrapper = apply_splitquant_to_qwen
+            elif model_type in {"qwen3", "qwen3_vl"}:
+                apply_wrapper = apply_splitquant_to_qwen3
+            elif model_type == "qwen3_5":
+                from splitquant.model_tools.qwen3_5_split_utils import apply_splitquant_to_qwen3_5
+
+                apply_wrapper = apply_splitquant_to_qwen3_5
             else:
                 raise NotImplementedError(
                     f"SplitQuant currently supports LLaMA-, MiniCPM-, and Qwen-style models only; got model_type={model_type!r}."

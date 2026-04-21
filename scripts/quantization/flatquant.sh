@@ -3,8 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct}"
-DEVICE="${DEVICE:-cuda:7}"
+MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Qwen3.5-4B}"
+DEVICE="${DEVICE:-cuda:0}"
 DTYPE="${DTYPE:-float16}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 DATA_PATH="${DATA_PATH:-/mnt/42_store/lcw/data2/Huawei/datasets}"
@@ -34,7 +34,7 @@ FLATQUANT_DEACTIVE_AMP="${FLATQUANT_DEACTIVE_AMP:-true}"
 EVAL_PPL="${EVAL_PPL:-true}"
 EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
 ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte winogrande arc_easy arc_challenge openbookqa}"
-ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
+ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-16}"
 ZERO_SHOT_NUM_FEWSHOT="${ZERO_SHOT_NUM_FEWSHOT:-0}"
 EVAL_VLM="${EVAL_VLM:-true}"
 # SEEDBench_IMG
@@ -43,6 +43,15 @@ VLM_MODE="${VLM_MODE:-all}"
 VLM_API_NPROC="${VLM_API_NPROC:-4}"
 VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
 OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT:-/mnt/82_store/wxx/HWQuant/Mindpipe/results}}"
+
+model_path_lower="$(printf '%s' "$MODEL_PATH" | tr '[:upper:]' '[:lower:]')"
+if [[ "$model_path_lower" == *"qwen3.5"* || "$model_path_lower" == *"qwen3_5"* ]]; then
+  # The current FlatQuant adaptation for Qwen3.5 keeps KV/query cache paths in
+  # fp16 because the model mixes full-attention and linear-attention blocks.
+  QUERY_BITS=16
+  KEY_BITS=16
+  VALUE_BITS=16
+fi
 
 CMD=(
   python "$REPO_ROOT/main.py"

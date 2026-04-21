@@ -9,6 +9,7 @@ import torch.nn as nn
 import transformers
 
 from algorithm.common.device import empty_cache
+from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
 
 from splitquant.backbone_utils import build_batched_layer_kwargs
 from splitquant.backbone_utils import get_decoder_config
@@ -21,11 +22,41 @@ from splitquant.quant_utils import set_quantizer_state
 
 def _build_calibration_forward_kwargs(model, sample):
     model_type = getattr(model.config, "model_type", None)
-    if model_type == "qwen2_5_vl":
-        # Qwen2.5-VL builds 3D position_ids for multimodal RoPE. With `attention_mask=None`,
-        # recent transformers masking code tries to reinterpret those ids as a packed 2D mask.
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
+        # Keep an explicit all-ones mask during capture so Qwen3.5-family models
+        # stay on the expected masking path before the first decoder block.
         return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
     return {}
+
+
+def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs):
+    position_ids = layer_kwargs.get("position_ids")
+    if position_ids is None:
+        seq_len = inputs.shape[1]
+        position_ids = torch.arange(seq_len, device=inputs.device).view(1, -1)
+
+    full_attention_kwargs = dict(layer_kwargs)
+    full_attention_kwargs["attention_mask"] = create_qwen3_5_causal_mask(
+        config=decoder_config,
+        inputs_embeds=inputs[:1],
+        attention_mask=torch.ones((1, inputs.shape[1]), dtype=torch.long, device=inputs.device),
+        cache_position=full_attention_kwargs.get("cache_position"),
+        past_key_values=full_attention_kwargs.get("past_key_values"),
+        position_ids=position_ids,
+    )
+
+    linear_attention_kwargs = dict(layer_kwargs)
+    linear_attention_kwargs["attention_mask"] = None
+    return {
+        "full_attention": full_attention_kwargs,
+        "linear_attention": linear_attention_kwargs,
+    }
+
+
+def _select_layer_kwargs(layer, layer_kwargs, layer_kwargs_by_type):
+    if layer_kwargs_by_type is None:
+        return layer_kwargs
+    return layer_kwargs_by_type.get(getattr(layer, "layer_type", None), layer_kwargs)
 
 
 def _reset_square_linear_to_identity(linear):
@@ -131,6 +162,14 @@ def cali_split_quant(args, model, dataloader, dev, logger):
             except ValueError:
                 pass
     layer_kwargs = dict(cache["layer_kwargs"])
+    layer_kwargs_by_type = None
+    batched_layer_kwargs_by_type = None
+    if getattr(model.config, "model_type", None) == "qwen3_5":
+        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(decoder_config, inps, layer_kwargs)
+        batched_layer_kwargs_by_type = {
+            layer_type: build_batched_layer_kwargs(kwargs, args.cali_bsz)
+            for layer_type, kwargs in layer_kwargs_by_type.items()
+        }
     batched_layer_kwargs = build_batched_layer_kwargs(layer_kwargs, args.cali_bsz)
     
     # move embedding layer and first layer to cpu
@@ -153,6 +192,8 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         logger.info(f"========= Layer {i} =========")
         dtype_dict = {}
         layer = layers[i].to(dev)
+        active_layer_kwargs = _select_layer_kwargs(layer, layer_kwargs, layer_kwargs_by_type)
+        active_batched_layer_kwargs = _select_layer_kwargs(layer, batched_layer_kwargs, batched_layer_kwargs_by_type)
         for name, param in layer.named_parameters():
             dtype_dict[name] = param.dtype
         with torch.no_grad():
@@ -162,7 +203,7 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         layer.mlp._ori_mode = True
         with torch.no_grad():
             for j in range(args.nsamples):
-                fp_outs[j] = unwrap_layer_output(layer(fp_inps[j].unsqueeze(0), **layer_kwargs))
+                fp_outs[j] = unwrap_layer_output(layer(fp_inps[j].unsqueeze(0), **active_layer_kwargs))
         layer.self_attn._ori_mode = False
         layer.mlp._ori_mode = False
         if args.diag_init == "sq_style":
@@ -206,7 +247,7 @@ def cali_split_quant(args, model, dataloader, dev, logger):
                 for j in range(args.nsamples // args.cali_bsz):
                     index = j * args.cali_bsz
                     try:
-                        quant_out = unwrap_layer_output(layer(fp_inps[index:index+args.cali_bsz,], **batched_layer_kwargs))
+                        quant_out = unwrap_layer_output(layer(fp_inps[index:index+args.cali_bsz,], **active_batched_layer_kwargs))
                     except RuntimeError as error:
                         error_text = str(error).lower()
                         if "singular" in error_text or "linalg" in error_text or "inverse" in error_text:

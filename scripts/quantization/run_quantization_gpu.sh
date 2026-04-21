@@ -25,7 +25,7 @@ EVAL_VLM="${EVAL_VLM:-true}"
 VLM_DATASETS="${VLM_DATASETS:-OCRBench TextVQA_VAL ChartQA_TEST InfoVQA_VAL}"
 VLM_MODE="${VLM_MODE:-all}"
 VLM_API_NPROC="${VLM_API_NPROC:-4}"
-VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
+VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-tsv}"
 
 # Algorithm-specific defaults
 AWQ_SEARCH="${AWQ_SEARCH:-true}"
@@ -41,13 +41,20 @@ SPLITQUANT_WEIGHT_GROUP_SIZE="${SPLITQUANT_WEIGHT_GROUP_SIZE:-$SPLITQUANT_GROUP_
 SPLITQUANT_ACTIVATION_GROUP_SIZE="${SPLITQUANT_ACTIVATION_GROUP_SIZE:-$SPLITQUANT_GROUP_SIZE}"
 SPLITQUANT_KV_GROUP_SIZE="${SPLITQUANT_KV_GROUP_SIZE:-128}"
 
+# "/mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct"
+# "/mnt/82_store/LLM-weights/Qwen3.5-4B"
+# "/mnt/42_store/wxx/modelzoo/Qwen/Qwen3-0.6B"
+
 # Experiment matrix
 MODELS=(
-  "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct"
-  "/mnt/82_store/LLM-weights/Llama-2-7b-hf"
-  "/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct"
-  "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
-  "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
+  # "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct"
+  # "/mnt/82_store/LLM-weights/Llama-2-7b-hf"
+  # "/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct"
+  # "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
+  # "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
+  "/mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct"
+  "/mnt/42_store/wxx/modelzoo/Qwen/Qwen3-0.6B"
+  "/mnt/82_store/LLM-weights/Qwen3.5-4B"
 )
 AWQ_BITS=(2 3 4)
 GPTQ_BITS=(2 3 4)
@@ -57,9 +64,9 @@ SMOOTHQUANT_CONFIGS=(
 OMNIQUANT_CONFIGS=(
   # "2 16 16 16 16 w2a16"
   "3 16 16 16 16 w3a16"
-  # "4 16 16 16 16 w4a16"
-  # "8 8 16 16 16 w8a8"
-  # "6 6 16 16 16 w6a6"
+  "4 16 16 16 16 w4a16"
+  "8 8 16 16 16 w8a8"
+  "6 6 16 16 16 w6a6"
   # "4 4 16 16 16 w4a4"
 )
 FLATQUANT_CONFIGS=(
@@ -68,7 +75,7 @@ FLATQUANT_CONFIGS=(
   "4 16 16 4 4 w4a16"
   "4 4 16 4 4 w4a4"
   "8 8 16 4 4 w8a8"
-  "16 16 16 16 16 w16a16"
+  # "16 16 16 16 16 w16a16"
 )
 SPLITQUANT_CONFIGS=(
   # "2 16 16 4 4 w2a16"
@@ -83,16 +90,16 @@ SPLITQUANT_CONFIGS=(
 ENABLE_AWQ="${ENABLE_AWQ:-false}"
 ENABLE_GPTQ="${ENABLE_GPTQ:-false}"
 ENABLE_SMOOTHQUANT="${ENABLE_SMOOTHQUANT:-false}"
-ENABLE_OMNIQUANT="${ENABLE_OMNIQUANT:-true}"
-ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-false}"
+ENABLE_OMNIQUANT="${ENABLE_OMNIQUANT:-false}"
+ENABLE_FLATQUANT="${ENABLE_FLATQUANT:-true}"
 ENABLE_SPLITQUANT="${ENABLE_SPLITQUANT:-false}"
 
-AWQ_GPUS="${AWQ_GPUS:-0,1,3,4}"
-GPTQ_GPUS="${GPTQ_GPUS:-5,6,7}"
+AWQ_GPUS="${AWQ_GPUS:-0,1}"
+GPTQ_GPUS="${GPTQ_GPUS:-2,4}"
 SMOOTHQUANT_GPUS="${SMOOTHQUANT_GPUS:-1,4}"
-OMNIQUANT_GPUS="${OMNIQUANT_GPUS:-0,1,2}"
-FLATQUANT_GPUS="${FLATQUANT_GPUS:-4,5,6,7}"
-SPLITQUANT_GPUS="${SPLITQUANT_GPUS:-1,2,3,4}"
+OMNIQUANT_GPUS="${OMNIQUANT_GPUS:-5}"
+FLATQUANT_GPUS="${FLATQUANT_GPUS:-0,1,4,5,6}"
+SPLITQUANT_GPUS="${SPLITQUANT_GPUS:-0,5,6,7}"
 
 # Execution control
 FORCE_RERUN="${FORCE_RERUN:-false}"

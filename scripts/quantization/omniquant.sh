@@ -3,8 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-MODEL_PATH="${MODEL_PATH:-/home/ma-user/work/modelzoo/Qwen/Qwen2.5-VL-7B-Instruct}"
-DEVICE="${DEVICE:-npu:0}"
+MODEL_PATH="${MODEL_PATH:-/mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct}"
+DEVICE="${DEVICE:-cuda:7}"
 DTYPE="${DTYPE:-float16}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 DATA_PATH="${DATA_PATH:-/home/ma-user/work/data}"
@@ -12,7 +12,7 @@ SEED="${SEED:-42}"
 CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}"
 EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}"
 CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-128}"
-SEQUENCE_LENGTH="${SEQUENCE_LENGTH:-2048}"
+SEQUENCE_LENGTH="${SEQUENCE_LENGTH:-512}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
 WEIGHT_BITS="${WEIGHT_BITS:-4}"
@@ -51,14 +51,9 @@ OMNIQUANT_DEACTIVE_AMP="${OMNIQUANT_DEACTIVE_AMP:-false}"
 EVAL_PPL="${EVAL_PPL:-true}"
 EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-false}"
 ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte winogrande arc_easy arc_challenge openbookqa}"
-ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
+ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-16}"
 ZERO_SHOT_NUM_FEWSHOT="${ZERO_SHOT_NUM_FEWSHOT:-0}"
-EVAL_VLM="${EVAL_VLM:-true}"
-VLM_DATASETS="${VLM_DATASETS:-OCRBench TextVQA_VAL ChartQA_TEST InfoVQA_VAL}"
-VLM_MODE="${VLM_MODE:-all}"
-VLM_API_NPROC="${VLM_API_NPROC:-4}"
-VLM_PRED_FORMAT="${VLM_PRED_FORMAT:-xlsx}"
-OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT:-$REPO_ROOT/my_results/quantization/npu}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${OUTPUT_ROOT:-/mnt/82_store/wxx/HWQuant/Mindpipe/results}}"
 
 set_if_unset() {
   local is_set="$1"
@@ -173,6 +168,18 @@ apply_model_family_overrides() {
 }
 
 apply_model_family_overrides
+
+apply_model_structure_overrides() {
+  local model_path_lower="${MODEL_PATH,,}"
+  if [[ "$model_path_lower" == *"qwen3.5"* || "$model_path_lower" == *"qwen3_5"* ]]; then
+    # Qwen3.5 mixes linear-attention and full-attention blocks. The current
+    # MindPipe OmniQuant adaptation follows a conservative LWC-only path there.
+    set_if_unset "$OMNIQUANT_LET_SET" OMNIQUANT_LET "false"
+    set_if_unset "$OMNIQUANT_USE_SHIFT_SET" OMNIQUANT_USE_SHIFT "false"
+  fi
+}
+
+apply_model_structure_overrides
 
 if [[ "$QUERY_BITS" -lt 16 || "$KEY_BITS" -lt 16 || "$VALUE_BITS" -lt 16 ]]; then
   echo "omniquant follows upstream and does not expose independent Q/K/V cache quantization; keep QUERY_BITS/KEY_BITS/VALUE_BITS at 16" >&2

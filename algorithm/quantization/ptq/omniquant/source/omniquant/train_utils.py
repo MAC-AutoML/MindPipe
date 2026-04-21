@@ -11,12 +11,17 @@ from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import unwrap_layer_output
+from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
 
 from omniquant.calibration import run_omniquant_calibration_forward
 from omniquant.model_tools.llama_utils import QuantLlamaDecoderLayer
 from omniquant.model_tools.llama_utils import initialize_omni_parameters as initialize_llama_omni_parameters
 from omniquant.model_tools.minicpm_utils import QuantMiniCPMDecoderLayer
 from omniquant.model_tools.minicpm_utils import initialize_omni_parameters as initialize_minicpm_omni_parameters
+from omniquant.model_tools.qwen3_utils import QuantQwen3DecoderLayer
+from omniquant.model_tools.qwen3_utils import QuantQwen3_5DecoderLayer
+from omniquant.model_tools.qwen3_utils import initialize_qwen3_5_omni_parameters
+from omniquant.model_tools.qwen3_utils import initialize_qwen3_omni_parameters
 from omniquant.model_tools.qwen_utils import QuantQwenDecoderLayer
 from omniquant.model_tools.qwen_utils import initialize_omni_parameters as initialize_qwen_omni_parameters
 from omniquant.utils import ampscaler_get_grad_norm
@@ -141,11 +146,38 @@ def _resolve_omniquant_impl(model_type: str):
         return QuantLlamaDecoderLayer, initialize_llama_omni_parameters
     if model_type in {"qwen2", "qwen2_5_vl"}:
         return QuantQwenDecoderLayer, initialize_qwen_omni_parameters
+    if model_type in {"qwen3", "qwen3_vl"}:
+        return QuantQwen3DecoderLayer, initialize_qwen3_omni_parameters
+    if model_type == "qwen3_5":
+        return QuantQwen3_5DecoderLayer, initialize_qwen3_5_omni_parameters
     if model_type in {"minicpm", "minicpmv"}:
         return QuantMiniCPMDecoderLayer, initialize_minicpm_omni_parameters
     raise NotImplementedError(
         f"OmniQuant currently supports LLaMA-, Qwen-, and MiniCPM-style decoders only; got model_type={model_type!r}."
     )
+
+
+def _build_qwen3_5_layer_kwargs(backbone, inputs: torch.Tensor, layer_kwargs: dict[str, object]) -> dict[str, dict[str, object]]:
+    position_ids = layer_kwargs.get("position_ids")
+    if position_ids is None:
+        seq_len = inputs.shape[1]
+        position_ids = torch.arange(seq_len, device=inputs.device).view(1, -1)
+
+    full_attention_kwargs = dict(layer_kwargs)
+    full_attention_kwargs["attention_mask"] = create_qwen3_5_causal_mask(
+        config=backbone.decoder_config,
+        inputs_embeds=inputs[:1],
+        attention_mask=torch.ones((1, inputs.shape[1]), dtype=torch.long, device=inputs.device),
+        past_key_values=full_attention_kwargs.get("past_key_values"),
+        position_ids=position_ids,
+    )
+
+    linear_attention_kwargs = dict(layer_kwargs)
+    linear_attention_kwargs["attention_mask"] = None
+    return {
+        "full_attention": full_attention_kwargs,
+        "linear_attention": linear_attention_kwargs,
+    }
 
 
 def _tensor_mse(lhs: torch.Tensor, rhs: torch.Tensor) -> float:
@@ -297,9 +329,17 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
         calibration_batches=calibration_batches,
         device=device,
     )
+    layer_kwargs_by_type = None
+    if model_type == "qwen3_5":
+        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(backbone, input_states, layer_kwargs)
     if args.deactive_amp:
         input_states = input_states.float()
         layer_kwargs = _cast_fp_tensors(layer_kwargs, torch.float32)
+        if layer_kwargs_by_type is not None:
+            layer_kwargs_by_type = {
+                layer_type: _cast_fp_tensors(kwargs, torch.float32)
+                for layer_type, kwargs in layer_kwargs_by_type.items()
+            }
 
     quant_inps = input_states
     fp_inps = input_states.clone()
@@ -316,6 +356,9 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
 
     for layer_index, layer in enumerate(backbone.layers):
         logger.info("========= Layer %s =========", layer_index)
+        active_layer_kwargs = layer_kwargs
+        if layer_kwargs_by_type is not None:
+            active_layer_kwargs = layer_kwargs_by_type.get(getattr(layer, "layer_type", None), layer_kwargs)
         if not torch.isfinite(quant_inps).all():
             _raise_nonfinite_error(
                 args.output_dir,
@@ -328,7 +371,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                     "autocast_enabled": autocast_enabled,
                     "quant_inps": _tensor_summary("quant_inps", quant_inps),
                     "fp_inps": _tensor_summary("fp_inps", fp_inps),
-                    "layer_kwargs": _value_summary("layer_kwargs", layer_kwargs),
+                    "layer_kwargs": _value_summary("layer_kwargs", active_layer_kwargs),
                 },
             )
         layer = layer.to(device)
@@ -350,7 +393,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
             fp_outs = _collect_layer_outputs(
                 qlayer,
                 fp_inps,
-                layer_kwargs,
+                active_layer_kwargs,
                 autocast_enabled=autocast_enabled,
                 batch_size=int(args.batch_size),
             )
@@ -358,7 +401,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                 fp_outs_2 = _collect_layer_outputs(
                     qlayer,
                     quant_inps,
-                    layer_kwargs,
+                    active_layer_kwargs,
                     autocast_enabled=autocast_enabled,
                     batch_size=int(args.batch_size),
                 )
@@ -383,7 +426,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                     qlayer,
                     args,
                     quant_inps,
-                    layer_kwargs,
+                    active_layer_kwargs,
                     autocast_enabled=autocast_enabled,
                     batch_size=int(args.batch_size),
                 )
@@ -409,7 +452,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                 norm_values = []
                 for start in range(0, args.nsamples, args.batch_size):
                     end = min(start + args.batch_size, args.nsamples)
-                    batch_kwargs = _expand_for_batch(layer_kwargs, end - start)
+                    batch_kwargs = _expand_for_batch(active_layer_kwargs, end - start)
                     optimizer.zero_grad(set_to_none=True)
                     with _autocast_context(autocast_enabled, device_type, model_dtype):
                         smooth_and_quant_temporary(qlayer, args)
@@ -494,7 +537,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                     qlayer,
                     args,
                     quant_inps,
-                    layer_kwargs,
+                    active_layer_kwargs,
                     autocast_enabled=autocast_enabled,
                     batch_size=int(args.batch_size),
                 )
@@ -509,7 +552,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                 qlayer,
                 args,
                 quant_inps,
-                layer_kwargs,
+                active_layer_kwargs,
                 autocast_enabled=autocast_enabled,
                 batch_size=int(args.batch_size),
             )
@@ -524,7 +567,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
             quant_outs = _collect_layer_outputs(
                 qlayer,
                 quant_inps,
-                layer_kwargs,
+                active_layer_kwargs,
                 autocast_enabled=autocast_enabled,
                 batch_size=int(args.batch_size),
             )
@@ -541,7 +584,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                         "quant_inps": _tensor_summary("quant_inps", quant_inps),
                         "fp_outs": _tensor_summary("fp_outs", fp_outs) if fp_outs is not None else None,
                         "quant_outs": _tensor_summary("quant_outs", quant_outs),
-                        "layer_kwargs": _value_summary("layer_kwargs", layer_kwargs),
+                        "layer_kwargs": _value_summary("layer_kwargs", active_layer_kwargs),
                         "trainable_parameters": _omni_parameter_summaries(qlayer, use_shift=use_shift),
                     },
                 )
