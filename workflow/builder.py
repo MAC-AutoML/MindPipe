@@ -85,6 +85,24 @@ def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--vlm_verbose", type=_bool_flag, default=False)
     parser.add_argument("--vlm_ignore_failed", type=_bool_flag, default=False)
     parser.add_argument("--vlm_pred_format", default="xlsx", choices=["xlsx", "tsv", "json"])
+    parser.add_argument(
+        "--vlm_use_cache",
+        type=_bool_flag,
+        default=False,
+        help="Enable generation KV cache for VLM evaluation. Can significantly speed up decoding.",
+    )
+    parser.add_argument(
+        "--vlm_max_new_tokens",
+        type=int,
+        default=None,
+        help="Optional override for VLM generation max_new_tokens on all datasets.",
+    )
+    parser.add_argument(
+        "--vlm_sample_cleanup",
+        type=_bool_flag,
+        default=True,
+        help="Run gc/empty_cache after each sample during VLM generation.",
+    )
     parser.add_argument("--num_samples", type=int, default=None, help="Limit number of evaluation samples (applies to both zero_shot and vlm_eval)")
 
 
@@ -125,6 +143,10 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--query_symmetric", type=_bool_flag, default=True)
     parser.add_argument("--key_symmetric", type=_bool_flag, default=True)
     parser.add_argument("--value_symmetric", type=_bool_flag, default=True)
+    parser.add_argument("--weight_clip", type=_bool_flag, default=False)
+    parser.add_argument("--activation_clip_ratio", type=float, default=1.0)
+    parser.add_argument("--key_clip_ratio", type=float, default=1.0)
+    parser.add_argument("--value_clip_ratio", type=float, default=1.0)
     parser.add_argument("--weight_method", default="gptq", choices=["gptq", "rtn"])
     parser.add_argument("--use_activation_order", type=_bool_flag, default=False)
     # SmoothQuant
@@ -199,6 +221,288 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     # QuaRot / SpinQuant
     parser.add_argument("--rotation_mode", default="hadamard", choices=["hadamard", "random"])
     parser.add_argument("--rotation_checkpoint", default=None)
+    parser.add_argument(
+        "--quarot_k_tokenwise_per_head",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: when kv_group_size=-1, quantize each KV head independently per token instead of sharing one scale across all KV heads.",
+    )
+    parser.add_argument(
+        "--quarot_k_hadamard",
+        type=_bool_flag,
+        default=True,
+        help="QuaRot only: apply the exact Hadamard transform on the Q/K path before K-cache quantization.",
+    )
+    parser.add_argument(
+        "--quarot_k_pre_rope",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: quantize the K path before RoPE instead of after RoPE.",
+    )
+    parser.add_argument(
+        "--quarot_k_per_head_channel",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: quantize K with one scale per head/channel shared across the sequence chunk.",
+    )
+    parser.add_argument(
+        "--quarot_k_equalize",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: collect offline K-channel stats and equalize Q/K per head/channel before K quantization.",
+    )
+    parser.add_argument(
+        "--quarot_k_equalize_alpha",
+        type=float,
+        default=1.0,
+        help="QuaRot only: strength of offline K-channel equalization. 0 disables the learned scaling, 1 fully equalizes K absmax per head.",
+    )
+    parser.add_argument(
+        "--quarot_k_equalize_max_scale",
+        type=float,
+        default=8.0,
+        help="QuaRot only: clamp equalization scale into [1/max_scale, max_scale]. Set <=0 to disable clamping.",
+    )
+    parser.add_argument(
+        "--quarot_k_equalize_with_q",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: collect Q statistics and make K equalization GQA-aware instead of using K-only absmax stats.",
+    )
+    parser.add_argument(
+        "--quarot_k_equalize_q_power",
+        type=float,
+        default=1.0,
+        help="QuaRot only: exponent applied to Q statistics in Q-aware K equalization. Larger values preserve channels used by large-Q heads more aggressively.",
+    )
+    parser.add_argument(
+        "--fp32_had",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: run online Hadamard transforms in FP32 to match upstream paper settings.",
+    )
+    parser.add_argument(
+        "--quarot_qwen2_5_vl_rotate_visual_branch",
+        type=_bool_flag,
+        default=True,
+        help="QuaRot only: rotate the Qwen2.5-VL visual encoder branch during basis change.",
+    )
+    parser.add_argument(
+        "--quarot_qwen2_5_vl_rotate_merger_output",
+        type=_bool_flag,
+        default=True,
+        help="QuaRot only: rotate Qwen2.5-VL visual merger output into the text hidden basis.",
+    )
+    parser.add_argument(
+        "--quarot_qwen2_5_vl_disable_hidden_hadamard",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: disable Qwen2.5-VL language-side down_proj/o_proj exact-Hadamard and online Hadamard compensation for pure orthogonal rotation debugging.",
+    )
+    parser.add_argument(
+        "--quarot_qwen2_5_vl_center_merger_output",
+        type=_bool_flag,
+        default=False,
+        help="QuaRot only: center Qwen2.5-VL merger output in the text hidden space before rotation, mirroring token embedding mean-centering.",
+    )
+    parser.add_argument(
+        "--quarot_qwen2_5_vl_first_layer_activation_bits",
+        type=int,
+        default=None,
+        help="QuaRot only: override activation bits for Qwen2.5-VL language decoder layer 0 inputs. Useful for protecting the visual-to-text bridge while keeping deeper layers low-bit.",
+    )
+    # MQuant GPTQ-specific calibration (multimodal datasets)
+    parser.add_argument(
+        "--mquant_dataset_name",
+        default=None,
+        help="VLM dataset for MQuant GPTQ calibration (e.g. OCRBench/TextVQA_VAL/DocVQA_VAL/MME).",
+    )
+    parser.add_argument(
+        "--mquant_calib_num",
+        type=int,
+        default=None,
+        help="Optional cap on the number of VLM samples used in MQuant GPTQ calibration.",
+    )
+    parser.add_argument(
+        "--mquant_max_new_tokens",
+        type=int,
+        default=20,
+        help="Max new tokens per prompt when collecting MQuant GPTQ activations.",
+    )
+    parser.add_argument(
+        "--mquant_visual_w_bits",
+        type=int,
+        default=None,
+        help="Optional override for MQuant visual branch weight bits.",
+    )
+    parser.add_argument(
+        "--mquant_visual_a_bits",
+        type=int,
+        default=None,
+        help="Optional override for MQuant visual branch activation bits.",
+    )
+    parser.add_argument(
+        "--mquant_llm_w_bits",
+        type=int,
+        default=None,
+        help="Optional override for MQuant language branch weight bits.",
+    )
+    parser.add_argument(
+        "--mquant_llm_a_bits",
+        type=int,
+        default=None,
+        help="Optional override for MQuant language branch activation bits.",
+    )
+    parser.add_argument(
+        "--mquant_visual_w_clip",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant visual branch weight clipping (MSE search).",
+    )
+    parser.add_argument(
+        "--mquant_llm_w_clip",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant language branch weight clipping (MSE search).",
+    )
+    parser.add_argument(
+        "--mquant_visual_static",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant visual activation static quantization.",
+    )
+    parser.add_argument(
+        "--mquant_llm_static",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant language activation static quantization.",
+    )
+    parser.add_argument(
+        "--mquant_weight_group_size",
+        type=int,
+        default=None,
+        help="Optional override for MQuant weight groupsize.",
+    )
+    parser.add_argument(
+        "--mquant_activation_group_size",
+        type=int,
+        default=None,
+        help="Optional override for MQuant activation groupsize.",
+    )
+    parser.add_argument(
+        "--mquant_quant_llm",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant language-branch quantization.",
+    )
+    parser.add_argument(
+        "--mquant_quant_visual_clip",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant visual-branch quantization.",
+    )
+    parser.add_argument(
+        "--mquant_quant_cross_attention",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant cross-attention quantization.",
+    )
+    parser.add_argument(
+        "--mquant_not_fuse_layer_norms",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for skipping MQuant layer-norm fusion.",
+    )
+    parser.add_argument(
+        "--mquant_no_fuse_visual_clip",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for skipping MQuant visual-branch fusion.",
+    )
+    parser.add_argument(
+        "--mquant_no_fuse_visual_cross_attn",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for skipping MQuant visual cross-attention fusion.",
+    )
+    parser.add_argument(
+        "--mquant_no_fuse_llm",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for skipping MQuant language-branch fusion.",
+    )
+    parser.add_argument(
+        "--mquant_rotate",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for enabling or disabling MQuant rotation.",
+    )
+    parser.add_argument(
+        "--mquant_rotate_visual_clip",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for visual-branch rotation.",
+    )
+    parser.add_argument(
+        "--mquant_rotate_visual_cross_attn",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for visual cross-attention rotation.",
+    )
+    parser.add_argument(
+        "--mquant_rotate_llm",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for language-branch rotation.",
+    )
+    parser.add_argument(
+        "--mquant_act_per_tensor",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant per-tensor activation quantization.",
+    )
+    parser.add_argument(
+        "--mquant_online_visual_hadamard",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant online visual Hadamard rotation.",
+    )
+    parser.add_argument(
+        "--mquant_online_llm_hadamard",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant online language Hadamard rotation.",
+    )
+    parser.add_argument(
+        "--mquant_fp32_had",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for running MQuant online Hadamard in FP32.",
+    )
+    parser.add_argument(
+        "--mquant_visual_split",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant visual split mode.",
+    )
+    parser.add_argument(
+        "--mquant_llm_split",
+        type=_bool_flag,
+        default=None,
+        help="Optional override for MQuant language split mode.",
+    )
+    parser.add_argument(
+        "--mquant_skip_names",
+        nargs="+",
+        default=None,
+        help="Optional list of MQuant layer-name patterns to skip.",
+    )
+    parser.add_argument(
+        "--mquant_act_skip_names",
+        nargs="+",
+        default=None,
+        help="Optional list of MQuant activation-only layer-name patterns to skip.",
+    )
 
 
 def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
