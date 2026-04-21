@@ -239,11 +239,14 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, device=None):
     init_shape = W_.shape
     transform_device = resolve_device(device) if dev.type == "cpu" else dev
     W_ = W_.float().to(transform_device)
+    bias = module.bias.data.float().to(transform_device) if (output and module.bias is not None) else None
     
     if had_dim == -1:
         if output:
             had_K, K = get_hadK(out_features)
             W_ = matmul_hadU_cuda(W_.t(), had_K, K).t()
+            if bias is not None:
+                bias = matmul_hadU_cuda(bias.unsqueeze(0), had_K, K).squeeze(0)
         if not output:
             had_K, K = get_hadK(in_features)
             W_ = matmul_hadU_cuda(W_, had_K, K)
@@ -256,6 +259,11 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, device=None):
                 W_.reshape(-1, transposed_shape[-1]//had_dim, had_dim),
                 scale=1 / math.sqrt(had_dim),
             ).reshape(transposed_shape).t()
+            if bias is not None:
+                bias = _hadamard_transform(
+                    bias.reshape(-1, had_dim),
+                    scale=1 / math.sqrt(had_dim),
+                ).reshape(-1)
         else:
             init_shape = W_.shape
             W_ = _hadamard_transform(
@@ -263,6 +271,8 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, device=None):
                 scale=1 / math.sqrt(had_dim),
             ).reshape(init_shape)
     module.weight.data = W_.to(device=dev, dtype=dtype)
+    if bias is not None:
+        module.bias.data = bias.to(device=dev, dtype=dtype)
 
 
 
