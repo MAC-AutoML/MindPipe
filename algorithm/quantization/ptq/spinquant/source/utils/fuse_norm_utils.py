@@ -33,7 +33,10 @@ def fuse_ln_linear(
 
         # Calculating new weight and bias
         W_ = linear.weight.data.double()
-        linear.weight.data = (W_ * layernorm.weight.double()).to(linear_dtype)
+        norm_gain = layernorm.weight.double()
+        if layernorm.__class__.__name__.startswith("Qwen3_5RMSNorm"):
+            norm_gain = 1.0 + norm_gain
+        linear.weight.data = (W_ * norm_gain).to(linear_dtype)
 
         if hasattr(layernorm, "bias"):
             if linear.bias is None:
@@ -62,23 +65,38 @@ def fuse_layer_norms(model):
         fuse_ln_linear(
             layer.post_attention_layernorm, [layer.mlp.up_proj, layer.mlp.gate_proj]
         )
-        fuse_ln_linear(
-            layer.input_layernorm,
-            [
+        if hasattr(layer, "self_attn"):
+            input_linears = [
                 layer.self_attn.q_proj,
                 layer.self_attn.k_proj,
                 layer.self_attn.v_proj,
-            ],
-        )
+            ]
+        else:
+            input_linears = [
+                layer.linear_attn.in_proj_qkv,
+                layer.linear_attn.in_proj_z,
+                layer.linear_attn.in_proj_b,
+                layer.linear_attn.in_proj_a,
+            ]
+        fuse_ln_linear(layer.input_layernorm, input_linears)
 
         W_norm = layer.post_attention_layernorm.weight.data
-        layer.post_attention_layernorm.weight.data = torch.ones_like(W_norm)
+        if layer.post_attention_layernorm.__class__.__name__.startswith("Qwen3_5RMSNorm"):
+            layer.post_attention_layernorm.weight.data = torch.zeros_like(W_norm)
+        else:
+            layer.post_attention_layernorm.weight.data = torch.ones_like(W_norm)
         W_norm = layer.input_layernorm.weight.data
-        layer.input_layernorm.weight.data = torch.ones_like(W_norm)
+        if layer.input_layernorm.__class__.__name__.startswith("Qwen3_5RMSNorm"):
+            layer.input_layernorm.weight.data = torch.zeros_like(W_norm)
+        else:
+            layer.input_layernorm.weight.data = torch.ones_like(W_norm)
 
     fuse_ln_linear(
         root.norm,
         [model.lm_head],
     )
     W_norm = root.norm.weight.data
-    root.norm.weight.data = torch.ones_like(W_norm)
+    if root.norm.__class__.__name__.startswith("Qwen3_5RMSNorm"):
+        root.norm.weight.data = torch.zeros_like(W_norm)
+    else:
+        root.norm.weight.data = torch.ones_like(W_norm)
