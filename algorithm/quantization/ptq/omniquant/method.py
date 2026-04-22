@@ -18,7 +18,7 @@ from ...base import BaseQuantizationMethod
 
 
 LOGGER = logging.getLogger(__name__)
-SUPPORTED_MODEL_TYPES = {"llama"}
+SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen2_5_vl", "qwen3", "qwen3_vl", "qwen3_5", "minicpm", "minicpmv"}
 
 
 def _purge_conflicting_modules(module_name: str, allowed_root: Path) -> None:
@@ -51,7 +51,7 @@ def _format_group_suffix(group_size: int | None) -> str:
 
 class OmniQuantMethod(BaseQuantizationMethod):
     name = "omniquant"
-    npu_ready = False
+    npu_ready = True
     default_calibration_dataset = "wikitext2"
 
     def _resolve_weight_symmetric(self, args) -> bool:
@@ -79,8 +79,13 @@ class OmniQuantMethod(BaseQuantizationMethod):
         model_type = getattr(model.config, "model_type", None)
         if model_type not in SUPPORTED_MODEL_TYPES:
             raise NotImplementedError(
-                "OmniQuant currently supports LLaMA-style text decoders only; "
+                "OmniQuant currently supports LLaMA-, Qwen-, and MiniCPM-style text decoders only; "
                 f"got model_type={model_type!r}."
+            )
+        if model_type == "qwen3_5" and bool(args.omniquant_let):
+            raise ValueError(
+                "Qwen3.5 OmniQuant support in MindPipe currently follows the conservative LWC-only path; "
+                "set --omniquant_let false."
             )
         if int(args.query_bits) < 16 or int(args.key_bits) < 16 or int(args.value_bits) < 16:
             raise ValueError(
@@ -107,8 +112,13 @@ class OmniQuantMethod(BaseQuantizationMethod):
     def _build_source_args(self, args, output_dir: Path) -> SimpleNamespace:
         weight_group_size = self._resolve_weight_group_size(args)
         weight_symmetric = self._resolve_weight_symmetric(args)
-        effective_deactive_amp = bool(args.omniquant_deactive_amp) or any(
-            8 <= int(bits) < 16 for bits in (args.weight_bits, args.activation_bits)
+        use_shift = bool(args.omniquant_use_shift) and bool(args.omniquant_let) and int(args.activation_bits) < 16
+        # OmniQuant optimizes LET/LWC parameters layer by layer. For any sub-16
+        # quantized run that actually trains these parameters, fp16 autocast is
+        # much less stable than fp32 and is the main source of non-finite runs.
+        effective_deactive_amp = bool(args.omniquant_deactive_amp) or (
+            int(args.omniquant_epochs) > 0
+            and any(int(bits) < 16 for bits in (args.weight_bits, args.activation_bits))
         )
         return SimpleNamespace(
             abits=int(args.activation_bits),
@@ -154,6 +164,7 @@ class OmniQuantMethod(BaseQuantizationMethod):
                 "symmetric": False,
                 "dynamic_method": "per_token",
             },
+            use_shift=use_shift,
             wbits=int(args.weight_bits),
             wd=float(args.omniquant_weight_decay),
             weight_group_size=weight_group_size,
@@ -175,10 +186,14 @@ class OmniQuantMethod(BaseQuantizationMethod):
         source_args = self._build_source_args(args, output_dir)
         weight_symmetric = self._resolve_weight_symmetric(args)
         runtime_device = resolve_device(args.device)
-        if runtime_device.type != "cuda":
-            raise NotImplementedError("OmniQuant in MindPipe currently requires CUDA execution.")
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
+        if runtime_device.type not in {"cuda", "npu"}:
+            raise NotImplementedError(
+                "OmniQuant in MindPipe currently supports accelerator execution only; "
+                f"got device type {runtime_device.type!r}."
+            )
+        if runtime_device.type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
 
         if source_args.wbits >= 16 and source_args.abits >= 16:
             return {
@@ -190,6 +205,7 @@ class OmniQuantMethod(BaseQuantizationMethod):
                     "epochs": 0,
                     "let": False,
                     "lwc": False,
+                    "use_shift": False,
                     "weight_symmetric": weight_symmetric,
                 },
                 "quantized_linear_count": 0,
@@ -241,21 +257,22 @@ class OmniQuantMethod(BaseQuantizationMethod):
                         torch.save(act_scales, act_scales_path)
                         LOGGER.info("Saved OmniQuant activation scales to %s", act_scales_path)
 
-                if args.omniquant_act_shifts_from:
-                    act_shifts_path = Path(args.omniquant_act_shifts_from)
-                    act_shifts = torch.load(act_shifts_path, map_location="cpu")
-                    LOGGER.info("Loaded OmniQuant activation shifts from %s", act_shifts_path)
-                else:
-                    model.to(runtime_device)
-                    act_shifts = get_act_shifts(model, calibration_batches, runtime_device)
-                    LOGGER.info(
-                        "Collected OmniQuant activation shifts from %s calibration samples",
-                        args.calibration_samples,
-                    )
-                    if args.omniquant_save_act_stats:
-                        act_shifts_path = generated_act_shifts_path
-                        torch.save(act_shifts, act_shifts_path)
-                        LOGGER.info("Saved OmniQuant activation shifts to %s", act_shifts_path)
+                if source_args.use_shift:
+                    if args.omniquant_act_shifts_from:
+                        act_shifts_path = Path(args.omniquant_act_shifts_from)
+                        act_shifts = torch.load(act_shifts_path, map_location="cpu")
+                        LOGGER.info("Loaded OmniQuant activation shifts from %s", act_shifts_path)
+                    else:
+                        model.to(runtime_device)
+                        act_shifts = get_act_shifts(model, calibration_batches, runtime_device)
+                        LOGGER.info(
+                            "Collected OmniQuant activation shifts from %s calibration samples",
+                            args.calibration_samples,
+                        )
+                        if args.omniquant_save_act_stats:
+                            act_shifts_path = generated_act_shifts_path
+                            torch.save(act_shifts, act_shifts_path)
+                            LOGGER.info("Saved OmniQuant activation shifts to %s", act_shifts_path)
 
                 model.to("cpu")
                 empty_cache(runtime_device)
@@ -282,6 +299,7 @@ class OmniQuantMethod(BaseQuantizationMethod):
                 "let_lr": source_args.let_lr,
                 "lwc": source_args.lwc,
                 "lwc_lr": source_args.lwc_lr,
+                "use_shift": source_args.use_shift,
                 "aug_loss": source_args.aug_loss,
                 "weight_symmetric": weight_symmetric,
                 "activation_symmetric": False,

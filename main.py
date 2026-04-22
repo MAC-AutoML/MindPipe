@@ -1,7 +1,11 @@
 """Top-level entrypoint for mindpipe."""
 
 from __future__ import annotations
+import os
 import warnings
+
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 warnings.filterwarnings("ignore")
 
 import json

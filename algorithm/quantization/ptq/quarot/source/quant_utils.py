@@ -1,4 +1,5 @@
 import math
+import os
 import transformers
 import torch
 import utils
@@ -89,6 +90,7 @@ class ActQuantizer(torch.nn.Module):
         self.register_buffer('scale', torch.zeros(1))
         self.register_buffer('zero', torch.zeros(1))
         self.bits = 16
+        self._cleanup_each_forward = os.getenv("QUAROT_ACT_CLEANUP_EACH_FORWARD", "0").lower() in {"1", "true", "yes", "on"}
 
     def free(self):
         self.zero = None
@@ -138,6 +140,10 @@ class ActQuantizer(torch.nn.Module):
 
         self.scale = self.scale.repeat(1, 1, 1, self.groupsize).reshape(init_shape)
         self.zero = self.zero.repeat(1, 1, 1, self.groupsize).reshape(init_shape)
+        # Calling gc+empty_cache on every activation forward causes severe latency spikes.
+        # Keep it optional for OOM triage.
+        if self._cleanup_each_forward:
+            utils.cleanup_memory(verbos=False)
 
     def find_params(self, x):
         if self.bits == 16:
@@ -151,7 +157,6 @@ class ActQuantizer(torch.nn.Module):
         if self.groupsize > 0:
             # group-wise per-token quantization
             self.find_params_per_token_groupwise(x)
-            utils.cleanup_memory(verbos=False)
             return
 
         reshaped_x = x.reshape((-1, x.shape[-1]))
@@ -185,9 +190,9 @@ class ActQuantWrapper(torch.nn.Module):
         a pre-forward hook will be registerd to rotate the activation before quantization.
     '''
 
-    def __init__(self, module:torch.nn.Linear):
+    def __init__(self, module: torch.nn.Module):
         super(ActQuantWrapper, self).__init__()
-        assert isinstance(module, torch.nn.Linear)
+        assert isinstance(module, (torch.nn.Linear, torch.nn.Conv1d, torch.nn.Conv2d, torch.nn.Conv3d))
         self.module = module
         self.weight = module.weight
         self.bias = module.bias
@@ -268,6 +273,7 @@ class WeightQuantizer(torch.nn.Module):
         self,
         bits, perchannel=False, sym=True,
         mse=False, norm=2.4, grid=100, maxshrink=.8,
+        weight_groupsize=-1,
     ):
         self.bits = bits
         self.perchannel = perchannel
@@ -276,10 +282,67 @@ class WeightQuantizer(torch.nn.Module):
         self.norm = norm
         self.grid = grid
         self.maxshrink = maxshrink
+        self.weight_groupsize = weight_groupsize
         if sym:
             self.maxq = torch.tensor(2**(bits-1)-1)
         else:
             self.maxq = torch.tensor(2**bits - 1)
+
+    def find_params_weight_groupwise(self, x):
+        init_shape = x.shape
+        x = x.reshape(
+            x.shape[-2], x.shape[-1] // self.weight_groupsize, self.weight_groupsize
+        )
+
+        xmax = torch.amax(x, dim=-1, keepdim=True)
+        xmin = torch.amin(x, dim=-1, keepdim=True)
+
+        if self.sym:
+            xmax = torch.maximum(torch.abs(xmin), xmax).clamp(min=1e-5)
+            self.scale = xmax / self.maxq
+            self.zero = torch.zeros_like(self.scale)
+        else:
+            tmp = (xmin == 0) & (xmax == 0)
+            xmin[tmp] = -1
+            xmax[tmp] = +1
+            self.scale = (xmax - xmin).clamp(min=1e-5) / self.maxq
+            self.zero = torch.round(-xmin / self.scale)
+
+        self.scale = self.scale.repeat(1, 1, self.weight_groupsize)
+        self.zero = self.zero.repeat(1, 1, self.weight_groupsize)
+
+        if self.mse:
+            best = torch.full([x.shape[0], x.shape[1]], float("inf"), device=x.device).type_as(x)
+            for i in range(int(self.maxshrink * self.grid)):
+                p = 1 - i / self.grid
+                xmin1 = p * xmin
+                xmax1 = p * xmax
+
+                if self.sym:
+                    scale1 = xmax1 / self.maxq
+                    zero1 = torch.zeros_like(scale1)
+                    scale1 = scale1.repeat(1, 1, self.weight_groupsize)
+                    zero1 = zero1.repeat(1, 1, self.weight_groupsize)
+                    q = sym_quant_dequant(x, scale1, self.maxq)
+                else:
+                    scale1 = (xmax1 - xmin1) / self.maxq
+                    zero1 = torch.round(-xmin1 / scale1)
+                    scale1 = scale1.repeat(1, 1, self.weight_groupsize)
+                    zero1 = zero1.repeat(1, 1, self.weight_groupsize)
+                    q = asym_quant_dequant(x, scale1, zero1, self.maxq)
+
+                q -= x
+                q.abs_()
+                q.pow_(self.norm)
+                err = torch.sum(q, -1)
+                tmp = err < best
+                if torch.any(tmp):
+                    best[tmp] = err[tmp]
+                    self.scale[tmp] = scale1[tmp]
+                    self.zero[tmp] = zero1[tmp]
+
+        self.scale = self.scale.reshape(init_shape)
+        self.zero = self.zero.reshape(init_shape)
 
     def find_params(self, x):
         if self.bits == 16:
@@ -288,6 +351,9 @@ class WeightQuantizer(torch.nn.Module):
         self.maxq = self.maxq.to(dev)
 
         shape = x.shape
+        if self.weight_groupsize > 0:
+            self.find_params_weight_groupwise(x)
+            return
         if self.perchannel:
             x = x.flatten(1)
         else:
@@ -354,6 +420,16 @@ class WeightQuantizer(torch.nn.Module):
             return asym_quant_dequant(x, self.scale, self.zero, self.maxq).to(x_dtype)
         return x
 
+    def fake_quantize(self, x):
+        x_dtype = x.dtype
+        if self.ready() and self.bits < 16:
+            if self.sym:
+                q, scale = sym_quant(x, self.scale, self.maxq)
+                return sym_dequant(q, scale).to(x_dtype), q, scale
+            q, scale, zero = asym_quant(x, self.scale, self.zero, self.maxq)
+            return asym_dequant(q, scale, zero).to(x_dtype), q, scale
+        return None, None, None
+
     def enabled(self):
         return self.maxq > 0
 
@@ -363,6 +439,9 @@ class WeightQuantizer(torch.nn.Module):
 
 
 def add_actquant(module, name='', layers=[torch.nn.Linear,
+                                          torch.nn.Conv1d,
+                                          torch.nn.Conv2d,
+                                          torch.nn.Conv3d,
                                           ActQuantWrapper,
                                           transformers.models.falcon.modeling_falcon.FalconLinear]):
     if isinstance(module, ActQuantWrapper):

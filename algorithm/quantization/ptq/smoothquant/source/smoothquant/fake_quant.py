@@ -9,6 +9,8 @@ from algorithm.common.modeling import get_text_backbone
 
 @torch.no_grad()
 def quantize_weight_per_channel_absmax(weight, n_bits=8):
+    if int(n_bits) >= 16:
+        return weight.detach().clone()
     quantized = weight.detach().clone()
     scales = quantized.abs().max(dim=-1, keepdim=True)[0]
     q_max = 2 ** (n_bits - 1) - 1
@@ -19,6 +21,8 @@ def quantize_weight_per_channel_absmax(weight, n_bits=8):
 
 @torch.no_grad()
 def quantize_activation_per_token_absmax(tensor, n_bits=8):
+    if int(n_bits) >= 16:
+        return tensor
     quantized = tensor.clone()
     scales = quantized.abs().max(dim=-1, keepdim=True)[0]
     q_max = 2 ** (n_bits - 1) - 1
@@ -27,11 +31,27 @@ def quantize_activation_per_token_absmax(tensor, n_bits=8):
     return quantized
 
 
-class W8A8Linear(nn.Module):
-    def __init__(self, in_features, out_features, bias=True, act_quant="per_token", quantize_output=False, dtype=torch.float16):
+def _identity(tensor):
+    return tensor
+
+
+class SmoothQuantLinear(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        bias=True,
+        weight_bits=8,
+        activation_bits=8,
+        act_quant="per_token",
+        quantize_output=False,
+        dtype=torch.float16,
+    ):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
+        self.weight_bits = int(weight_bits)
+        self.activation_bits = int(activation_bits)
         self.register_buffer(
             "weight",
             torch.zeros((out_features, in_features), dtype=dtype, requires_grad=False),
@@ -46,8 +66,13 @@ class W8A8Linear(nn.Module):
 
         if act_quant != "per_token":
             raise ValueError(f"Invalid act_quant: {act_quant}")
-        self.act_quant_name = act_quant
-        self.act_quant = partial(quantize_activation_per_token_absmax, n_bits=8)
+        self.weight_quant_name = "per_channel" if self.weight_bits < 16 else "none"
+        self.act_quant_name = act_quant if self.activation_bits < 16 else "none"
+        self.act_quant = (
+            partial(quantize_activation_per_token_absmax, n_bits=self.activation_bits)
+            if self.activation_bits < 16
+            else _identity
+        )
 
         if quantize_output:
             self.output_quant_name = self.act_quant_name
@@ -63,32 +88,40 @@ class W8A8Linear(nn.Module):
         return self.output_quant(y)
 
     @staticmethod
-    def from_float(module, act_quant="per_token", quantize_output=False):
+    def from_float(
+        module,
+        weight_bits=8,
+        activation_bits=8,
+        act_quant="per_token",
+        quantize_output=False,
+    ):
         assert isinstance(module, nn.Linear)
-        new_module = W8A8Linear(
+        new_module = SmoothQuantLinear(
             module.in_features,
             module.out_features,
             module.bias is not None,
+            weight_bits=weight_bits,
+            activation_bits=activation_bits,
             act_quant=act_quant,
             quantize_output=quantize_output,
             dtype=module.weight.dtype,
         )
         new_module = new_module.to(device=module.weight.device, dtype=module.weight.dtype)
-        new_module.weight = quantize_weight_per_channel_absmax(module.weight, n_bits=8)
-        new_module.weight_quant_name = "per_channel"
+        new_module.weight = quantize_weight_per_channel_absmax(module.weight, n_bits=weight_bits)
         if module.bias is not None:
             new_module.bias = module.bias.detach().clone()
         return new_module
 
     def __repr__(self):
         return (
-            f"W8A8Linear({self.in_features}, {self.out_features}, "
-            f"bias={self.bias is not None}, weight_quant={self.weight_quant_name}, "
+            f"SmoothQuantLinear({self.in_features}, {self.out_features}, "
+            f"bias={self.bias is not None}, weight_bits={self.weight_bits}, "
+            f"activation_bits={self.activation_bits}, weight_quant={self.weight_quant_name}, "
             f"act_quant={self.act_quant_name}, output_quant={self.output_quant_name})"
         )
 
 
-def quantize_llama_like(model, act_quant="per_token", quantize_bmm_input=True):
+def quantize_llama_like(model, weight_bits=8, activation_bits=8, act_quant="per_token", quantize_bmm_input=True):
     supported_model_types = {"llama", "qwen2", "qwen2_5_vl", "minicpm", "minicpmv"}
     model_type = getattr(getattr(model, "config", None), "model_type", None)
     if model_type not in supported_model_types:
@@ -103,8 +136,10 @@ def quantize_llama_like(model, act_quant="per_token", quantize_bmm_input=True):
             setattr(
                 layer.self_attn,
                 proj_name,
-                W8A8Linear.from_float(
+                SmoothQuantLinear.from_float(
                     getattr(layer.self_attn, proj_name),
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
                     act_quant=act_quant,
                     quantize_output=quantize_bmm_input,
                 ),
@@ -114,7 +149,12 @@ def quantize_llama_like(model, act_quant="per_token", quantize_bmm_input=True):
         setattr(
             layer.self_attn,
             "o_proj",
-            W8A8Linear.from_float(layer.self_attn.o_proj, act_quant=act_quant),
+            SmoothQuantLinear.from_float(
+                layer.self_attn.o_proj,
+                weight_bits=weight_bits,
+                activation_bits=activation_bits,
+                act_quant=act_quant,
+            ),
         )
         quantized_linear_names.append(f"{layer_prefix}.self_attn.o_proj")
 
@@ -122,17 +162,31 @@ def quantize_llama_like(model, act_quant="per_token", quantize_bmm_input=True):
             setattr(
                 layer.mlp,
                 proj_name,
-                W8A8Linear.from_float(getattr(layer.mlp, proj_name), act_quant=act_quant),
+                SmoothQuantLinear.from_float(
+                    getattr(layer.mlp, proj_name),
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                    act_quant=act_quant,
+                ),
             )
             quantized_linear_names.append(f"{layer_prefix}.mlp.{proj_name}")
     return quantized_linear_names
 
 
-def quantize_model(model, weight_quant="per_channel", act_quant="per_token", quantize_bmm_input=True):
+def quantize_model(
+    model,
+    weight_bits=8,
+    activation_bits=8,
+    weight_quant="per_channel",
+    act_quant="per_token",
+    quantize_bmm_input=True,
+):
     if weight_quant != "per_channel":
         raise ValueError(f"Invalid weight_quant: {weight_quant}")
     return quantize_llama_like(
         model,
+        weight_bits=weight_bits,
+        activation_bits=activation_bits,
         act_quant=act_quant,
         quantize_bmm_input=quantize_bmm_input,
     )

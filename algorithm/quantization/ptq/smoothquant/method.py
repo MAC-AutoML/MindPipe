@@ -18,6 +18,7 @@ from ...base import BaseQuantizationMethod
 
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen2_5_vl", "minicpm", "minicpmv"}
+SUPPORTED_BIT_CONFIGS = {(8, 8)}
 
 
 def _purge_conflicting_modules(module_name: str, allowed_root: Path) -> None:
@@ -66,8 +67,17 @@ class SmoothQuantMethod(BaseQuantizationMethod):
                 "SmoothQuant currently supports LLaMA-, Qwen2/Qwen2.5-, and MiniCPM-style text decoders only; "
                 f"got model_type={model_type!r}."
             )
-        if int(args.weight_bits) != 8 or int(args.activation_bits) != 8:
-            raise ValueError("SmoothQuant currently supports W8A8 only; set --weight_bits 8 and --activation_bits 8.")
+        bit_config = (int(args.weight_bits), int(args.activation_bits))
+        if bit_config not in SUPPORTED_BIT_CONFIGS:
+            LOGGER.warning(
+                "SmoothQuant non-W8A8 configurations are disabled in MindPipe; requested W%sA%s.",
+                bit_config[0],
+                bit_config[1],
+            )
+            raise ValueError(
+                "SmoothQuant currently supports only W8A8 in MindPipe; "
+                f"got W{bit_config[0]}A{bit_config[1]}."
+            )
         if any(int(bits) < 16 for bits in (args.query_bits, args.key_bits, args.value_bits)):
             raise ValueError(
                 "SmoothQuant fake-quant integration does not currently quantize Q/K/V caches; keep --query_bits/--key_bits/--value_bits at 16."
@@ -127,11 +137,18 @@ class SmoothQuantMethod(BaseQuantizationMethod):
 
             quantized_linear_names = quantize_model(
                 model,
+                weight_bits=int(args.weight_bits),
+                activation_bits=int(args.activation_bits),
                 weight_quant="per_channel",
                 act_quant="per_token",
                 quantize_bmm_input=True,
             )
-            LOGGER.info("Replaced %s linear layers with SmoothQuant W8A8 fake-quant modules", len(quantized_linear_names))
+            LOGGER.info(
+                "Replaced %s linear layers with SmoothQuant fake-quant modules (W%sA%s)",
+                len(quantized_linear_names),
+                args.weight_bits,
+                args.activation_bits,
+            )
 
         artifacts: dict[str, object] = {
             "source_root": str(source_root),
@@ -145,7 +162,13 @@ class SmoothQuantMethod(BaseQuantizationMethod):
                 "model_type": getattr(model.config, "model_type", None),
             },
             "quantized_linear_count": len(quantized_linear_names),
-            "quantized_linear_layers": {name: {"bits": 8} for name in quantized_linear_names},
+            "quantized_linear_layers": {
+                name: {
+                    "weight_bits": int(args.weight_bits),
+                    "activation_bits": int(args.activation_bits),
+                }
+                for name in quantized_linear_names
+            },
         }
         if act_scales_path is not None:
             artifacts["act_scales_path"] = str(act_scales_path)

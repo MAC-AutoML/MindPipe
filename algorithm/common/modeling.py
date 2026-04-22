@@ -702,6 +702,25 @@ def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> l
                 compact_groups.append(present)
         if compact_groups:
             return compact_groups
+    if hasattr(layer, "linear_attn") and hasattr(layer, "mlp"):
+        groups = [
+            [
+                "linear_attn.in_proj_qkv",
+                "linear_attn.in_proj_z",
+                "linear_attn.in_proj_b",
+                "linear_attn.in_proj_a",
+            ],
+            ["linear_attn.out_proj"],
+            ["mlp.up_proj", "mlp.gate_proj"],
+            ["mlp.down_proj"],
+        ]
+        compact_groups = []
+        for group in groups:
+            present = [name for name in group if name in available_names]
+            if present:
+                compact_groups.append(present)
+        if compact_groups:
+            return compact_groups
     return [sorted(available_names)]
 
 

@@ -13,6 +13,7 @@ from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
+from ....common.modeling import get_output_head
 from ....common.modeling import get_text_backbone
 from ....common.modeling import load_model_and_tokenizer
 from ....common.modeling import unwrap_layer_output
@@ -76,7 +77,43 @@ class SpinQuantMethod(BaseQuantizationMethod):
 
     @staticmethod
     def _is_qwen_like(model) -> bool:
-        return getattr(model.config, "model_type", None) in {"qwen2", "qwen2_5_vl"}
+        return getattr(model.config, "model_type", None) in {
+            "qwen2",
+            "qwen2_vl",
+            "qwen2_5_vl",
+            "qwen3",
+            "qwen3_vl",
+            "qwen3_5",
+        }
+
+    @staticmethod
+    def _get_decoder_config_value(backbone, model, key: str):
+        decoder_config = getattr(backbone, "decoder_config", None)
+        if decoder_config is not None and hasattr(decoder_config, key):
+            return getattr(decoder_config, key)
+        root_config = getattr(getattr(backbone, "root", None), "config", None)
+        if root_config is not None:
+            text_config = getattr(root_config, "text_config", None)
+            if text_config is not None and hasattr(text_config, key):
+                return getattr(text_config, key)
+            if hasattr(root_config, key):
+                return getattr(root_config, key)
+        model_config = getattr(model, "config", None)
+        if model_config is not None:
+            text_config = getattr(model_config, "text_config", None)
+            if text_config is not None and hasattr(text_config, key):
+                return getattr(text_config, key)
+            if hasattr(model_config, key):
+                return getattr(model_config, key)
+        raise AttributeError(f"Missing decoder config field `{key}` for model type {type(model)}")
+
+    def _get_attention_head_dim(self, backbone, model) -> int:
+        try:
+            return int(self._get_decoder_config_value(backbone, model, "head_dim"))
+        except AttributeError:
+            hidden_size = int(self._get_decoder_config_value(backbone, model, "hidden_size"))
+            num_heads = int(self._get_decoder_config_value(backbone, model, "num_attention_heads"))
+            return hidden_size // num_heads
 
     @staticmethod
     def _random_orthogonal_matrix(size: int) -> torch.Tensor:
@@ -96,10 +133,9 @@ class SpinQuantMethod(BaseQuantizationMethod):
         rotation_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = rotation_dir / f"{self.name}_{args.rotation_mode}_identity_r2.bin"
 
-        hidden_size = backbone.hidden_size
+        hidden_size = int(self._get_decoder_config_value(backbone, model, "hidden_size"))
         num_layers = len(backbone.layers)
-        num_heads = model.config.num_attention_heads
-        head_dim = hidden_size // num_heads
+        head_dim = self._get_attention_head_dim(backbone, model)
         layer_key_prefix = f"{backbone.prefix}.layers"
         expected_key = f"{layer_key_prefix}.0.self_attn.R2"
 
@@ -134,6 +170,21 @@ class SpinQuantMethod(BaseQuantizationMethod):
             return original_get_orthogonal_matrix(size, mode, device=resolved_device)
 
         rotation_utils.get_orthogonal_matrix = get_orthogonal_matrix
+
+    @staticmethod
+    def _untie_output_head_if_shared(model, backbone) -> bool:
+        embed_tokens = getattr(backbone, "embed_tokens", None)
+        head = get_output_head(model)
+        if embed_tokens is None or head is None:
+            return False
+        if not hasattr(embed_tokens, "weight") or not hasattr(head, "weight"):
+            return False
+        if embed_tokens.weight is None or head.weight is None:
+            return False
+        if embed_tokens.weight.data_ptr() != head.weight.data_ptr():
+            return False
+        head.weight = torch.nn.Parameter(head.weight.detach().clone())
+        return True
 
     @staticmethod
     def _ensure_forward_global(module, function_name: str) -> None:
@@ -190,6 +241,7 @@ class SpinQuantMethod(BaseQuantizationMethod):
         )
         output_states = torch.zeros_like(input_states)
         quantizer_artifacts: dict[str, object] = {}
+        model_type = getattr(getattr(model, "config", None), "model_type", None)
 
         for layer_index, block in enumerate(backbone.layers):
             block = block.to(args.device)
@@ -198,8 +250,20 @@ class SpinQuantMethod(BaseQuantizationMethod):
 
             for group in layer_groups:
                 subset = {name: qlayers[name] for name in group if name in qlayers}
-                gptq_states = {}
+                gptq_subset = {}
+                rtn_subset = {}
                 for layer_name, qlayer in subset.items():
+                    use_rtn_fallback = (
+                        model_type == "qwen3_vl"
+                        and "down_proj" in layer_name
+                        and getattr(qlayer, "online_full_had", False)
+                    )
+                    if use_rtn_fallback:
+                        rtn_subset[layer_name] = qlayer
+                    else:
+                        gptq_subset[layer_name] = qlayer
+                gptq_states = {}
+                for layer_name, qlayer in gptq_subset.items():
                     gptq_state = gptq_utils.GPTQ(qlayer)
                     gptq_state.quantizer = quant_utils.WeightQuantizer()
                     gptq_state.quantizer.configure(
@@ -220,19 +284,23 @@ class SpinQuantMethod(BaseQuantizationMethod):
 
                     return hook
 
-                handles = [subset[layer_name].register_forward_hook(add_batch(layer_name)) for layer_name in subset]
-                for sample_index in range(args.calibration_samples):
-                    with torch.no_grad():
-                        output_states[sample_index] = torch.nan_to_num(
-                            unwrap_layer_output(
-                                block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
-                            ),
-                            nan=0.0,
-                            posinf=0.0,
-                            neginf=0.0,
-                        )
-                for handle in handles:
-                    handle.remove()
+                if gptq_subset:
+                    handles = [
+                        gptq_subset[layer_name].register_forward_hook(add_batch(layer_name))
+                        for layer_name in gptq_subset
+                    ]
+                    for sample_index in range(args.calibration_samples):
+                        with torch.no_grad():
+                            output_states[sample_index] = torch.nan_to_num(
+                                unwrap_layer_output(
+                                    block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
+                                ),
+                                nan=0.0,
+                                posinf=0.0,
+                                neginf=0.0,
+                            )
+                    for handle in handles:
+                        handle.remove()
 
                 for layer_name, gptq_state in gptq_states.items():
                     gptq_state.H = torch.nan_to_num(gptq_state.H, nan=0.0, posinf=0.0, neginf=0.0)
@@ -270,6 +338,25 @@ class SpinQuantMethod(BaseQuantizationMethod):
                     }
                     gptq_state.free()
                 del gptq_states
+
+                for layer_name, qlayer in rtn_subset.items():
+                    quantizer = quant_utils.WeightQuantizer()
+                    quantizer.configure(
+                        args.weight_bits,
+                        perchannel=True,
+                        sym=args.weight_symmetric,
+                        mse=False,
+                        weight_groupsize=args.weight_group_size,
+                    )
+                    weights = qlayer.weight.data
+                    quantizer.find_params(weights)
+                    q_weight, _int_weight, _scale = quantizer.fake_quantize(weights)
+                    qlayer.weight.data = q_weight.to(weights.dtype)
+                    quantizer_artifacts[f"{backbone.prefix}.layers.{layer_index}.{layer_name}"] = {
+                        "bits": args.weight_bits,
+                        "group_size": args.weight_group_size,
+                        "symmetric": args.weight_symmetric,
+                    }
                 empty_cache(args.device)
 
             for sample_index in range(args.calibration_samples):
@@ -318,8 +405,9 @@ class SpinQuantMethod(BaseQuantizationMethod):
             if source_args.a_groupsize > 0:
                 down_proj_groupsize = ref_utils.llama_down_proj_groupsize(backbone_root, source_args.a_groupsize)
 
-            num_heads = backbone_root.config.num_attention_heads
-            head_dim = backbone_root.config.hidden_size // num_heads
+            decoder_config = backbone.decoder_config
+            num_heads = int(getattr(decoder_config, "num_attention_heads"))
+            head_dim = int(getattr(decoder_config, "head_dim", int(getattr(decoder_config, "hidden_size")) // num_heads))
             for layer_name, qlayer in act_qlayers.items():
                 layer_input_bits = source_args.a_bits
                 layer_groupsize = source_args.a_groupsize
@@ -330,7 +418,10 @@ class SpinQuantMethod(BaseQuantizationMethod):
                         sym=not source_args.v_asym,
                         clip_ratio=source_args.v_clip_ratio,
                     )
-                if "o_proj" in layer_name:
+                # Qwen3.5 linear_attn uses `out_proj` instead of `o_proj`, but its
+                # input is still packed per-head (`num_heads * head_dim`) and should
+                # follow the same head-dim grouping rule under low-bit activations.
+                if "o_proj" in layer_name or "linear_attn.out_proj" in layer_name:
                     layer_groupsize = head_dim
                 if "down_proj" in layer_name:
                     layer_groupsize = down_proj_groupsize
@@ -345,7 +436,7 @@ class SpinQuantMethod(BaseQuantizationMethod):
             if source_args.k_pre_rope:
                 raise NotImplementedError("SpinQuant pre-RoPE key quantization is not supported.")
             rope_function_name = "apply_multimodal_rotary_pos_emb"
-            if getattr(backbone_root.config, "model_type", None) != "qwen2_5_vl":
+            if getattr(backbone_root.config, "model_type", None) not in {"qwen2_vl", "qwen2_5_vl"}:
                 rope_function_name = "apply_rotary_pos_emb"
             k_quant_config = {
                 "k_bits": source_args.k_bits,
@@ -354,6 +445,8 @@ class SpinQuantMethod(BaseQuantizationMethod):
                 "k_clip_ratio": source_args.k_clip_ratio,
             }
             for layer in backbone.layers:
+                if not hasattr(layer, "self_attn"):
+                    continue
                 self._ensure_forward_global(layer.self_attn, rope_function_name)
                 rotation_utils.add_qk_rotation_wrapper_after_function_call_in_forward(
                     layer.self_attn,
@@ -402,9 +495,12 @@ class SpinQuantMethod(BaseQuantizationMethod):
                 rotation_fallback = "identity_r2"
 
             if source_args.rotate:
+                untied_output_head = self._untie_output_head_if_shared(model, backbone)
                 fuse_norm_utils.fuse_layer_norms(model)
                 rotation_utils.rotate_model(model, source_args)
                 ref_utils.cleanup_memory(verbos=False)
+            else:
+                untied_output_head = False
 
             quant_utils.add_actquant(backbone.root)
             self._configure_activation_quantizers(
@@ -441,6 +537,7 @@ class SpinQuantMethod(BaseQuantizationMethod):
                 "rotation_mode": source_args.rotate_mode,
                 "rotation_checkpoint": source_args.optimized_rotation_path,
                 "rotation_fallback": rotation_fallback,
+                "untied_output_head": untied_output_head,
                 "weight_bits": source_args.w_bits,
                 "activation_bits": source_args.a_bits,
                 "key_bits": source_args.k_bits,

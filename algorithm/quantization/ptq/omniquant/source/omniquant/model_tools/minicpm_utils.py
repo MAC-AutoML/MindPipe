@@ -1,31 +1,21 @@
 from __future__ import annotations
 
-import inspect
+import math
 
 import torch
 import torch.nn as nn
-from transformers.models.llama.modeling_llama import ALL_ATTENTION_FUNCTIONS
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
-from transformers.models.llama.modeling_llama import eager_attention_forward
 
 from omniquant.int_linear import QuantLinear
 from omniquant.int_matmul import QuantMatMul
 from omniquant.omni_norm import OmniLlamaRMSNorm
 
 
-_LLAMA_APPLY_ROTARY_HAS_POSITION_IDS = "position_ids" in inspect.signature(apply_rotary_pos_emb).parameters
-
-
-def _apply_llama_rotary_pos_emb(query_states, key_states, cos, sin, position_ids):
-    if _LLAMA_APPLY_ROTARY_HAS_POSITION_IDS:
-        return apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
-    return apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-
-class QuantLlamaMLP(nn.Module):
+class QuantMiniCPMMLP(nn.Module):
     def __init__(self, org_module: nn.Module, args):
         super().__init__()
         self.config = org_module.config
+        self.hidden_size = org_module.hidden_size
+        self.intermediate_size = org_module.intermediate_size
         self.gate_proj = QuantLinear(org_module.gate_proj, args.weight_quant_params, args.act_quant_params)
         self.down_proj = QuantLinear(org_module.down_proj, args.weight_quant_params, args.act_quant_params)
         self.up_proj = QuantLinear(org_module.up_proj, args.weight_quant_params, args.act_quant_params)
@@ -35,7 +25,7 @@ class QuantLlamaMLP(nn.Module):
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
 
-class QuantLlamaAttention(nn.Module):
+class QuantMiniCPMAttention(nn.Module):
     def __init__(self, org_module: nn.Module, args):
         super().__init__()
         self.config = org_module.config
@@ -48,19 +38,15 @@ class QuantLlamaAttention(nn.Module):
             "num_key_value_groups",
             self.num_heads // self.num_key_value_heads,
         )
-        self.head_dim = getattr(
-            org_module,
-            "head_dim",
-            getattr(org_module.config, "head_dim", self.hidden_size // self.num_heads),
-        )
+        self.head_dim = getattr(org_module, "head_dim", self.hidden_size // self.num_heads)
         self.kv_hidden_size = self.num_key_value_heads * self.head_dim
         self.full_attention_size = self.num_heads * self.head_dim
         self.is_gqa = self.num_heads != self.num_key_value_heads
-        self.scaling = getattr(org_module, "scaling", self.head_dim**-0.5)
         self.attention_dropout = getattr(org_module, "attention_dropout", org_module.config.attention_dropout)
         self.is_causal = getattr(org_module, "is_causal", True)
-        if hasattr(org_module, "rotary_emb"):
-            self.rotary_emb = org_module.rotary_emb
+        self.rotary_emb = org_module.rotary_emb
+        self.apply_rotary_pos_emb = org_module.forward.__globals__["apply_rotary_pos_emb"]
+        self.repeat_kv = org_module.forward.__globals__["repeat_kv"]
 
         self.q_proj = QuantLinear(org_module.q_proj, args.weight_quant_params, args.act_quant_params)
         self.k_proj = QuantLinear(org_module.k_proj, args.weight_quant_params, args.act_quant_params)
@@ -92,102 +78,101 @@ class QuantLlamaAttention(nn.Module):
             return grouped.mean(dim=1).reshape(-1)
         raise ValueError(f"Unsupported GQA reduction mode: {reduction}")
 
-    def _attention_forward(
+    def _manual_attention_forward(
         self,
         query_states: torch.Tensor,
         key_states: torch.Tensor,
         value_states: torch.Tensor,
         attention_mask: torch.Tensor | None,
-        output_attentions: bool,
-        **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        attention_interface = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
-        return attention_interface(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            scaling=self.scaling,
-            output_attentions=output_attentions,
-            **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_weights = nn.functional.dropout(
+            attn_weights,
+            p=self.attention_dropout if self.training else 0.0,
+            training=self.training,
         )
+        attn_output = torch.matmul(attn_weights, value_states)
+        return attn_output, attn_weights
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
-        past_key_values=None,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        past_key_value=None,
         output_attentions: bool = False,
-        use_cache: bool | None = False,
-        cache_position: torch.LongTensor | None = None,
+        use_cache: bool = False,
         **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        del use_cache
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
+    ):
+        if "padding_mask" in kwargs and attention_mask is None:
+            attention_mask = kwargs.pop("padding_mask")
 
-        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        bsz, q_len, _ = hidden_states.size()
 
-        if position_embeddings is None:
-            if not hasattr(self, "rotary_emb"):
-                raise AttributeError(
-                    "QuantLlamaAttention requires `position_embeddings` or a `rotary_emb` module for LLaMA models."
-                )
-            cos, sin = self.rotary_emb(value_states, position_ids)
-        else:
-            cos, sin = position_embeddings
-        query_states, key_states = _apply_llama_rotary_pos_emb(
-            query_states,
-            key_states,
-            cos,
-            sin,
-            position_ids,
-        )
+        query_states = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-        cache_obj = past_key_values if past_key_values is not None else kwargs.get("past_key_value")
-        if cache_obj is not None:
+        kv_seq_len = key_states.shape[-2]
+        if past_key_value is not None:
+            if self.layer_idx is None:
+                raise ValueError("MiniCPM attention requires layer_idx when KV cache is enabled.")
+            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+        cos, sin = self.rotary_emb(value_states.to(torch.float32), seq_len=kv_seq_len)
+        query_states, key_states = self.apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+
+        if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos}
-            if cache_position is not None:
-                cache_kwargs["cache_position"] = cache_position
-            try:
-                key_states, value_states = cache_obj.update(key_states, value_states, self.layer_idx, cache_kwargs)
-            except TypeError:
-                key_states, value_states = cache_obj.update(key_states, value_states, self.layer_idx)
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         query_states = self.qkt_matmul.quant_x1(query_states)
         key_states = self.qkt_matmul.quant_x2(key_states)
         value_states = self.pv_matmul.quant_x2(value_states)
 
-        attn_output, attn_weights = self._attention_forward(
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            output_attentions,
-            **kwargs,
-        )
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        key_states = self.repeat_kv(key_states, self.num_key_value_groups)
+        value_states = self.repeat_kv(value_states, self.num_key_value_groups)
+
+        if self.config._attn_implementation == "sdpa" and not output_attentions:
+            if query_states.device.type == "cuda" and attention_mask is not None:
+                query_states = query_states.contiguous()
+                key_states = key_states.contiguous()
+                value_states = value_states.contiguous()
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                query_states,
+                key_states,
+                value_states,
+                attn_mask=attention_mask,
+                dropout_p=self.attention_dropout if self.training else 0.0,
+                is_causal=self.is_causal and attention_mask is None and q_len > 1,
+            )
+            attn_weights = None
+        else:
+            attn_output, attn_weights = self._manual_attention_forward(
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+            )
+
+        attn_output = attn_output.transpose(1, 2).contiguous().reshape(bsz, q_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
             attn_weights = None
-        return attn_output, attn_weights
+        if not use_cache:
+            past_key_value = None
+        return attn_output, attn_weights, past_key_value
 
 
-class QuantLlamaDecoderLayer(nn.Module):
+class QuantMiniCPMDecoderLayer(nn.Module):
     def __init__(self, ori_layer, args):
         super().__init__()
         self.hidden_size = getattr(ori_layer, "hidden_size", ori_layer.self_attn.config.hidden_size)
-        self.self_attn = QuantLlamaAttention(ori_layer.self_attn, args)
-        self.mlp = QuantLlamaMLP(ori_layer.mlp, args)
+        self.self_attn = QuantMiniCPMAttention(ori_layer.self_attn, args)
+        self.mlp = QuantMiniCPMMLP(ori_layer.mlp, args)
         self.input_layernorm = OmniLlamaRMSNorm(
             ori_layer.input_layernorm,
             eps=ori_layer.input_layernorm.variance_epsilon,
@@ -196,37 +181,45 @@ class QuantLlamaDecoderLayer(nn.Module):
             ori_layer.post_attention_layernorm,
             eps=ori_layer.post_attention_layernorm.variance_epsilon,
         )
+        self.scale_depth = ori_layer.scale_depth
+        self.num_hidden_layers = ori_layer.num_hidden_layers
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
+        past_key_value=None,
         past_key_values=None,
-        use_cache: bool | None = False,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
         **kwargs,
-    ) -> torch.Tensor:
-        output_attentions = bool(kwargs.pop("output_attentions", False))
+    ):
+        cache_obj = past_key_value if past_key_value is not None else past_key_values
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, _attn_weights = self.self_attn(
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_values=past_key_values,
-            use_cache=use_cache,
-            position_embeddings=position_embeddings,
+            past_key_value=cache_obj,
             output_attentions=output_attentions,
+            use_cache=use_cache,
             **kwargs,
         )
-        hidden_states = residual + hidden_states
+        hidden_states = residual + hidden_states * (self.scale_depth / math.sqrt(self.num_hidden_layers))
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-        return hidden_states
+        hidden_states = residual + hidden_states * (self.scale_depth / math.sqrt(self.num_hidden_layers))
+
+        outputs = (hidden_states,)
+        if output_attentions:
+            outputs += (self_attn_weights,)
+        if use_cache:
+            outputs += (present_key_value,)
+        return outputs
 
 
 def initialize_omni_parameters(qlayer, layer_prefix: str, args, act_scales, act_shifts, use_shift: bool = False) -> None:
