@@ -20,6 +20,10 @@ try:
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNorm
 except ImportError:
     Qwen3_5RMSNorm = tuple()  # type: ignore[assignment]
+try:
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNormGated
+except ImportError:
+    Qwen3_5RMSNormGated = tuple()  # type: ignore[assignment]
 
 from .qmodule import ScaledActivation
 from .forward_utils import forward_in_chunks
@@ -46,7 +50,10 @@ def _is_llama_family_decoder(module) -> bool:
 
 
 def _is_norm_like(module) -> bool:
-    if isinstance(module, (nn.LayerNorm, LlamaRMSNorm, Qwen2RMSNorm, Qwen2_5_VLRMSNorm)):
+    if isinstance(
+        module,
+        (nn.LayerNorm, LlamaRMSNorm, Qwen2RMSNorm, Qwen2_5_VLRMSNorm, Qwen3_5RMSNormGated),
+    ):
         return True
     return hasattr(module, "weight") and module.__class__.__name__.endswith("RMSNorm")
 
@@ -127,7 +134,7 @@ def scale_gelu_fc(gelu, fc, scales):
 
 
 @torch.no_grad()
-def auto_scale_block(model, module, module_kwargs, w_bit, q_config, input_feat):
+def auto_scale_block(model, module, module_kwargs, w_bit, q_config, input_feat, qwen3_5_quantize_linear_attn=False):
     from .quantizer import pseudo_quantize_tensor
 
     # firstly, get the weight quantize function
@@ -297,8 +304,39 @@ def auto_scale_block(model, module, module_kwargs, w_bit, q_config, input_feat):
             )
         )
     elif isinstance(module, Qwen3_5DecoderLayer):
-        # Keep Qwen3.5 attention projections in higher precision for stability.
-        # AWQ scaling only applies to MLP linears.
+        if getattr(module, "layer_type", None) == "linear_attention" and qwen3_5_quantize_linear_attn:
+            token_mixer_input_names = [
+                "linear_attn.in_proj_qkv",
+                "linear_attn.in_proj_z",
+                "linear_attn.in_proj_b",
+                "linear_attn.in_proj_a",
+            ]
+            token_mixer_reference_input = next(
+                (name for name in token_mixer_input_names if name in input_feat),
+                None,
+            )
+            token_mixer_input_layers = [
+                getattr(module.linear_attn, name.rsplit(".", 1)[-1])
+                for name in token_mixer_input_names
+                if name in input_feat
+            ]
+            if token_mixer_input_layers and token_mixer_reference_input is not None:
+                scales_list.append(
+                    _auto_get_scale(
+                        prev_op=module.input_layernorm,
+                        layers=token_mixer_input_layers,
+                        inp=input_feat[token_mixer_reference_input],
+                        module2inspect=module.linear_attn,
+                        kwargs=module_kwargs,
+                    )
+                )
+            # linear_attn.out_proj follows a head-shared gated RMSNorm whose
+            # parameter dimension is head_v_dim instead of value_dim, so the
+            # standard AWQ norm->fc scale transfer does not apply directly.
+            # Keep out_proj on direct pseudo quantization only for now.
+
+        # Keep the remaining Qwen3.5 attention projections in higher precision
+        # for stability unless explicitly enabled above.
         if "mlp.gate_proj" in input_feat:
             scales_list.append(
                 _auto_get_scale(

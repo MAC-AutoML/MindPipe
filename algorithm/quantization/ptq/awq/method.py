@@ -28,6 +28,9 @@ class AWQMethod(BaseQuantizationMethod):
         awq_auto_scale = bool(getattr(args, "awq_auto_scale", True))
         awq_mse_range = bool(getattr(args, "awq_mse_range", True))
         awq_clip_targets = str(getattr(args, "awq_clip_targets", "auto") or "auto")
+        awq_qwen3_5_quantize_linear_attn = bool(
+            getattr(args, "awq_qwen3_5_quantize_linear_attn", False)
+        )
         if awq_search_sequence_length <= 0:
             raise ValueError(
                 f"awq_search_sequence_length must be positive, got {awq_search_sequence_length}."
@@ -67,6 +70,7 @@ class AWQMethod(BaseQuantizationMethod):
                     auto_scale=awq_auto_scale,
                     mse_range=awq_mse_range,
                     clip_targets=awq_clip_targets,
+                    qwen3_5_quantize_linear_attn=awq_qwen3_5_quantize_linear_attn,
                     calib_data=args.calibration_dataset,
                     device=args.device,
                     data_path=args.data_path,
@@ -77,6 +81,7 @@ class AWQMethod(BaseQuantizationMethod):
                 model,
                 w_bit=args.weight_bits,
                 q_config=quantization_config,
+                qwen3_5_quantize_linear_attn=awq_qwen3_5_quantize_linear_attn,
                 device=args.device,
             )
 
@@ -88,6 +93,7 @@ class AWQMethod(BaseQuantizationMethod):
             "awq_auto_scale": awq_auto_scale,
             "awq_mse_range": awq_mse_range,
             "awq_clip_targets": awq_clip_targets,
+            "awq_qwen3_5_quantize_linear_attn": awq_qwen3_5_quantize_linear_attn,
         }
         if awq_state_path.exists():
             artifacts["awq_search_path"] = str(awq_state_path)
