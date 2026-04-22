@@ -218,6 +218,16 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
             "or a comma-separated list such as 'self_attn.v_proj,self_attn.o_proj,mlp.down_proj'."
         ),
     )
+    parser.add_argument(
+        "--awq_qwen3_5_quantize_linear_attn",
+        type=_bool_flag,
+        default=False,
+        help=(
+            "Opt-in Qwen3.5 linear_attn AWQ weight quantization. "
+            "When enabled, AWQ quantizes linear_attn.in_proj_qkv/in_proj_z/in_proj_b/in_proj_a/out_proj "
+            "instead of keeping the entire linear-attention token mixer in higher precision."
+        ),
+    )
     # QuaRot / SpinQuant
     parser.add_argument("--rotation_mode", default="hadamard", choices=["hadamard", "random"])
     parser.add_argument("--rotation_checkpoint", default=None)

@@ -109,6 +109,7 @@ def pseudo_quantize_model_weight(
     model,
     w_bit,
     q_config,
+    qwen3_5_quantize_linear_attn=False,
     device=None,
 ):
     from .pre_quant import get_blocks, get_named_linears
@@ -116,7 +117,11 @@ def pseudo_quantize_model_weight(
     runtime_device = resolve_device(device)
     layers = get_blocks(model)
     for i in tqdm(range(len(layers)), desc="pseudo weight quantization..."):
-        named_linears = get_named_linears(layers[i], model=model)
+        named_linears = get_named_linears(
+            layers[i],
+            model=model,
+            qwen3_5_quantize_linear_attn=qwen3_5_quantize_linear_attn,
+        )
         for n, m in named_linears.items():
             m.to(runtime_device)
             m.weight.data = pseudo_quantize_tensor(
