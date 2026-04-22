@@ -1,19 +1,9 @@
 import torch
 import torch.nn as nn
 from algorithm.common.device import empty_cache
+from algorithm.common.modeling import get_text_backbone
 from .layerwrapper import WrappedGPT
 from .backend import resolve_runtime_device
-
-
-def _get_decoder_root(model):
-    """获取解码器根模块，兼容多模态和纯文本模型。"""
-    if hasattr(model, "model") and hasattr(model.model, "language_model"):
-        return model.model.language_model
-    if hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
-        return model.language_model
-    if hasattr(model, "model") and hasattr(model.model, "layers"):
-        return model.model
-    raise NotImplementedError(f"Unsupported decoder backbone: {type(model)}")
 
 
 def find_layers(module, layers=[nn.Linear], name=''):
@@ -46,11 +36,12 @@ def _move_layer_kwargs(layer_kwargs, device):
 
 def check_sparsity(model):
     """检查模型权重的稀疏度。"""
-    decoder_config = _get_decoder_root(model).config
+    backbone = get_text_backbone(model)
+    decoder_config = backbone.decoder_config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
 
-    layers = _get_decoder_root(model).layers
+    layers = backbone.layers
     count = 0
     total_params = 0
     for i in range(len(layers)):
@@ -81,11 +72,11 @@ def prepare_calibration_input(model, dataloader, device):
     包括 position_embeddings 等，无需针对不同模型手动构建 kwargs。
     """
     device = resolve_runtime_device(device)
-    decoder_root = _get_decoder_root(model)
-    decoder_config = decoder_root.config
+    backbone = get_text_backbone(model)
+    decoder_config = backbone.decoder_config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
-    layers = decoder_root.layers
+    layers = backbone.layers
 
     # 定位 embedding 层的设备
     hf_device_map = getattr(model, "hf_device_map", {}) or {}
@@ -95,10 +86,10 @@ def prepare_calibration_input(model, dataloader, device):
             break
 
     dtype = next(iter(model.parameters())).dtype
-    if hasattr(decoder_root, "embed_tokens"):
-        decoder_root.embed_tokens = decoder_root.embed_tokens.to(device)
-    if hasattr(decoder_root, "rotary_emb"):
-        decoder_root.rotary_emb = decoder_root.rotary_emb.to(device)
+    if hasattr(backbone.root, "embed_tokens"):
+        backbone.root.embed_tokens = backbone.root.embed_tokens.to(device)
+    if hasattr(backbone.root, "rotary_emb"):
+        backbone.root.rotary_emb = backbone.root.rotary_emb.to(device)
     layers[0] = layers[0].to(device)
 
     sample_count = len(dataloader)
@@ -131,10 +122,10 @@ def prepare_calibration_input(model, dataloader, device):
             pass
     layers[0] = layers[0].module
     layers[0] = layers[0].cpu()
-    if hasattr(decoder_root, "embed_tokens"):
-        decoder_root.embed_tokens = decoder_root.embed_tokens.cpu()
-    if hasattr(decoder_root, "rotary_emb"):
-        decoder_root.rotary_emb = decoder_root.rotary_emb.cpu()
+    if hasattr(backbone.root, "embed_tokens"):
+        backbone.root.embed_tokens = backbone.root.embed_tokens.cpu()
+    if hasattr(backbone.root, "rotary_emb"):
+        backbone.root.rotary_emb = backbone.root.rotary_emb.cpu()
     empty_cache(device)
 
     outs = torch.zeros_like(inps)
@@ -155,14 +146,15 @@ def return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before):
 def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, dataloader=None):
     """Wanda 剪枝主函数。"""
     device = resolve_runtime_device(device)
-    decoder_config = _get_decoder_root(model).config
+    backbone = get_text_backbone(model)
+    decoder_config = backbone.decoder_config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
 
     with torch.no_grad():
         inps, outs, layer_kwargs = prepare_calibration_input(model, dataloader, device)
 
-    layers = _get_decoder_root(model).layers
+    layers = backbone.layers
     for i in range(len(layers)):
         inps = inps.to(device)
         outs = outs.to(device)

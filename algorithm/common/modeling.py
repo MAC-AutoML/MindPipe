@@ -641,7 +641,11 @@ def get_text_backbone(model: nn.Module) -> TextBackbone:
     if hasattr(model, "model") and hasattr(model.model, "language_model"):
         language_model = model.model.language_model
         if hasattr(language_model, "layers"):
+            # Qwen2.5-VL 等模型的 language_model 直接有 .layers
             return TextBackbone(model=model, root=language_model, prefix="model.language_model")
+        if hasattr(language_model, "model") and hasattr(language_model.model, "layers"):
+            # LLaVA 等模型的 language_model 是 CausalLM 包装，layers 在其 .model 内
+            return TextBackbone(model=model, root=language_model.model, prefix="model.language_model.model")
     if hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
         return TextBackbone(model=model, root=model.language_model, prefix="language_model")
     if hasattr(model, "model") and hasattr(model.model, "layers"):
