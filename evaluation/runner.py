@@ -14,6 +14,7 @@ def run_evaluations(model, tokenizer=None, tokenizer_bundle=None, common_args: d
     resolved_tokenizer = getattr(tokenizer_bundle, "tokenizer", tokenizer_bundle)
     metrics = {}
     zero_shot_num_samples = common_args.get("num_samples")
+    save_callback = common_args.get("evaluation_save_callback")
     if common_args.get("eval_ppl", True):
         metrics = evaluate_perplexity(
             model=model,
@@ -25,6 +26,8 @@ def run_evaluations(model, tokenizer=None, tokenizer_bundle=None, common_args: d
             device=common_args["device"],
             data_path=common_args.get("data_path"),
         )
+        if save_callback is not None:
+            save_callback(metrics)
     if common_args.get("eval_zero_shot", False):
         metrics["zero_shot"] = evaluate_zero_shot(
             model=model,
@@ -35,10 +38,14 @@ def run_evaluations(model, tokenizer=None, tokenizer_bundle=None, common_args: d
             num_fewshot=int(common_args["zero_shot_num_fewshot"]),
             num_samples=zero_shot_num_samples,
         )
+        if save_callback is not None:
+            save_callback(metrics)
     if common_args.get("eval_vlm", False):
         metrics["vlm_eval"] = evaluate_vlm(
             model=model,
             tokenizer_bundle=tokenizer_bundle,
             common_args=common_args,
         )
+        if save_callback is not None:
+            save_callback(metrics)
     return metrics

@@ -106,23 +106,6 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         else:
             final_output_dir = ensure_dir(Path("results/evaluate"))
 
-    # ── 评测阶段（可通过 --eval_ppl false 跳过） ──
-    common_args["evaluation_output_dir"] = str(final_output_dir)
-    common_args["model_path"] = config.model_path
-    metrics = run_evaluations(
-        model=model,
-        tokenizer_bundle=tokenizer_bundle,
-        common_args=common_args,
-    )
-    metrics.update(config.result_metadata)
-    metrics.update(
-        {
-            "model_path": config.model_path,
-            "device": common_args["device"],
-            "dtype": dtype,
-        }
-    )
-
     artifacts: dict[str, Any]
     if not stage_records:
         artifacts = {}
@@ -130,13 +113,37 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         artifacts = stage_records[0]["artifacts"]
     else:
         artifacts = {"stages": stage_records}
+
+    metrics_path = final_output_dir / "metrics.json"
+    metrics_metadata = copy.deepcopy(config.result_metadata)
+    metrics_metadata.update(
+        {
+            "model_path": config.model_path,
+            "device": common_args["device"],
+            "dtype": dtype,
+        }
+    )
+
+    # ── 评测阶段（可通过 --eval_ppl false 跳过） ──
+    common_args["evaluation_output_dir"] = str(final_output_dir)
+    common_args["model_path"] = config.model_path
+    common_args["evaluation_save_callback"] = lambda metrics: write_json(
+        metrics_path,
+        {**metrics, **metrics_metadata, "artifacts": artifacts},
+    )
+    metrics = run_evaluations(
+        model=model,
+        tokenizer_bundle=tokenizer_bundle,
+        common_args=common_args,
+    )
+    metrics.update(metrics_metadata)
     if config.save_model:
         model_dir = ensure_dir(final_output_dir / "saved_model")
         model.save_pretrained(model_dir)
         tokenizer_bundle.save_pretrained(str(model_dir))
         artifacts["saved_model_dir"] = str(model_dir)
 
-    metrics_path = write_json(final_output_dir / "metrics.json", {**metrics, "artifacts": artifacts})
+    metrics_path = write_json(metrics_path, {**metrics, "artifacts": artifacts})
     return WorkflowRunResult(
         model_path=config.model_path,
         output_dir=str(final_output_dir),
