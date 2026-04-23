@@ -218,17 +218,36 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         set_require_grad_all(layer, False)
         trained_params, paras_name = [], []
         if args.cali_trans:
-            trained_params.append({"params": get_n_set_parameters_byname(layer, ["trans.linear", ]), "lr": args.flat_lr})
-            paras_name.append("trans.linear")
+            params = get_n_set_parameters_byname(layer, ["trans.linear", ])
+            if params:
+                trained_params.append({"params": params, "lr": args.flat_lr})
+                paras_name.append("trans.linear")
         if args.add_diag:
-            trained_params.append({"params": get_n_set_parameters_byname(layer, ["trans.diag_scale", ]), "lr": args.flat_lr})
-            paras_name.append("trans.diag_scale")
+            params = get_n_set_parameters_byname(layer, ["trans.diag_scale", ])
+            if params:
+                trained_params.append({"params": params, "lr": args.flat_lr})
+                paras_name.append("trans.diag_scale")
         if args.lwc:
-            trained_params.append({"params": get_n_set_parameters_byname(layer, ["clip_factor_w", ]), "lr": args.flat_lr * 10})
-            paras_name.append("clip_factor_w")
+            params = get_n_set_parameters_byname(layer, ["clip_factor_w", ])
+            if params:
+                trained_params.append({"params": params, "lr": args.flat_lr * 10})
+                paras_name.append("clip_factor_w")
         if args.lac:
-            trained_params.append({"params": get_n_set_parameters_byname(layer, ["clip_factor_a", ]), "lr": args.flat_lr * 10})
-            paras_name.append("clip_factor_a")
+            params = get_n_set_parameters_byname(layer, ["clip_factor_a", ])
+            if params:
+                trained_params.append({"params": params, "lr": args.flat_lr * 10})
+                paras_name.append("clip_factor_a")
+
+        if not paras_name:
+            fp_inps, fp_outs = fp_outs, fp_inps
+            layers[i] = layer.to("cpu")
+            for name, param in layer.named_parameters():
+                param.requires_grad = False
+                if name in dtype_dict.keys():
+                    param.data = param.to(dtype_dict[name])
+            del layer
+            empty_cache(dev)
+            continue
 
         optimizer = torch.optim.AdamW(trained_params)
         scheduler_main = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * (args.nsamples // args.cali_bsz), eta_min=args.flat_lr * 1e-3)

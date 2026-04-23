@@ -135,6 +135,12 @@ class FlatQuantMethod(BaseQuantizationMethod):
         )
 
     def apply_fake_quantization(self, model, tokenizer_bundle, args) -> dict[str, object]:
+        model_type = getattr(getattr(args, "model_config", None), "model_type", None)
+        if model_type == "qwen3_5" and (args.query_bits < 16 or args.key_bits < 16 or args.value_bits < 16):
+            raise ValueError(
+                "FlatQuant Qwen3.5 support currently covers weight/activation quantization only; keep --query_bits/--key_bits/--value_bits at 16."
+            )
+
         source_root = Path(__file__).resolve().parent / "source"
         output_dir = self.resolve_output_dir(args)
         source_args = self._build_source_args(args, output_dir)
@@ -207,6 +213,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
             from flatquant.model_tools.llama31_utils import apply_flatquant_to_llama_31
             from flatquant.model_tools.llama_utils import apply_flatquant_to_llama
             from flatquant.model_tools.minicpm_utils import apply_flatquant_to_minicpm
+            from flatquant.model_tools.qwen3_utils import apply_flatquant_to_qwen3
             from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
             from flatquant.train_utils import cali_flat_quant
 
@@ -221,10 +228,16 @@ class FlatQuantMethod(BaseQuantizationMethod):
             rope_type = rope_scaling.get("rope_type") if isinstance(rope_scaling, dict) else None
             if model_type == "llama":
                 apply_wrapper = apply_flatquant_to_llama_31 if rope_type == "llama3" else apply_flatquant_to_llama
-            elif model_type == "minicpmv":
+            elif model_type in {"minicpm", "minicpmv"}:
                 apply_wrapper = apply_flatquant_to_minicpm
             elif model_type in {"qwen2", "qwen2_5_vl"}:
                 apply_wrapper = apply_flatquant_to_qwen
+            elif model_type in {"qwen3", "qwen3_vl"}:
+                apply_wrapper = apply_flatquant_to_qwen3
+            elif model_type == "qwen3_5":
+                from flatquant.model_tools.qwen3_5_utils import apply_flatquant_to_qwen3_5
+
+                apply_wrapper = apply_flatquant_to_qwen3_5
             else:
                 raise NotImplementedError(
                     f"FlatQuant does not support model_type={model_type!r} in the unified launcher yet."

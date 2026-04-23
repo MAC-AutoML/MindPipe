@@ -19,7 +19,7 @@ ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 EVAL_PPL="${EVAL_PPL:-true}"
 EVAL_ZERO_SHOT="${EVAL_ZERO_SHOT:-true}"
 ZERO_SHOT_TASKS="${ZERO_SHOT_TASKS:-boolq rte winogrande arc_easy arc_challenge openbookqa}"
-ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}"
+ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-32}"
 ZERO_SHOT_NUM_FEWSHOT="${ZERO_SHOT_NUM_FEWSHOT:-0}"
 EVAL_VLM="${EVAL_VLM:-true}"
 VLM_DATASETS="${VLM_DATASETS:-OCRBench TextVQA_VAL ChartQA_TEST InfoVQA_VAL}"
@@ -35,6 +35,9 @@ FLATQUANT_VALUE_BITS_DEFAULT=16
 SMOOTHQUANT_QUERY_BITS_DEFAULT=16
 SMOOTHQUANT_KEY_BITS_DEFAULT=16
 SMOOTHQUANT_VALUE_BITS_DEFAULT=16
+SPLITQUANT_QUERY_BITS_DEFAULT=16
+SPLITQUANT_KEY_BITS_DEFAULT=16
+SPLITQUANT_VALUE_BITS_DEFAULT=16
 SMOOTHQUANT_ALPHA_DEFAULT="${SMOOTHQUANT_ALPHA_DEFAULT:-0.85}"
 SPLITQUANT_GROUP_SIZE="${SPLITQUANT_GROUP_SIZE:-128}"
 SPLITQUANT_WEIGHT_GROUP_SIZE="${SPLITQUANT_WEIGHT_GROUP_SIZE:-$SPLITQUANT_GROUP_SIZE}"
@@ -52,8 +55,8 @@ MODELS=(
   # "/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct"
   # "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
   # "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
-  "/mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct"
-  "/mnt/42_store/wxx/modelzoo/Qwen/Qwen3-0.6B"
+  # "/mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct"
+  # "/mnt/42_store/wxx/modelzoo/Qwen/Qwen3-0.6B"
   "/mnt/82_store/LLM-weights/Qwen3.5-4B"
 )
 AWQ_BITS=(2 3 4)
@@ -70,11 +73,11 @@ OMNIQUANT_CONFIGS=(
   # "4 4 16 16 16 w4a4"
 )
 FLATQUANT_CONFIGS=(
-  "2 16 16 4 4 w2a16"
-  "3 16 16 4 4 w3a16"
-  "4 16 16 4 4 w4a16"
-  "4 4 16 4 4 w4a4"
-  "8 8 16 4 4 w8a8"
+  # "2 16 16 16 16 w2a16"
+  "3 16 16 16 16 w3a16"
+  # "4 16 16 16 16 w4a16"
+  # "4 4 16 16 16 w4a4"
+  "8 8 16 16 16 w8a8"
   # "16 16 16 16 16 w16a16"
 )
 SPLITQUANT_CONFIGS=(
@@ -98,8 +101,8 @@ AWQ_GPUS="${AWQ_GPUS:-0,1}"
 GPTQ_GPUS="${GPTQ_GPUS:-2,4}"
 SMOOTHQUANT_GPUS="${SMOOTHQUANT_GPUS:-1,4}"
 OMNIQUANT_GPUS="${OMNIQUANT_GPUS:-5}"
-FLATQUANT_GPUS="${FLATQUANT_GPUS:-0,1,4,5,6}"
-SPLITQUANT_GPUS="${SPLITQUANT_GPUS:-0,5,6,7}"
+FLATQUANT_GPUS="${FLATQUANT_GPUS:-3}"
+SPLITQUANT_GPUS="${SPLITQUANT_GPUS:-0,3,4}"
 
 # Execution control
 FORCE_RERUN="${FORCE_RERUN:-false}"
@@ -140,6 +143,11 @@ metrics_path_for() {
     default_query_bits="$SMOOTHQUANT_QUERY_BITS_DEFAULT"
     default_key_bits="$SMOOTHQUANT_KEY_BITS_DEFAULT"
     default_value_bits="$SMOOTHQUANT_VALUE_BITS_DEFAULT"
+  fi
+  if [[ "$algorithm" == "splitquant" ]]; then
+    default_query_bits="$SPLITQUANT_QUERY_BITS_DEFAULT"
+    default_key_bits="$SPLITQUANT_KEY_BITS_DEFAULT"
+    default_value_bits="$SPLITQUANT_VALUE_BITS_DEFAULT"
   fi
   local query_bits="${5:-$default_query_bits}"
   local key_bits="${6:-$default_key_bits}"

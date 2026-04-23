@@ -19,7 +19,7 @@ def get_n_set_parameters_byname(model, required_names):
                 params.append(param)
     for param in params:
         param.requires_grad = True
-    return iter(params)
+    return params
 
 
 def get_paras_dict_by_name(model, required_names, destination=None, prefix=''):
