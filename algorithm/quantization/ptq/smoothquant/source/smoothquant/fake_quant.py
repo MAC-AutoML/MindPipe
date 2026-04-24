@@ -121,8 +121,42 @@ class SmoothQuantLinear(nn.Module):
         )
 
 
+def _replace_linear_with_smoothquant(
+    module,
+    proj_name,
+    quantized_linear_names,
+    qualified_name,
+    *,
+    weight_bits,
+    activation_bits,
+    act_quant,
+    quantize_output=False,
+):
+    setattr(
+        module,
+        proj_name,
+        SmoothQuantLinear.from_float(
+            getattr(module, proj_name),
+            weight_bits=weight_bits,
+            activation_bits=activation_bits,
+            act_quant=act_quant,
+            quantize_output=quantize_output,
+        ),
+    )
+    quantized_linear_names.append(qualified_name)
+
+
 def quantize_llama_like(model, weight_bits=8, activation_bits=8, act_quant="per_token", quantize_bmm_input=True):
-    supported_model_types = {"llama", "qwen2", "qwen2_5_vl", "minicpm", "minicpmv"}
+    supported_model_types = {
+        "llama",
+        "qwen2",
+        "qwen2_5_vl",
+        "qwen3",
+        "qwen3_vl",
+        "qwen3_5",
+        "minicpm",
+        "minicpmv",
+    }
     model_type = getattr(getattr(model, "config", None), "model_type", None)
     if model_type not in supported_model_types:
         raise ValueError(f"Unsupported model type: {model_type!r}")
@@ -132,44 +166,83 @@ def quantize_llama_like(model, weight_bits=8, activation_bits=8, act_quant="per_
     for layer_index, layer in enumerate(backbone.layers):
         layer_prefix = f"{backbone.prefix}.layers.{layer_index}"
 
-        for proj_name in ("q_proj", "k_proj", "v_proj"):
-            setattr(
-                layer.self_attn,
-                proj_name,
-                SmoothQuantLinear.from_float(
-                    getattr(layer.self_attn, proj_name),
+        if model_type == "qwen3_5":
+            if getattr(layer, "layer_type", None) == "linear_attention":
+                # These projections feed Qwen3.5's token-mixer directly, so keep
+                # their output fake-quant enabled to cover the custom linear-attn core.
+                for proj_name in ("in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b"):
+                    _replace_linear_with_smoothquant(
+                        layer.linear_attn,
+                        proj_name,
+                        quantized_linear_names,
+                        f"{layer_prefix}.linear_attn.{proj_name}",
+                        weight_bits=weight_bits,
+                        activation_bits=activation_bits,
+                        act_quant=act_quant,
+                        quantize_output=quantize_bmm_input,
+                    )
+                _replace_linear_with_smoothquant(
+                    layer.linear_attn,
+                    "out_proj",
+                    quantized_linear_names,
+                    f"{layer_prefix}.linear_attn.out_proj",
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                    act_quant=act_quant,
+                )
+            else:
+                for proj_name in ("q_proj", "k_proj", "v_proj"):
+                    _replace_linear_with_smoothquant(
+                        layer.self_attn,
+                        proj_name,
+                        quantized_linear_names,
+                        f"{layer_prefix}.self_attn.{proj_name}",
+                        weight_bits=weight_bits,
+                        activation_bits=activation_bits,
+                        act_quant=act_quant,
+                        quantize_output=quantize_bmm_input,
+                    )
+                _replace_linear_with_smoothquant(
+                    layer.self_attn,
+                    "o_proj",
+                    quantized_linear_names,
+                    f"{layer_prefix}.self_attn.o_proj",
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                    act_quant=act_quant,
+                )
+        else:
+            for proj_name in ("q_proj", "k_proj", "v_proj"):
+                _replace_linear_with_smoothquant(
+                    layer.self_attn,
+                    proj_name,
+                    quantized_linear_names,
+                    f"{layer_prefix}.self_attn.{proj_name}",
                     weight_bits=weight_bits,
                     activation_bits=activation_bits,
                     act_quant=act_quant,
                     quantize_output=quantize_bmm_input,
-                ),
-            )
-            quantized_linear_names.append(f"{layer_prefix}.self_attn.{proj_name}")
-
-        setattr(
-            layer.self_attn,
-            "o_proj",
-            SmoothQuantLinear.from_float(
-                layer.self_attn.o_proj,
+                )
+            _replace_linear_with_smoothquant(
+                layer.self_attn,
+                "o_proj",
+                quantized_linear_names,
+                f"{layer_prefix}.self_attn.o_proj",
                 weight_bits=weight_bits,
                 activation_bits=activation_bits,
                 act_quant=act_quant,
-            ),
-        )
-        quantized_linear_names.append(f"{layer_prefix}.self_attn.o_proj")
+            )
 
         for proj_name in ("gate_proj", "up_proj", "down_proj"):
-            setattr(
+            _replace_linear_with_smoothquant(
                 layer.mlp,
                 proj_name,
-                SmoothQuantLinear.from_float(
-                    getattr(layer.mlp, proj_name),
-                    weight_bits=weight_bits,
-                    activation_bits=activation_bits,
-                    act_quant=act_quant,
-                ),
+                quantized_linear_names,
+                f"{layer_prefix}.mlp.{proj_name}",
+                weight_bits=weight_bits,
+                activation_bits=activation_bits,
+                act_quant=act_quant,
             )
-            quantized_linear_names.append(f"{layer_prefix}.mlp.{proj_name}")
     return quantized_linear_names
 
 
