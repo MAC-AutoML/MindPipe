@@ -108,6 +108,33 @@ QUANTIZATION_DEFAULTS = {
         "key_symmetric": True,
         "value_symmetric": True,
     },
+    "splitquant": {
+        "calibration_dataset": "pileval",
+        "calibration_samples": 128,
+        "weight_method": "rtn",
+        "group_size": 128,
+        "weight_group_size": None,
+        "activation_group_size": None,
+        "kv_group_size": 128,
+        "weight_symmetric": True,
+        "activation_symmetric": True,
+        "query_symmetric": True,
+        "key_symmetric": True,
+        "value_symmetric": True,
+        "splitquant_epochs": 15,
+        "splitquant_calibration_batch_size": 32,
+        "splitquant_lr": 5e-3,
+        "splitquant_diag_init": "sq_style",
+        "splitquant_diag_alpha": 0.3,
+        "splitquant_cali_trans": True,
+        "splitquant_add_diag": True,
+        "splitquant_lwc": True,
+        "splitquant_lac": True,
+        "splitquant_warmup": False,
+        "splitquant_deactive_amp": True,
+        "splitquant_separate_vtrans": False,
+        "splitquant_save_matrix": False,
+    },
 }
 
 PRUNING_DEFAULTS = {
@@ -156,6 +183,14 @@ BOOLEAN_OPTIONAL_KEYS = (
     "flatquant_direct_inv",
     "flatquant_separate_vtrans",
     "flatquant_save_matrix",
+    "splitquant_cali_trans",
+    "splitquant_add_diag",
+    "splitquant_lwc",
+    "splitquant_lac",
+    "splitquant_warmup",
+    "splitquant_deactive_amp",
+    "splitquant_separate_vtrans",
+    "splitquant_save_matrix",
     "static_groups",
     "awq_search",
     "use_variant",
@@ -203,6 +238,26 @@ def _append_value(args: list[str], key: str, value: Any) -> None:
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_artifacts(payload: dict[str, Any], metrics_path: Path) -> dict[str, Any]:
+    inline_artifacts = payload.get("artifacts")
+    if isinstance(inline_artifacts, dict):
+        return inline_artifacts
+
+    artifacts_ref = payload.get("artifacts_path")
+    candidate_paths: list[Path] = []
+    if isinstance(artifacts_ref, str) and artifacts_ref:
+        artifacts_path = Path(artifacts_ref)
+        candidate_paths.append(artifacts_path if artifacts_path.is_absolute() else metrics_path.parent / artifacts_path)
+    candidate_paths.append(metrics_path.parent / "artifacts.json")
+
+    for artifacts_path in candidate_paths:
+        if artifacts_path.exists():
+            loaded_artifacts = _load_json(artifacts_path)
+            if isinstance(loaded_artifacts, dict):
+                return loaded_artifacts
+    return {}
 
 
 def _infer_output_root(results_root: Path, metrics_path: Path) -> Path:
@@ -266,8 +321,13 @@ def _build_quantization_args(results_root: Path, metrics_path: Path, payload: di
     output_root = _infer_output_root(results_root, metrics_path)
     run_spec = metrics_path.parent.name
     quant_spec = _parse_quant_run_spec(run_spec)
-    artifacts = payload.get("artifacts", {})
-    q_config = artifacts.get("quarot_config") or artifacts.get("spinquant_config") or artifacts.get("flatquant_config")
+    artifacts = _load_artifacts(payload, metrics_path)
+    if algorithm_name == "flatquant":
+        q_config = artifacts.get("flatquant_config")
+    elif algorithm_name == "splitquant":
+        q_config = artifacts.get("splitquant_config") or artifacts.get("flatquant_config")
+    else:
+        q_config = artifacts.get("quarot_config") or artifacts.get("spinquant_config")
 
     if algorithm_name == "awq":
         quant_cfg = artifacts.get("quantization_config", {})
@@ -298,11 +358,35 @@ def _build_quantization_args(results_root: Path, metrics_path: Path, payload: di
             defaults["flatquant_epochs"] = q_config.get("epochs", 15)
             defaults["flatquant_calibration_batch_size"] = q_config.get("calibration_batch_size", 4)
             defaults["flatquant_lr"] = q_config.get("flat_lr", 1e-5)
+            defaults["flatquant_diag_init"] = q_config.get("diag_init", defaults.get("flatquant_diag_init", "sq_style"))
+            defaults["flatquant_diag_alpha"] = q_config.get("diag_alpha", defaults.get("flatquant_diag_alpha", 0.3))
             defaults["flatquant_cali_trans"] = q_config.get("cali_trans", False)
             defaults["flatquant_add_diag"] = q_config.get("add_diag", False)
             defaults["flatquant_lwc"] = q_config.get("lwc", False)
             defaults["flatquant_lac"] = q_config.get("lac", False)
-            defaults["weight_method"] = "rtn" if q_config.get("weight_quantizer") == "rtn" else "gptq"
+            defaults["flatquant_warmup"] = q_config.get("warmup", defaults.get("flatquant_warmup"))
+            defaults["flatquant_deactive_amp"] = q_config.get("deactive_amp", defaults.get("flatquant_deactive_amp"))
+            defaults["flatquant_separate_vtrans"] = q_config.get("separate_vtrans", defaults.get("flatquant_separate_vtrans"))
+            defaults["flatquant_save_matrix"] = q_config.get("save_matrix", defaults.get("flatquant_save_matrix"))
+            if q_config.get("weight_quantizer") in {"gptq", "rtn"}:
+                defaults["weight_method"] = q_config["weight_quantizer"]
+        if algorithm_name == "splitquant":
+            defaults["calibration_samples"] = q_config.get("calibration_samples", defaults.get("calibration_samples"))
+            defaults["splitquant_epochs"] = q_config.get("epochs", defaults.get("splitquant_epochs", 15))
+            defaults["splitquant_calibration_batch_size"] = q_config.get("calibration_batch_size", defaults.get("splitquant_calibration_batch_size", 32))
+            defaults["splitquant_lr"] = q_config.get("lr", q_config.get("flat_lr", defaults.get("splitquant_lr", 5e-3)))
+            defaults["splitquant_diag_init"] = q_config.get("diag_init", defaults.get("splitquant_diag_init", "sq_style"))
+            defaults["splitquant_diag_alpha"] = q_config.get("diag_alpha", defaults.get("splitquant_diag_alpha", 0.3))
+            defaults["splitquant_cali_trans"] = q_config.get("cali_trans", defaults.get("splitquant_cali_trans", True))
+            defaults["splitquant_add_diag"] = q_config.get("add_diag", defaults.get("splitquant_add_diag", True))
+            defaults["splitquant_lwc"] = q_config.get("lwc", defaults.get("splitquant_lwc", True))
+            defaults["splitquant_lac"] = q_config.get("lac", defaults.get("splitquant_lac", True))
+            defaults["splitquant_warmup"] = q_config.get("warmup", defaults.get("splitquant_warmup", False))
+            defaults["splitquant_deactive_amp"] = q_config.get("deactive_amp", defaults.get("splitquant_deactive_amp", True))
+            defaults["splitquant_separate_vtrans"] = q_config.get("separate_vtrans", defaults.get("splitquant_separate_vtrans", False))
+            defaults["splitquant_save_matrix"] = q_config.get("save_matrix", defaults.get("splitquant_save_matrix", False))
+            if q_config.get("weight_quantizer") in {"gptq", "rtn"}:
+                defaults["weight_method"] = q_config["weight_quantizer"]
 
     cli_args = [
         "--algorithm",
@@ -353,11 +437,34 @@ def _build_quantization_args(results_root: Path, metrics_path: Path, payload: di
         _append_value(cli_args, "flatquant_epochs", defaults.get("flatquant_epochs"))
         _append_value(cli_args, "flatquant_calibration_batch_size", defaults.get("flatquant_calibration_batch_size"))
         _append_value(cli_args, "flatquant_lr", defaults.get("flatquant_lr"))
+        _append_value(cli_args, "flatquant_diag_init", defaults.get("flatquant_diag_init"))
+        _append_value(cli_args, "flatquant_diag_alpha", defaults.get("flatquant_diag_alpha"))
         for key in (
             "flatquant_cali_trans",
             "flatquant_add_diag",
             "flatquant_lwc",
             "flatquant_lac",
+            "flatquant_warmup",
+            "flatquant_deactive_amp",
+            "flatquant_separate_vtrans",
+            "flatquant_save_matrix",
+        ):
+            _append_bool_flag(cli_args, key, defaults.get(key))
+    if algorithm_name == "splitquant":
+        _append_value(cli_args, "splitquant_epochs", defaults.get("splitquant_epochs"))
+        _append_value(cli_args, "splitquant_calibration_batch_size", defaults.get("splitquant_calibration_batch_size"))
+        _append_value(cli_args, "splitquant_lr", defaults.get("splitquant_lr"))
+        _append_value(cli_args, "splitquant_diag_init", defaults.get("splitquant_diag_init"))
+        _append_value(cli_args, "splitquant_diag_alpha", defaults.get("splitquant_diag_alpha"))
+        for key in (
+            "splitquant_cali_trans",
+            "splitquant_add_diag",
+            "splitquant_lwc",
+            "splitquant_lac",
+            "splitquant_warmup",
+            "splitquant_deactive_amp",
+            "splitquant_separate_vtrans",
+            "splitquant_save_matrix",
         ):
             _append_bool_flag(cli_args, key, defaults.get(key))
     for key in (
@@ -376,7 +483,7 @@ def _build_quantization_args(results_root: Path, metrics_path: Path, payload: di
 def _build_pruning_args(results_root: Path, metrics_path: Path, payload: dict[str, Any]) -> list[str]:
     algorithm_name = payload["algorithm_name"]
     defaults = PRUNING_DEFAULTS[algorithm_name].copy()
-    artifacts = payload.get("artifacts", {})
+    artifacts = _load_artifacts(payload, metrics_path)
     output_root = _infer_output_root(results_root, metrics_path)
 
     structure_pattern = payload.get("structure_pattern") or artifacts.get("structure_pattern") or defaults["structure_pattern"]
@@ -427,7 +534,7 @@ def _build_pruning_args(results_root: Path, metrics_path: Path, payload: dict[st
 
 
 def _build_workflow_args(results_root: Path, metrics_path: Path, payload: dict[str, Any]) -> list[str]:
-    artifacts = payload.get("artifacts", {})
+    artifacts = _load_artifacts(payload, metrics_path)
     stages = artifacts.get("stages", [])
     quantization_algorithm = payload["quantization_algorithm"]
     pruning_algorithm = payload["pruning_algorithm"]
@@ -507,6 +614,11 @@ def _build_workflow_args(results_root: Path, metrics_path: Path, payload: dict[s
     _append_value(cli_args, "flatquant_lr", shared_parameters.get("flatquant_lr"))
     _append_value(cli_args, "flatquant_diag_init", shared_parameters.get("flatquant_diag_init"))
     _append_value(cli_args, "flatquant_diag_alpha", shared_parameters.get("flatquant_diag_alpha"))
+    _append_value(cli_args, "splitquant_epochs", shared_parameters.get("splitquant_epochs"))
+    _append_value(cli_args, "splitquant_calibration_batch_size", shared_parameters.get("splitquant_calibration_batch_size"))
+    _append_value(cli_args, "splitquant_lr", shared_parameters.get("splitquant_lr"))
+    _append_value(cli_args, "splitquant_diag_init", shared_parameters.get("splitquant_diag_init"))
+    _append_value(cli_args, "splitquant_diag_alpha", shared_parameters.get("splitquant_diag_alpha"))
     _append_value(cli_args, "rotation_mode", shared_parameters.get("rotation_mode", quant_defaults.get("rotation_mode")))
     if shared_parameters.get("rotation_checkpoint") and str(REPO_ROOT) in str(shared_parameters["rotation_checkpoint"]):
         _append_value(cli_args, "rotation_checkpoint", shared_parameters.get("rotation_checkpoint"))
@@ -557,6 +669,8 @@ def _estimate_cost(job: ReplayJob) -> int:
     elif job.task_type == "pruning":
         score += 30
     if "flatquant" in parts:
+        score += 40
+    if "splitquant" in parts:
         score += 40
     if "wanda_sp" in parts:
         score += 20

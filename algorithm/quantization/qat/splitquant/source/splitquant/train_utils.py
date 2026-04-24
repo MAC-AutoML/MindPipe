@@ -185,7 +185,7 @@ def cali_split_quant(args, model, dataloader, dev, logger):
 
     loss_func = torch.nn.MSELoss()
     # start training
-    flat_parameters = {}
+    splitquant_parameters = {}
     num_train_layer = len(layers)
     mse_dict = {}
     for i in range(num_train_layer):
@@ -220,22 +220,22 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         if args.cali_trans:
             params = get_n_set_parameters_byname(layer, ["trans.linear", ])
             if params:
-                trained_params.append({"params": params, "lr": args.flat_lr})
+                trained_params.append({"params": params, "lr": args.lr})
                 paras_name.append("trans.linear")
         if args.add_diag:
             params = get_n_set_parameters_byname(layer, ["trans.diag_scale", ])
             if params:
-                trained_params.append({"params": params, "lr": args.flat_lr})
+                trained_params.append({"params": params, "lr": args.lr})
                 paras_name.append("trans.diag_scale")
         if args.lwc:
             params = get_n_set_parameters_byname(layer, ["clip_factor_w", ])
             if params:
-                trained_params.append({"params": params, "lr": args.flat_lr * 10})
+                trained_params.append({"params": params, "lr": args.lr * 10})
                 paras_name.append("clip_factor_w")
         if args.lac:
             params = get_n_set_parameters_byname(layer, ["clip_factor_a", ])
             if params:
-                trained_params.append({"params": params, "lr": args.flat_lr * 10})
+                trained_params.append({"params": params, "lr": args.lr * 10})
                 paras_name.append("clip_factor_a")
 
         if not paras_name:
@@ -250,7 +250,7 @@ def cali_split_quant(args, model, dataloader, dev, logger):
             continue
 
         optimizer = torch.optim.AdamW(trained_params)
-        scheduler_main = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * (args.nsamples // args.cali_bsz), eta_min=args.flat_lr * 1e-3)
+        scheduler_main = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * (args.nsamples // args.cali_bsz), eta_min=args.lr * 1e-3)
         if args.warmup:
             scheduler_warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=16)
             scheduler = torch.optim.lr_scheduler.ChainedScheduler([scheduler_warmup, scheduler_main])
@@ -303,9 +303,10 @@ def cali_split_quant(args, model, dataloader, dev, logger):
 
         fp_inps, fp_outs = fp_outs, fp_inps
         layers[i] = layer.to("cpu")
-        flat_parameters[i] = get_paras_dict_by_name(layer, required_names=paras_name)
-        torch.save(flat_parameters, os.path.join(args.exp_dir, f"flat_parameters.pth"))
-        logger.info("saved paramaters at {}".format(os.path.join(args.exp_dir, f"flat_parameters.pth")))
+        splitquant_parameters[i] = get_paras_dict_by_name(layer, required_names=paras_name)
+        parameter_path = os.path.join(args.exp_dir, "splitquant_parameters.pth")
+        torch.save(splitquant_parameters, parameter_path)
+        logger.info("saved parameters at %s", parameter_path)
         for name, param in layer.named_parameters():
             param.requires_grad = False
             if name in dtype_dict.keys():

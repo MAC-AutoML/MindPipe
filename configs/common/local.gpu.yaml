@@ -1,0 +1,18 @@
+schema: mindpipe/config/v1
+
+defaults:
+  device: cuda:0
+  data_path: /mnt/42_store/lcw/data2/Huawei/datasets
+  output_dir: /mnt/82_store/wxx/HWQuant/Mindpipe/results
+  hf_token: null
+  vlm_eval_kit_root: /mnt/42_store/wxx/HWQuant/MindPipe/third_party/VLMEvalKit
+
+model_paths:
+  Qwen2.5-VL-7B-Instruct: /mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct
+  Qwen2.5-7B-Instruct: /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct
+  Llama-2-7b-hf: /mnt/82_store/LLM-weights/Llama-2-7b-hf
+  Meta-Llama-3.1-8B-Instruct: /mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct
+  MiniCPM-V: /mnt/82_store/LLM-weights/openbmb/MiniCPM-V
+  Qwen3-VL-2B-Instruct: /mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct
+  Qwen3-0.6B: /mnt/42_store/wxx/modelzoo/Qwen/Qwen3-0.6B
+  Qwen3.5-4B: /mnt/82_store/LLM-weights/Qwen3.5-4B
