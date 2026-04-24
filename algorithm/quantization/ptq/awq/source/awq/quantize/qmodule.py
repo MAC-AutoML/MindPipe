@@ -9,4 +9,6 @@ class ScaledActivation(nn.Module):
         self.scales = nn.Parameter(scales.data)
 
     def forward(self, x):
-        return self.act(x) / self.scales.view(1, 1, -1).to(x.device)
+        view_shape = [1] * x.ndim
+        view_shape[-1] = -1
+        return self.act(x) / self.scales.view(*view_shape).to(device=x.device, dtype=x.dtype)
