@@ -6,6 +6,22 @@ import torch.nn as nn
 from algorithm.common.modeling import get_text_backbone
 
 
+def _build_calibration_forward_kwargs(model, input_ids):
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
+        return {"attention_mask": torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)}
+    return {}
+
+
+@torch.no_grad()
+def run_smoothquant_calibration_forward(model, input_ids):
+    return model(
+        input_ids=input_ids,
+        use_cache=False,
+        **_build_calibration_forward_kwargs(model, input_ids),
+    )
+
+
 @torch.no_grad()
 def get_act_scales(model, calibration_batches, device):
     model.eval()
@@ -32,7 +48,7 @@ def get_act_scales(model, calibration_batches, device):
             hooks.append(module.register_forward_hook(functools.partial(stat_input_hook, name=qualified_name)))
 
     for token_ids, _labels in calibration_batches:
-        model(input_ids=token_ids.to(device), use_cache=False)
+        run_smoothquant_calibration_forward(model, token_ids.to(device))
 
     for hook in hooks:
         hook.remove()

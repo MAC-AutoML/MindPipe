@@ -1,0 +1,29 @@
+schema: mindpipe/config/v1
+
+defaults:
+  quantization: omniquant
+  attn_implementation: sdpa
+
+  group_size: -1
+  query_bits: 16
+  key_bits: 16
+  value_bits: 16
+  weight_group_size: -1
+  activation_group_size: -1
+  weight_symmetric: false
+  activation_symmetric: false
+
+  omniquant_weight_symmetric: false
+  omniquant_alpha: 0.5
+  omniquant_let_lr: 5.0e-3
+  omniquant_lwc_lr: 1.0e-2
+  omniquant_weight_decay: 0.0
+  omniquant_epochs: 10
+  omniquant_let: false
+  omniquant_lwc: false
+  omniquant_aug_loss: false
+  omniquant_deactive_amp: false
+  omniquant_use_shift: false
+  omniquant_disable_zero_point: false
+  omniquant_save_act_stats: true
+  omniquant_save_diagnostics: false

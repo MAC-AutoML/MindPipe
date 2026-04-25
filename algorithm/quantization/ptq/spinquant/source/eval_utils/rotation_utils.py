@@ -36,6 +36,30 @@ def _resolve_text_root_and_prefix(model):
     raise NotImplementedError(f"Unsupported SpinQuant backbone root: {type(model)}")
 
 
+def _resolve_decoder_config(model, root):
+    for config in (
+        getattr(root, "config", None),
+        getattr(model, "config", None),
+    ):
+        if config is None:
+            continue
+        text_config = getattr(config, "text_config", None)
+        if text_config is not None:
+            return text_config
+        if hasattr(config, "hidden_size") and hasattr(config, "num_attention_heads"):
+            return config
+    raise AttributeError(f"Cannot resolve decoder config for model={type(model)} root={type(root)}")
+
+
+def _resolve_attention_head_dim(decoder_config) -> int:
+    head_dim = getattr(decoder_config, "head_dim", None)
+    if head_dim is not None:
+        return int(head_dim)
+    hidden_size = int(getattr(decoder_config, "hidden_size"))
+    num_heads = int(getattr(decoder_config, "num_attention_heads"))
+    return hidden_size // num_heads
+
+
 def _resolve_r2_key(checkpoint, layer_index, preferred_prefix):
     key_candidates = [
         f"{preferred_prefix}.{layer_index}.self_attn.R2",
@@ -52,6 +76,77 @@ def _resolve_r2_key(checkpoint, layer_index, preferred_prefix):
         if candidate in checkpoint:
             return checkpoint[candidate]
     raise KeyError(f"Missing SpinQuant R2 for layer {layer_index} in rotation checkpoint.")
+
+
+def _get_extra_rotation_modules(model):
+    """Return extra projector-like modules that should follow text-space rotation."""
+    multimodal_root = getattr(model, "model", model)
+    visual = getattr(multimodal_root, "visual", None)
+    merger = getattr(visual, "merger", None)
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if (
+        model_type == "qwen2_vl"
+        and merger is not None
+        and hasattr(merger, "mlp")
+        and isinstance(merger.mlp[-1], torch.nn.Linear)
+    ):
+        return [merger.mlp[-1]]
+    if (
+        model_type == "qwen2_5_vl"
+        and merger is not None
+        and hasattr(merger, "mlp")
+        and isinstance(merger.mlp[-1], torch.nn.Linear)
+    ):
+        return [merger.mlp[-1]]
+    if (
+        model_type == "qwen3_vl"
+        and merger is not None
+        and hasattr(merger, "linear_fc2")
+        and isinstance(merger.linear_fc2, torch.nn.Linear)
+    ):
+        modules = [merger.linear_fc2]
+        deepstack_mergers = getattr(visual, "deepstack_merger_list", None)
+        if deepstack_mergers is not None:
+            for deepstack_merger in deepstack_mergers:
+                if hasattr(deepstack_merger, "linear_fc2") and isinstance(
+                    deepstack_merger.linear_fc2, torch.nn.Linear
+                ):
+                    modules.append(deepstack_merger.linear_fc2)
+        return modules
+    if (
+        model_type == "qwen3_5"
+        and merger is not None
+        and hasattr(merger, "linear_fc2")
+        and isinstance(merger.linear_fc2, torch.nn.Linear)
+    ):
+        return [merger.linear_fc2]
+    return []
+
+
+def _get_token_mixer(layer):
+    mixer = getattr(layer, "self_attn", None)
+    if mixer is not None:
+        return mixer
+    mixer = getattr(layer, "linear_attn", None)
+    if mixer is not None:
+        return mixer
+    raise AttributeError(f"Unsupported decoder layer without token mixer: {type(layer)}")
+
+
+def rotate_extra_modules(modules, R1: torch.Tensor) -> None:
+    """Rotate VLM bridge outputs into the same rotated text basis."""
+    rotation_device = R1.device
+    rotation_dtype = preferred_rotation_dtype(rotation_device)
+    for module in modules:
+        module = module.to(rotation_device)
+        weight_dtype = module.weight.data.dtype
+        weight = module.weight.data.to(device=rotation_device, dtype=rotation_dtype)
+        module.weight.data = torch.matmul(R1.T, weight).to(device="cpu", dtype=weight_dtype)
+        if module.bias is not None:
+            bias_dtype = module.bias.data.dtype
+            bias = module.bias.data.to(device=rotation_device, dtype=rotation_dtype)
+            module.bias.data = torch.matmul(R1.T, bias).to(device="cpu", dtype=bias_dtype)
+        module.cpu()
 
 
 def random_orthogonal_matrix(size, device):
@@ -99,7 +194,17 @@ def rotate_attention_inputs(layer, R1) -> None:
     # Rotate the WQ, WK and WV matrices of the self-attention layer.
     rotation_device = R1.device
     rotation_dtype = preferred_rotation_dtype(rotation_device)
-    for W in [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj]:
+    token_mixer = _get_token_mixer(layer)
+    if hasattr(token_mixer, "q_proj"):
+        linears = [token_mixer.q_proj, token_mixer.k_proj, token_mixer.v_proj]
+    else:
+        linears = [
+            token_mixer.in_proj_qkv,
+            token_mixer.in_proj_z,
+            token_mixer.in_proj_b,
+            token_mixer.in_proj_a,
+        ]
+    for W in linears:
         dtype = W.weight.dtype
         W_ = W.weight.to(device=rotation_device, dtype=rotation_dtype)
         W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
@@ -107,7 +212,8 @@ def rotate_attention_inputs(layer, R1) -> None:
 
 def rotate_attention_output(layer, R1) -> None:
     # Rotate output matrix of the self-attention layer.
-    W = layer.self_attn.o_proj
+    token_mixer = _get_token_mixer(layer)
+    W = token_mixer.o_proj if hasattr(token_mixer, "o_proj") else token_mixer.out_proj
     rotation_device = R1.device
     rotation_dtype = preferred_rotation_dtype(rotation_device)
 
@@ -152,6 +258,15 @@ def rotate_mlp_output(layer, R1):
 def rotate_head(model, R1: torch.Tensor) -> None:
     # Rotate the head.
     W = model.lm_head
+    root, _ = _resolve_text_root_and_prefix(model)
+    embed_tokens = getattr(root, "embed_tokens", None)
+    if (
+        embed_tokens is not None
+        and hasattr(embed_tokens, "weight")
+        and embed_tokens.weight is not None
+        and embed_tokens.weight.data_ptr() == W.weight.data_ptr()
+    ):
+        return
     rotation_device = R1.device
     rotation_dtype = preferred_rotation_dtype(rotation_device)
     dtype = W.weight.data.dtype
@@ -160,6 +275,8 @@ def rotate_head(model, R1: torch.Tensor) -> None:
 
 
 def rotate_ov_proj(layer, head_num, head_dim, R2=None):
+    if not hasattr(layer, "self_attn"):
+        return
     v_proj = layer.self_attn.v_proj
     o_proj = layer.self_attn.o_proj
 
@@ -169,36 +286,39 @@ def rotate_ov_proj(layer, head_num, head_dim, R2=None):
 
 @torch.inference_mode()
 def rotate_model(model, args):
-    R1 = get_orthogonal_matrix(model.config.hidden_size, args.rotate_mode)
+    root, layer_key_prefix = _resolve_text_root_and_prefix(model)
+    decoder_config = _resolve_decoder_config(model, root)
+    hidden_size = int(getattr(decoder_config, "hidden_size"))
+    num_heads = int(getattr(decoder_config, "num_attention_heads"))
+
+    R1 = get_orthogonal_matrix(hidden_size, args.rotate_mode)
     checkpoint = None
     if args.optimized_rotation_path is not None:
         R_cpk = args.optimized_rotation_path
         checkpoint = torch.load(R_cpk, map_location="cpu")
         model_device = next(iter(model.parameters())).device
         R1 = checkpoint["R1"].to(device=model_device, dtype=preferred_rotation_dtype(model_device))
-    config = model.config
-    num_heads = config.num_attention_heads
-    model_dim = config.hidden_size
-    head_dim = model_dim // num_heads
+    head_dim = _resolve_attention_head_dim(decoder_config)
 
     rotate_embeddings(model, R1)
     rotate_head(model, R1)
+    rotate_extra_modules(_get_extra_rotation_modules(model), R1)
     utils.cleanup_memory()
-    root, layer_key_prefix = _resolve_text_root_and_prefix(model)
     layers = [layer for layer in root.layers]
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
-        if checkpoint is not None:
-            R2 = _resolve_r2_key(checkpoint, idx, layer_key_prefix).to(
-                device=R1.device,
-                dtype=preferred_rotation_dtype(R1.device),
-            )
-        else:
-            R2 = get_orthogonal_matrix(head_dim, args.rotate_mode)
         rotate_attention_inputs(layers[idx], R1)
         rotate_attention_output(layers[idx], R1)
         rotate_mlp_input(layers[idx], R1)
         rotate_mlp_output(layers[idx], R1)
-        rotate_ov_proj(layers[idx], num_heads, head_dim, R2=R2)
+        if hasattr(layers[idx], "self_attn"):
+            if checkpoint is not None:
+                R2 = _resolve_r2_key(checkpoint, idx, layer_key_prefix).to(
+                    device=R1.device,
+                    dtype=preferred_rotation_dtype(R1.device),
+                )
+            else:
+                R2 = get_orthogonal_matrix(head_dim, args.rotate_mode)
+            rotate_ov_proj(layers[idx], num_heads, head_dim, R2=R2)
 
 
 class QKRotationWrapper(torch.nn.Module):
@@ -206,8 +326,7 @@ class QKRotationWrapper(torch.nn.Module):
         super().__init__()
         self.config = config
         num_heads = config.num_attention_heads
-        model_dim = config.hidden_size
-        head_dim = model_dim // num_heads
+        head_dim = int(getattr(config, "head_dim", config.hidden_size // num_heads))
         assert is_pow2(
             head_dim
         ), f"Only power of 2 head_dim is supported for K-cache Quantization!"

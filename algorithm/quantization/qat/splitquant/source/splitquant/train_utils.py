@@ -9,6 +9,7 @@ import torch.nn as nn
 import transformers
 
 from algorithm.common.device import empty_cache
+from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
 
 from splitquant.backbone_utils import build_batched_layer_kwargs
 from splitquant.backbone_utils import get_decoder_config
@@ -21,11 +22,41 @@ from splitquant.quant_utils import set_quantizer_state
 
 def _build_calibration_forward_kwargs(model, sample):
     model_type = getattr(model.config, "model_type", None)
-    if model_type == "qwen2_5_vl":
-        # Qwen2.5-VL builds 3D position_ids for multimodal RoPE. With `attention_mask=None`,
-        # recent transformers masking code tries to reinterpret those ids as a packed 2D mask.
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
+        # Keep an explicit all-ones mask during capture so Qwen3.5-family models
+        # stay on the expected masking path before the first decoder block.
         return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
     return {}
+
+
+def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs):
+    position_ids = layer_kwargs.get("position_ids")
+    if position_ids is None:
+        seq_len = inputs.shape[1]
+        position_ids = torch.arange(seq_len, device=inputs.device).view(1, -1)
+
+    full_attention_kwargs = dict(layer_kwargs)
+    full_attention_kwargs["attention_mask"] = create_qwen3_5_causal_mask(
+        config=decoder_config,
+        inputs_embeds=inputs[:1],
+        attention_mask=torch.ones((1, inputs.shape[1]), dtype=torch.long, device=inputs.device),
+        cache_position=full_attention_kwargs.get("cache_position"),
+        past_key_values=full_attention_kwargs.get("past_key_values"),
+        position_ids=position_ids,
+    )
+
+    linear_attention_kwargs = dict(layer_kwargs)
+    linear_attention_kwargs["attention_mask"] = None
+    return {
+        "full_attention": full_attention_kwargs,
+        "linear_attention": linear_attention_kwargs,
+    }
+
+
+def _select_layer_kwargs(layer, layer_kwargs, layer_kwargs_by_type):
+    if layer_kwargs_by_type is None:
+        return layer_kwargs
+    return layer_kwargs_by_type.get(getattr(layer, "layer_type", None), layer_kwargs)
 
 
 def _reset_square_linear_to_identity(linear):
@@ -131,6 +162,14 @@ def cali_split_quant(args, model, dataloader, dev, logger):
             except ValueError:
                 pass
     layer_kwargs = dict(cache["layer_kwargs"])
+    layer_kwargs_by_type = None
+    batched_layer_kwargs_by_type = None
+    if getattr(model.config, "model_type", None) == "qwen3_5":
+        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(decoder_config, inps, layer_kwargs)
+        batched_layer_kwargs_by_type = {
+            layer_type: build_batched_layer_kwargs(kwargs, args.cali_bsz)
+            for layer_type, kwargs in layer_kwargs_by_type.items()
+        }
     batched_layer_kwargs = build_batched_layer_kwargs(layer_kwargs, args.cali_bsz)
     
     # move embedding layer and first layer to cpu
@@ -146,13 +185,15 @@ def cali_split_quant(args, model, dataloader, dev, logger):
 
     loss_func = torch.nn.MSELoss()
     # start training
-    flat_parameters = {}
+    splitquant_parameters = {}
     num_train_layer = len(layers)
     mse_dict = {}
     for i in range(num_train_layer):
         logger.info(f"========= Layer {i} =========")
         dtype_dict = {}
         layer = layers[i].to(dev)
+        active_layer_kwargs = _select_layer_kwargs(layer, layer_kwargs, layer_kwargs_by_type)
+        active_batched_layer_kwargs = _select_layer_kwargs(layer, batched_layer_kwargs, batched_layer_kwargs_by_type)
         for name, param in layer.named_parameters():
             dtype_dict[name] = param.dtype
         with torch.no_grad():
@@ -162,7 +203,7 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         layer.mlp._ori_mode = True
         with torch.no_grad():
             for j in range(args.nsamples):
-                fp_outs[j] = unwrap_layer_output(layer(fp_inps[j].unsqueeze(0), **layer_kwargs))
+                fp_outs[j] = unwrap_layer_output(layer(fp_inps[j].unsqueeze(0), **active_layer_kwargs))
         layer.self_attn._ori_mode = False
         layer.mlp._ori_mode = False
         if args.diag_init == "sq_style":
@@ -177,20 +218,39 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         set_require_grad_all(layer, False)
         trained_params, paras_name = [], []
         if args.cali_trans:
-            trained_params.append({"params": get_n_set_parameters_byname(layer, ["trans.linear", ]), "lr": args.flat_lr})
-            paras_name.append("trans.linear")
+            params = get_n_set_parameters_byname(layer, ["trans.linear", ])
+            if params:
+                trained_params.append({"params": params, "lr": args.lr})
+                paras_name.append("trans.linear")
         if args.add_diag:
-            trained_params.append({"params": get_n_set_parameters_byname(layer, ["trans.diag_scale", ]), "lr": args.flat_lr})
-            paras_name.append("trans.diag_scale")
+            params = get_n_set_parameters_byname(layer, ["trans.diag_scale", ])
+            if params:
+                trained_params.append({"params": params, "lr": args.lr})
+                paras_name.append("trans.diag_scale")
         if args.lwc:
-            trained_params.append({"params": get_n_set_parameters_byname(layer, ["clip_factor_w", ]), "lr": args.flat_lr * 10})
-            paras_name.append("clip_factor_w")
+            params = get_n_set_parameters_byname(layer, ["clip_factor_w", ])
+            if params:
+                trained_params.append({"params": params, "lr": args.lr * 10})
+                paras_name.append("clip_factor_w")
         if args.lac:
-            trained_params.append({"params": get_n_set_parameters_byname(layer, ["clip_factor_a", ]), "lr": args.flat_lr * 10})
-            paras_name.append("clip_factor_a")
+            params = get_n_set_parameters_byname(layer, ["clip_factor_a", ])
+            if params:
+                trained_params.append({"params": params, "lr": args.lr * 10})
+                paras_name.append("clip_factor_a")
+
+        if not paras_name:
+            fp_inps, fp_outs = fp_outs, fp_inps
+            layers[i] = layer.to("cpu")
+            for name, param in layer.named_parameters():
+                param.requires_grad = False
+                if name in dtype_dict.keys():
+                    param.data = param.to(dtype_dict[name])
+            del layer
+            empty_cache(dev)
+            continue
 
         optimizer = torch.optim.AdamW(trained_params)
-        scheduler_main = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * (args.nsamples // args.cali_bsz), eta_min=args.flat_lr * 1e-3)
+        scheduler_main = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * (args.nsamples // args.cali_bsz), eta_min=args.lr * 1e-3)
         if args.warmup:
             scheduler_warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=16)
             scheduler = torch.optim.lr_scheduler.ChainedScheduler([scheduler_warmup, scheduler_main])
@@ -206,7 +266,7 @@ def cali_split_quant(args, model, dataloader, dev, logger):
                 for j in range(args.nsamples // args.cali_bsz):
                     index = j * args.cali_bsz
                     try:
-                        quant_out = unwrap_layer_output(layer(fp_inps[index:index+args.cali_bsz,], **batched_layer_kwargs))
+                        quant_out = unwrap_layer_output(layer(fp_inps[index:index+args.cali_bsz,], **active_batched_layer_kwargs))
                     except RuntimeError as error:
                         error_text = str(error).lower()
                         if "singular" in error_text or "linalg" in error_text or "inverse" in error_text:
@@ -243,9 +303,10 @@ def cali_split_quant(args, model, dataloader, dev, logger):
 
         fp_inps, fp_outs = fp_outs, fp_inps
         layers[i] = layer.to("cpu")
-        flat_parameters[i] = get_paras_dict_by_name(layer, required_names=paras_name)
-        torch.save(flat_parameters, os.path.join(args.exp_dir, f"flat_parameters.pth"))
-        logger.info("saved paramaters at {}".format(os.path.join(args.exp_dir, f"flat_parameters.pth")))
+        splitquant_parameters[i] = get_paras_dict_by_name(layer, required_names=paras_name)
+        parameter_path = os.path.join(args.exp_dir, "splitquant_parameters.pth")
+        torch.save(splitquant_parameters, parameter_path)
+        logger.info("saved parameters at %s", parameter_path)
         for name, param in layer.named_parameters():
             param.requires_grad = False
             if name in dtype_dict.keys():

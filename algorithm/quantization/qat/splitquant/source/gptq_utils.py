@@ -6,6 +6,7 @@ import torch.nn as nn
 import logging
 from algorithm.common.device import empty_cache
 from algorithm.common.device import synchronize
+from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
 
 from splitquant.backbone_utils import get_decoder_config
 from splitquant.backbone_utils import get_decoder_layers
@@ -13,6 +14,83 @@ from splitquant.backbone_utils import move_front_modules
 from splitquant.backbone_utils import unwrap_layer_output
 from splitquant.utils import cleanup_memory
 from splitquant.quant_utils import WeightQuantizer
+
+
+def _build_calibration_forward_kwargs(model, sample):
+    model_type = getattr(model.config, "model_type", None)
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
+        return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
+    return {}
+
+
+def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs):
+    position_ids = layer_kwargs.get("position_ids")
+    if position_ids is None:
+        seq_len = inputs.shape[1]
+        position_ids = torch.arange(seq_len, device=inputs.device).view(1, -1)
+
+    full_attention_kwargs = dict(layer_kwargs)
+    full_attention_kwargs["attention_mask"] = create_qwen3_5_causal_mask(
+        config=decoder_config,
+        inputs_embeds=inputs[:1],
+        attention_mask=torch.ones((1, inputs.shape[1]), dtype=torch.long, device=inputs.device),
+        cache_position=full_attention_kwargs.get("cache_position"),
+        past_key_values=full_attention_kwargs.get("past_key_values"),
+        position_ids=position_ids,
+    )
+
+    linear_attention_kwargs = dict(layer_kwargs)
+    linear_attention_kwargs["attention_mask"] = None
+    return {
+        "full_attention": full_attention_kwargs,
+        "linear_attention": linear_attention_kwargs,
+    }
+
+
+def _select_layer_kwargs(layer, layer_kwargs, layer_kwargs_by_type):
+    if layer_kwargs_by_type is None:
+        return layer_kwargs
+    return layer_kwargs_by_type.get(getattr(layer, "layer_type", None), layer_kwargs)
+
+
+def _sequential_groups_for_layer(layer):
+    if getattr(layer, "layer_type", None) == "linear_attention":
+        return [
+            ["self_attn.in_proj_qkv.linear"],
+            ["self_attn.in_proj_z.linear", "self_attn.in_proj_a.linear", "self_attn.in_proj_b.linear"],
+            ["self_attn.out_proj.linear"],
+            ["mlp.up_proj.linear", "mlp.gate_proj.linear"],
+            ["mlp.down_proj.linear"],
+        ]
+    return [
+        ["self_attn.k_proj.linear", "self_attn.v_proj.linear", "self_attn.q_proj.linear"],
+        ["self_attn.o_proj.linear"],
+        ["mlp.up_proj.linear", "mlp.gate_proj.linear"],
+        ["mlp.down_proj.linear"],
+    ]
+
+
+def _quantizable_names_for_layer(layer):
+    if getattr(layer, "layer_type", None) == "linear_attention":
+        return {
+            "self_attn.in_proj_qkv.linear",
+            "self_attn.in_proj_z.linear",
+            "self_attn.in_proj_a.linear",
+            "self_attn.in_proj_b.linear",
+            "self_attn.out_proj.linear",
+            "mlp.up_proj.linear",
+            "mlp.gate_proj.linear",
+            "mlp.down_proj.linear",
+        }
+    return {
+        "self_attn.q_proj.linear",
+        "self_attn.k_proj.linear",
+        "self_attn.v_proj.linear",
+        "self_attn.o_proj.linear",
+        "mlp.up_proj.linear",
+        "mlp.gate_proj.linear",
+        "mlp.down_proj.linear",
+    }
 
 
 def find_qlayers(module, layers=[torch.nn.Linear, ], name=''):
@@ -209,7 +287,8 @@ def gptq_fwrd(model, dataloader, dev, args):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(dev))
+            sample = batch[0].to(dev)
+            model(sample, **_build_calibration_forward_kwargs(model, sample))
         except ValueError:
             pass
     layers[0] = layers[0].module
@@ -220,26 +299,21 @@ def gptq_fwrd(model, dataloader, dev, args):
 
     outs = torch.zeros_like(inps)
     layer_kwargs = dict(cache['layer_kwargs'])
+    layer_kwargs_by_type = None
+    if getattr(model.config, "model_type", None) == "qwen3_5":
+        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(decoder_config, inps, layer_kwargs)
 
     quantizers = {}
-    sequential = [
-                ['self_attn.k_proj.linear', 'self_attn.v_proj.linear', 'self_attn.q_proj.linear'],
-                ['self_attn.o_proj.linear'],
-                ['mlp.up_proj.linear', 'mlp.gate_proj.linear'],
-                ['mlp.down_proj.linear']
-            ]
-    # sequential = [
-    #             ['self_attn.k_proj', 'self_attn.v_proj', 'self_attn.q_proj'],
-    #             ['self_attn.o_proj'],
-    #             ['mlp.up_proj', 'mlp.gate_proj'],
-    #             ['mlp.down_proj']
-    #         ]
     for i in range(len(layers)):
         print(f'\nLayer {i}:', flush=True, end=' ')
         layer = layers[i].to(dev)
+        active_layer_kwargs = _select_layer_kwargs(layer, layer_kwargs, layer_kwargs_by_type)
+        sequential = _sequential_groups_for_layer(layer)
         full = find_qlayers(layer, layers=[torch.nn.Linear])
         for names in sequential:
-            subset = {n: full[n] for n in names}
+            subset = {n: full[n] for n in names if n in full}
+            if not subset:
+                continue
 
             gptq = {}
             for name in subset:
@@ -263,7 +337,7 @@ def gptq_fwrd(model, dataloader, dev, args):
             for name in subset:
                 handles.append(subset[name].register_forward_hook(add_batch(name)))
             for j in range(args.nsamples):
-                outs[j] = unwrap_layer_output(layer(inps[j].unsqueeze(0), **layer_kwargs))
+                outs[j] = unwrap_layer_output(layer(inps[j].unsqueeze(0), **active_layer_kwargs))
             for h in handles:
                 h.remove()
 
@@ -276,7 +350,7 @@ def gptq_fwrd(model, dataloader, dev, args):
                 gptq[name].free()
 
         for j in range(args.nsamples):
-            outs[j] = unwrap_layer_output(layer(inps[j].unsqueeze(0), **layer_kwargs))
+            outs[j] = unwrap_layer_output(layer(inps[j].unsqueeze(0), **active_layer_kwargs))
 
         layers[i] = layer.cpu()
         del layer
@@ -301,18 +375,9 @@ def rtn_fwrd(model, dev, args):
     empty_cache(dev)
 
     quantizers = {}
-    quantizable_names = {
-        "self_attn.q_proj.linear",
-        "self_attn.k_proj.linear",
-        "self_attn.v_proj.linear",
-        "self_attn.o_proj.linear",
-        "mlp.up_proj.linear",
-        "mlp.gate_proj.linear",
-        "mlp.down_proj.linear",
-    }
-
     for i in tqdm.tqdm(range(len(layers)), desc="(RtN Quant.) Layers"):
         layer = layers[i].to(dev)
+        quantizable_names = _quantizable_names_for_layer(layer)
 
         subset = find_qlayers(layer,
                                             layers=[torch.nn.Linear])

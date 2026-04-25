@@ -1,0 +1,8 @@
+schema: mindpipe/config/v1
+
+defaults:
+  quantization: awq
+  attn_implementation: sdpa
+  group_size: 128
+  weight_symmetric: false
+  awq_search: true

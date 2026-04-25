@@ -1,0 +1,19 @@
+schema: mindpipe/config/v1
+
+model:
+  name: Llama-2-7b-hf
+  model_path: /mnt/82_store/LLM-weights/Llama-2-7b-hf
+
+defaults:
+  eval_vlm: false
+
+recipes:
+  w8a8:
+    weight_bits: 8
+    activation_bits: 8
+  smoke10:
+    weight_bits: 8
+    activation_bits: 8
+    calibration_samples: 10
+    max_eval_chunks: 4
+    eval_zero_shot: false

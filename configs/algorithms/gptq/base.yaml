@@ -1,0 +1,7 @@
+schema: mindpipe/config/v1
+
+defaults:
+  quantization: gptq
+  attn_implementation: sdpa
+  group_size: 128
+  damp_percent: 0.05

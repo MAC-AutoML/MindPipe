@@ -1,0 +1,31 @@
+schema: mindpipe/config/v1
+
+defaults:
+  quantization: splitquant
+  attn_implementation: sdpa
+  splitquant_epochs: 15
+  splitquant_calibration_batch_size: 32
+  splitquant_lr: 5.0e-3
+  splitquant_diag_init: sq_style
+  splitquant_diag_alpha: 0.3
+  splitquant_warmup: false
+  splitquant_deactive_amp: true
+  query_bits: 16
+  key_bits: 16
+  value_bits: 16
+  weight_group_size: 128
+  activation_group_size: 128
+  kv_group_size: 128
+  weight_method: rtn
+  damp_percent: 0.01
+  weight_symmetric: true
+  activation_symmetric: true
+  query_symmetric: true
+  key_symmetric: false
+  value_symmetric: false
+  splitquant_cali_trans: true
+  splitquant_add_diag: true
+  splitquant_lwc: true
+  splitquant_lac: true
+  splitquant_separate_vtrans: false
+  splitquant_save_matrix: false

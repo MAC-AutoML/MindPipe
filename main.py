@@ -22,8 +22,8 @@ def _build_result_payload(args, result) -> dict:
         "model_path": result.model_path,
         "output_dir": result.output_dir,
         "metrics_path": result.metrics_path,
+        "artifacts_path": result.artifacts_path,
         "metrics": result.metrics,
-        "artifacts": result.artifacts,
     }
     if args.pruning:
         payload["pruning_algorithm"] = args.pruning

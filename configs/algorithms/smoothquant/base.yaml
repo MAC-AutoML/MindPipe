@@ -1,0 +1,10 @@
+schema: mindpipe/config/v1
+
+defaults:
+  quantization: smoothquant
+  attn_implementation: sdpa
+  query_bits: 16
+  key_bits: 16
+  value_bits: 16
+  smoothquant_alpha: 0.85
+  smoothquant_save_act_scales: true
