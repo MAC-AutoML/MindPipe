@@ -78,6 +78,12 @@ def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--eval_vlm", type=_bool_flag, default=False)
     parser.add_argument("--vlm_datasets", nargs="+", default=[])
     parser.add_argument("--vlm_mode", default="all", choices=["all", "infer", "eval"])
+    parser.add_argument(
+        "--vlm_resume",
+        type=_bool_flag,
+        default=False,
+        help="Resume VLM evaluation from existing per-dataset artifacts in the same output_dir when possible.",
+    )
     parser.add_argument("--vlm_work_dir", default=None)
     parser.add_argument("--vlm_eval_kit_root", default=DEFAULT_VLMEVALKIT_ROOT)
     parser.add_argument("--vlm_judge", default=None)
@@ -208,6 +214,12 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     # AWQ
     parser.add_argument("--awq_search", type=_bool_flag, default=True)
     parser.add_argument(
+        "--awq_reuse_search_result",
+        type=_bool_flag,
+        default=False,
+        help="Reuse an existing awq_search.pt under the target AWQ output_dir instead of rerunning AWQ search.",
+    )
+    parser.add_argument(
         "--awq_search_sequence_length",
         type=int,
         default=512,
@@ -237,11 +249,78 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--awq_qwen3_5_quantize_linear_attn",
         type=_bool_flag,
-        default=False,
+        default=True,
         help=(
-            "Opt-in Qwen3.5 linear_attn AWQ weight quantization. "
+            "Enable Qwen3.5 linear_attn AWQ weight quantization. "
             "When enabled, AWQ quantizes linear_attn.in_proj_qkv/in_proj_z/in_proj_b/in_proj_a/out_proj "
-            "instead of keeping the entire linear-attention token mixer in higher precision."
+            "instead of keeping the entire linear-attention token mixer in higher precision. "
+            "Set this flag to false to fall back to the old high-precision behavior."
+        ),
+    )
+    parser.add_argument(
+        "--awq_vlm_dataset_name",
+        default=None,
+        help=(
+            "Optional VLM dataset for multimodal AWQ calibration on supported VLMs "
+            "(currently Qwen2-VL / Qwen2.5-VL visual blocks and merger / connector). "
+            "Falls back to --mquant_dataset_name when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--awq_vlm_calib_num",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on the number of multimodal samples used in AWQ visual / connector calibration. "
+            "Falls back to --mquant_calib_num or --calibration_samples."
+        ),
+    )
+    parser.add_argument(
+        "--awq_vlm_quant_visual",
+        type=_bool_flag,
+        default=None,
+        help="AWQ only: whether to quantize the visual encoder blocks during multimodal AWQ calibration.",
+    )
+    parser.add_argument(
+        "--awq_vlm_quant_connector",
+        type=_bool_flag,
+        default=None,
+        help="AWQ only: whether to quantize the visual merger / connector during multimodal AWQ calibration.",
+    )
+    parser.add_argument(
+        "--awq_vlm_quant_llm",
+        type=_bool_flag,
+        default=None,
+        help=(
+            "AWQ only: whether to quantize the language decoder when multimodal AWQ calibration is enabled. "
+            "This currently reuses the standard text AWQ path."
+        ),
+    )
+    parser.add_argument(
+        "--awq_visual_w_bits",
+        type=int,
+        default=None,
+        help=(
+            "Optional AWQ override for visual encoder weight bits during multimodal quantization. "
+            "Defaults to --weight_bits when unset."
+        ),
+    )
+    parser.add_argument(
+        "--awq_connector_w_bits",
+        type=int,
+        default=None,
+        help=(
+            "Optional AWQ override for visual connector / merger weight bits during multimodal quantization. "
+            "Defaults to --awq_visual_w_bits or --weight_bits when unset."
+        ),
+    )
+    parser.add_argument(
+        "--awq_llm_w_bits",
+        type=int,
+        default=None,
+        help=(
+            "Optional AWQ override for language decoder weight bits during multimodal quantization. "
+            "Defaults to --weight_bits when unset."
         ),
     )
     # QuaRot / SpinQuant
@@ -349,6 +428,16 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         default=False,
         help="QuaRot only: experiment flag for Qwen3-VL GPTQ runs. Quantize online-Hadamard down_proj with RTN instead of GPTQ.",
     )
+    parser.add_argument(
+        "--quarot_static_acts",
+        type=_bool_flag,
+        default=False,
+        help=(
+            "QuaRot only: collect layer-wise min/max on the text calibration dataset and "
+            "use fixed input-activation scales during evaluation, similar to MQuant static activation quantization. "
+            "This currently applies to decoder input activations only; KV-cache quantization remains dynamic."
+        ),
+    )
     # MQuant GPTQ-specific calibration (multimodal datasets)
     parser.add_argument(
         "--mquant_dataset_name",
@@ -366,6 +455,74 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=20,
         help="Max new tokens per prompt when collecting MQuant GPTQ activations.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_dataset_name",
+        default=None,
+        help="Optional VLM dataset for multimodal GPTQ calibration (currently Qwen2-VL / Qwen2.5-VL). Falls back to --mquant_dataset_name when omitted.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_calib_num",
+        type=int,
+        default=None,
+        help="Optional cap on the number of multimodal samples used in GPTQ calibration. Falls back to --mquant_calib_num or --calibration_samples.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_quant_visual",
+        type=_bool_flag,
+        default=None,
+        help="GPTQ only: whether to quantize the visual encoder branch during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_quant_connector",
+        type=_bool_flag,
+        default=None,
+        help="GPTQ only: whether to quantize the visual merger / connector branch during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_quant_llm",
+        type=_bool_flag,
+        default=None,
+        help="GPTQ only: whether to quantize the language decoder branch during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--spinquant_vlm_dataset_name",
+        default=None,
+        help=(
+            "Optional VLM dataset for multimodal SpinQuant calibration on supported VLMs "
+            "(first pass: Qwen2-VL / Qwen2.5-VL / Qwen3-VL visual blocks, optional connector, and language decoder). "
+            "Falls back to --gptq_vlm_dataset_name / --mquant_dataset_name when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--spinquant_vlm_calib_num",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on the number of multimodal samples used in SpinQuant visual / connector / llm calibration. "
+            "Falls back to --gptq_vlm_calib_num / --mquant_calib_num / --calibration_samples."
+        ),
+    )
+    parser.add_argument(
+        "--spinquant_vlm_quant_visual",
+        type=_bool_flag,
+        default=None,
+        help="SpinQuant only: whether to quantize the visual encoder blocks during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--spinquant_vlm_quant_connector",
+        type=_bool_flag,
+        default=None,
+        help="SpinQuant only: whether to quantize the visual merger / connector during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--spinquant_vlm_quant_llm",
+        type=_bool_flag,
+        default=None,
+        help=(
+            "SpinQuant only: whether to quantize the language decoder branch during multimodal calibration. "
+            "When disabled, SpinQuant can be used as a visual-only multimodal experiment."
+        ),
     )
     parser.add_argument(
         "--mquant_visual_w_bits",

@@ -30,12 +30,12 @@ def _is_qwen3_5_model(model) -> bool:
     return str(model_type) in {"qwen3_5", "qwen3_5_text"}
 
 
-def get_named_linears(module, model=None, qwen3_5_quantize_linear_attn=False):
+def get_named_linears(module, model=None, qwen3_5_quantize_linear_attn=True):
     linears = {name: m for name, m in module.named_modules() if isinstance(m, nn.Linear)}
     if model is not None and _is_qwen3_5_model(model):
         layer_type = getattr(module, "layer_type", None)
-        # Keep Qwen3.5 attention in higher precision by default. The linear_attn
-        # path can be enabled explicitly for targeted AWQ experiments.
+        # Quantize Qwen3.5 linear-attention token-mixer linears by default.
+        # Callers can still disable this for targeted fallback experiments.
         if layer_type == "full_attention":
             linears = {name: m for name, m in linears.items() if name.startswith("mlp.")}
         elif layer_type == "linear_attention" and not qwen3_5_quantize_linear_attn:
@@ -193,7 +193,7 @@ def run_awq(
     auto_scale=True,
     mse_range=True,
     clip_targets="auto",
-    qwen3_5_quantize_linear_attn=False,
+    qwen3_5_quantize_linear_attn=True,
     # some configs for ablation study
     calib_data="pileval",
     device=None,

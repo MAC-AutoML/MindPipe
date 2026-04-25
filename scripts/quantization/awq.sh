@@ -9,7 +9,6 @@ GPU_ID="0"
 MODEL="MiniCPM-V"
 RECIPE="w2a16"
 DRY_RUN="false"
-
 CONFIG_ROOT="$REPO_ROOT/configs"
 DEFAULT_LOCAL_CONFIG="$CONFIG_ROOT/common/local.gpu.yaml"
 if [[ ! -f "$DEFAULT_LOCAL_CONFIG" ]]; then
