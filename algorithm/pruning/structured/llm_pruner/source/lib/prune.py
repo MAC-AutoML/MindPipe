@@ -206,13 +206,12 @@ def _accumulate_taylor_gradients(model, calibration_batches, device):
     model.zero_grad()
 
     for input_ids, _ in tqdm(calibration_batches, desc="Taylor gradient accumulation"):
-        input_ids = input_ids.to(device)
+        input_ids = input_ids.to(next(model.parameters()).device)
         outputs = model(input_ids=input_ids, labels=input_ids)
         loss = outputs.loss
         loss.backward()
         # Don't zero grad — accumulate across batches
         del outputs, loss
-        empty_cache(device)
 
     # Restore original checkpointing state
     if not was_checkpointing and hasattr(model, "gradient_checkpointing_disable"):

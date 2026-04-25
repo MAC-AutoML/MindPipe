@@ -134,18 +134,18 @@ def pseudo_mask_attention(layer, group_keep_mask: torch.Tensor, device):
     """Zero out pruned attention group weights without changing shapes."""
     q_mask, kv_mask = _expand_attention_mask_to_kv(group_keep_mask, layer, device)
     attn = layer.self_attn
-    attn.q_proj.weight.data *= q_mask.unsqueeze(-1)
-    attn.k_proj.weight.data *= kv_mask.unsqueeze(-1)
-    attn.v_proj.weight.data *= kv_mask.unsqueeze(-1)
-    attn.o_proj.weight.data *= q_mask.unsqueeze(0)
+    attn.q_proj.weight.data *= q_mask.to(attn.q_proj.weight.device).unsqueeze(-1)
+    attn.k_proj.weight.data *= kv_mask.to(attn.k_proj.weight.device).unsqueeze(-1)
+    attn.v_proj.weight.data *= kv_mask.to(attn.v_proj.weight.device).unsqueeze(-1)
+    attn.o_proj.weight.data *= q_mask.to(attn.o_proj.weight.device).unsqueeze(0)
 
 
 def pseudo_mask_mlp(layer, neuron_keep_mask: torch.Tensor, device):
     """Zero out pruned MLP neuron weights without changing shapes."""
-    mask = neuron_keep_mask.to(device).unsqueeze(-1).to(layer.mlp.up_proj.weight.data.dtype)
+    mask = neuron_keep_mask.to(layer.mlp.up_proj.weight.device).unsqueeze(-1).to(layer.mlp.up_proj.weight.data.dtype)
     layer.mlp.up_proj.weight.data *= mask
     layer.mlp.gate_proj.weight.data *= mask
-    mask_t = neuron_keep_mask.to(device).unsqueeze(0).to(layer.mlp.down_proj.weight.data.dtype)
+    mask_t = neuron_keep_mask.to(layer.mlp.down_proj.weight.device).unsqueeze(0).to(layer.mlp.down_proj.weight.data.dtype)
     layer.mlp.down_proj.weight.data *= mask_t
 
 

@@ -41,7 +41,6 @@ class LLMPrunerMethod(BasePruningMethod):
         )
 
         model.seqlen = args.sequence_length
-        model.to(args.device)
         model.eval()
         _, linear_weight_count_before = _linear_weight_stats(model)
 

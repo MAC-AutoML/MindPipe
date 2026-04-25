@@ -46,10 +46,14 @@ def evaluate_perplexity(
     elif torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    model.to(resolved_device)
     model.eval()
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
+    if not getattr(model, "hf_device_map", None):
+        model.to(resolved_device)
+
+    # input_ids 放到 embedding 所在的设备
+    input_device = next(model.parameters()).device
 
     total_nll = 0.0
     total_tokens = 0
@@ -60,7 +64,7 @@ def evaluate_perplexity(
         batch = token_ids[
             :,
             chunk_start * sequence_length : chunk_end * sequence_length,
-        ].to(resolved_device)
+        ].to(input_device)
         batch = batch.reshape(chunk_end - chunk_start, sequence_length)
         logits = _forward_for_ppl(model, batch)
         logits = torch.nan_to_num(logits.float(), nan=0.0, posinf=1e4, neginf=-1e4)

@@ -520,6 +520,7 @@ def load_model_and_tokenizer(
     model_path: str,
     dtype: str = "auto",
     attn_implementation: str | None = None,
+    device_map: str | dict | None = None,
 ):
     _ensure_transformers_remote_code_compat()
     config = _load_config_with_fallback(model_path, trust_remote_code=True)
@@ -534,6 +535,8 @@ def load_model_and_tokenizer(
         "low_cpu_mem_usage": True,
         "attn_implementation": attn_implementation,
     }
+    if device_map is not None:
+        model_kwargs["device_map"] = device_map
     is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
@@ -728,6 +731,26 @@ def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> l
     return [sorted(available_names)]
 
 
+# ── 多卡并行设备管理 helpers ──
+
+
+def move_tensors_to_device(data, device):
+    """将字典中的张量递归移动到指定设备。"""
+    if isinstance(data, dict):
+        return {k: move_tensors_to_device(v, device) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        moved = [move_tensors_to_device(v, device) for v in data]
+        return type(data)(moved)
+    if torch.is_tensor(data):
+        return data.to(device)
+    return data
+
+
+def get_layer_device(backbone: TextBackbone, layer_index: int) -> torch.device:
+    """获取指定层所在的设备。device_map 分片时直接从层参数获取。"""
+    return next(backbone.layers[layer_index].parameters()).device
+
+
 @torch.no_grad()
 def capture_first_block_inputs(
     model: nn.Module,
@@ -735,13 +758,13 @@ def capture_first_block_inputs(
     calibration_batches,
     device: str | torch.device,
 ):
-    device = resolve_device(device)
     decoder_config = backbone.decoder_config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
     blocks = backbone.layers
-    backbone.move_front_modules(device)
-    blocks[0] = blocks[0].to(device)
+
+    # device_map 模式下，直接从模型参数获取 embedding 所在设备
+    capture_device = next(model.parameters()).device
 
     dtype = next(iter(model.parameters())).dtype
     sample_count = len(calibration_batches)
@@ -751,7 +774,7 @@ def capture_first_block_inputs(
         sequence_length,
         backbone.hidden_size,
         dtype=dtype,
-        device=device,
+        device=capture_device,
     )
     cached_kwargs: dict[str, Any] = {}
     input_index = 0
@@ -779,13 +802,10 @@ def capture_first_block_inputs(
     for token_ids, _labels in calibration_batches:
         try:
             with torch.no_grad():
-                model(input_ids=token_ids.to(device), use_cache=False)
+                model(input_ids=token_ids.to(capture_device), use_cache=False)
         except ValueError:
             pass
 
     blocks[0] = blocks[0].module
-    blocks[0] = blocks[0].cpu()
-    backbone.move_front_modules("cpu")
-    empty_cache(device)
     decoder_config.use_cache = use_cache
     return inputs, dict(cached_kwargs)

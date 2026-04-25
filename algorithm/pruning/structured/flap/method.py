@@ -47,7 +47,6 @@ class FLAPMethod(BasePruningMethod):
         )
 
         model.seqlen = args.sequence_length
-        model.to(args.device)
         model.eval()
 
         calibration_batches, _ = get_calibration_and_evaluation_data(

@@ -37,7 +37,6 @@ class ShortGPTMethod(BasePruningMethod):
                      len(calibration_batches), args.calibration_dataset)
 
         # 2. Compute layer importances
-        model.to(device)
         model.eval()
 
         source_root = Path(__file__).resolve().parent / "source"
