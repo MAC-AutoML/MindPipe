@@ -6,6 +6,7 @@ import torch.nn as nn
 import logging
 from algorithm.common.device import empty_cache
 from algorithm.common.device import synchronize
+from algorithm.common.modeling import move_tensors_to_device
 
 from flatquant.backbone_utils import get_decoder_config
 from flatquant.backbone_utils import get_decoder_layers
@@ -181,12 +182,13 @@ def gptq_fwrd(model, dataloader, dev, args):
     decoder_config.use_cache = False
     layers = get_decoder_layers(model)
 
-    move_front_modules(model, dev)
-    layers[0] = layers[0].to(dev)
+    # device_map 模式下不手动移动 front modules 和 layer[0]，由 dispatch_model 管理
 
     dtype = next(iter(model.parameters())).dtype
+    # device_map 模式下，输入数据放到 layer[0] 所在设备
+    layer0_device = next(layers[0].parameters()).device
     inps = torch.zeros(
-        (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=dev
+        (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=layer0_device
     )
     cache = {'i': 0, 'layer_kwargs': {}}
 
@@ -209,13 +211,12 @@ def gptq_fwrd(model, dataloader, dev, args):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(dev))
+            model(batch[0].to(layer0_device))
         except ValueError:
             pass
     layers[0] = layers[0].module
 
-    layers[0] = layers[0].cpu()
-    move_front_modules(model, "cpu")
+    # device_map 模式下不手动移动到 cpu
     empty_cache(dev)
 
     outs = torch.zeros_like(inps)
@@ -236,7 +237,13 @@ def gptq_fwrd(model, dataloader, dev, args):
     #         ]
     for i in range(len(layers)):
         print(f'\nLayer {i}:', flush=True, end=' ')
-        layer = layers[i].to(dev)
+        # device_map 模式下不手动移动 layer，在当前设备上量化
+        layer = layers[i]
+        # 将所有数据移到当前层设备
+        layer_dev = next(layer.parameters()).device
+        inps = inps.to(layer_dev)
+        outs = outs.to(layer_dev)
+        layer_kwargs = move_tensors_to_device(layer_kwargs, layer_dev)
         full = find_qlayers(layer, layers=[torch.nn.Linear])
         for names in sequential:
             subset = {n: full[n] for n in names}
@@ -278,10 +285,8 @@ def gptq_fwrd(model, dataloader, dev, args):
         for j in range(args.nsamples):
             outs[j] = unwrap_layer_output(layer(inps[j].unsqueeze(0), **layer_kwargs))
 
-        layers[i] = layer.cpu()
-        del layer
-        del gptq 
-        empty_cache(dev)
+        # device_map 模式下不手动移动到 cpu
+        del gptq
 
         inps, outs = outs, inps
 
@@ -313,7 +318,8 @@ def rtn_fwrd(model, dev, args):
     }
 
     for i in tqdm.tqdm(range(len(layers)), desc="(RtN Quant.) Layers"):
-        layer = layers[i].to(dev)
+        # device_map 模式下不手动移动 layer
+        layer = layers[i]
 
         subset = find_qlayers(layer,
                                             layers=[torch.nn.Linear])
@@ -335,9 +341,7 @@ def rtn_fwrd(model, dev, args):
             quantizer.find_params(W)
             subset[name].weight.data = quantizer.quantize(W).to(w_dtype)
             quantizers['model.layers.%d.%s' % (i, name)] = quantizer.cpu()
-        layers[i] = layer.cpu()
-        empty_cache(dev)
-        del layer
+        # device_map 模式下不手动移动到 cpu
             
     cleanup_memory(verbose=True)
     return quantizers

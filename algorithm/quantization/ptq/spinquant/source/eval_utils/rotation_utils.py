@@ -135,18 +135,15 @@ def _get_token_mixer(layer):
 
 def rotate_extra_modules(modules, R1: torch.Tensor) -> None:
     """Rotate VLM bridge outputs into the same rotated text basis."""
-    rotation_device = R1.device
-    rotation_dtype = preferred_rotation_dtype(rotation_device)
+    rotation_dtype = preferred_rotation_dtype(R1.device)
     for module in modules:
-        module = module.to(rotation_device)
         weight_dtype = module.weight.data.dtype
-        weight = module.weight.data.to(device=rotation_device, dtype=rotation_dtype)
-        module.weight.data = torch.matmul(R1.T, weight).to(device="cpu", dtype=weight_dtype)
+        weight = module.weight.data.to(dtype=rotation_dtype)
+        module.weight.data = torch.matmul(R1.to(weight.device).T, weight).to(dtype=weight_dtype)
         if module.bias is not None:
             bias_dtype = module.bias.data.dtype
-            bias = module.bias.data.to(device=rotation_device, dtype=rotation_dtype)
-            module.bias.data = torch.matmul(R1.T, bias).to(device="cpu", dtype=bias_dtype)
-        module.cpu()
+            bias = module.bias.data.to(dtype=rotation_dtype)
+            module.bias.data = torch.matmul(R1.to(bias.device).T, bias).to(dtype=bias_dtype)
 
 
 def random_orthogonal_matrix(size, device):
@@ -181,19 +178,17 @@ def get_orthogonal_matrix(size, mode, device=None):
 
 def rotate_embeddings(model, R1: torch.Tensor) -> None:
     # Rotate the embeddings.
-    rotation_device = R1.device
-    rotation_dtype = preferred_rotation_dtype(rotation_device)
+    rotation_dtype = preferred_rotation_dtype(R1.device)
     root, _ = _resolve_text_root_and_prefix(model)
     for W in [root.embed_tokens]:
         dtype = W.weight.data.dtype
-        W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
-        W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
+        W_ = W.weight.data.to(dtype=rotation_dtype)
+        W.weight.data = torch.matmul(W_, R1.to(W_.device)).to(dtype=dtype)
 
 
 def rotate_attention_inputs(layer, R1) -> None:
     # Rotate the WQ, WK and WV matrices of the self-attention layer.
-    rotation_device = R1.device
-    rotation_dtype = preferred_rotation_dtype(rotation_device)
+    rotation_dtype = preferred_rotation_dtype(R1.device)
     token_mixer = _get_token_mixer(layer)
     if hasattr(token_mixer, "q_proj"):
         linears = [token_mixer.q_proj, token_mixer.k_proj, token_mixer.v_proj]
@@ -206,53 +201,50 @@ def rotate_attention_inputs(layer, R1) -> None:
         ]
     for W in linears:
         dtype = W.weight.dtype
-        W_ = W.weight.to(device=rotation_device, dtype=rotation_dtype)
-        W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
+        W_ = W.weight.to(dtype=rotation_dtype)
+        W.weight.data = torch.matmul(W_, R1.to(W_.device)).to(dtype=dtype)
 
 
 def rotate_attention_output(layer, R1) -> None:
     # Rotate output matrix of the self-attention layer.
     token_mixer = _get_token_mixer(layer)
     W = token_mixer.o_proj if hasattr(token_mixer, "o_proj") else token_mixer.out_proj
-    rotation_device = R1.device
-    rotation_dtype = preferred_rotation_dtype(rotation_device)
+    rotation_dtype = preferred_rotation_dtype(R1.device)
 
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
-    W.weight.data = torch.matmul(R1.T, W_).to(device="cpu", dtype=dtype)
+    W_ = W.weight.data.to(dtype=rotation_dtype)
+    W.weight.data = torch.matmul(R1.to(W_.device).T, W_).to(dtype=dtype)
     if W.bias is not None:
-        b = W.bias.data.to(device=rotation_device, dtype=rotation_dtype)
-        W.bias.data = torch.matmul(R1.T, b).to(device="cpu", dtype=dtype)
+        b = W.bias.data.to(dtype=rotation_dtype)
+        W.bias.data = torch.matmul(R1.to(b.device).T, b).to(dtype=dtype)
 
 
 def rotate_mlp_input(layer, R1):
     # Rotate the MLP input weights.
     mlp_inputs = [layer.mlp.up_proj, layer.mlp.gate_proj]
-    rotation_device = R1.device
-    rotation_dtype = preferred_rotation_dtype(rotation_device)
+    rotation_dtype = preferred_rotation_dtype(R1.device)
     for W in mlp_inputs:
         dtype = W.weight.dtype
-        W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
-        W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
+        W_ = W.weight.data.to(dtype=rotation_dtype)
+        W.weight.data = torch.matmul(W_, R1.to(W_.device)).to(dtype=dtype)
 
 
 def rotate_mlp_output(layer, R1):
     # Rotate the MLP output weights and bias.
     W = layer.mlp.down_proj
-    rotation_device = R1.device
-    rotation_dtype = preferred_rotation_dtype(rotation_device)
+    rotation_dtype = preferred_rotation_dtype(R1.device)
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
-    W.weight.data = torch.matmul(R1.T, W_).to(device="cpu", dtype=dtype)
+    W_ = W.weight.data.to(dtype=rotation_dtype)
+    W.weight.data = torch.matmul(R1.to(W_.device).T, W_).to(dtype=dtype)
     try:
         apply_exact_had_to_linear(
-            W, had_dim=-1, output=False, device=rotation_device
+            W, had_dim=-1, output=False, device=W.weight.device
         )  # apply exact (inverse) hadamard on the weights of mlp output
     except (AssertionError, ValueError):
         pass
     if W.bias is not None:
-        b = W.bias.data.to(device=rotation_device, dtype=rotation_dtype)
-        W.bias.data = torch.matmul(R1.T, b).to(device="cpu", dtype=dtype)
+        b = W.bias.data.to(dtype=rotation_dtype)
+        W.bias.data = torch.matmul(R1.to(b.device).T, b).to(dtype=dtype)
 
 
 def rotate_head(model, R1: torch.Tensor) -> None:
@@ -267,11 +259,10 @@ def rotate_head(model, R1: torch.Tensor) -> None:
         and embed_tokens.weight.data_ptr() == W.weight.data_ptr()
     ):
         return
-    rotation_device = R1.device
-    rotation_dtype = preferred_rotation_dtype(rotation_device)
+    rotation_dtype = preferred_rotation_dtype(R1.device)
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=rotation_device, dtype=rotation_dtype)
-    W.weight.data = torch.matmul(W_, R1).to(device="cpu", dtype=dtype)
+    W_ = W.weight.data.to(dtype=rotation_dtype)
+    W.weight.data = torch.matmul(W_, R1.to(W_.device)).to(dtype=dtype)
 
 
 def rotate_ov_proj(layer, head_num, head_dim, R2=None):
@@ -280,8 +271,8 @@ def rotate_ov_proj(layer, head_num, head_dim, R2=None):
     v_proj = layer.self_attn.v_proj
     o_proj = layer.self_attn.o_proj
 
-    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, R2=R2, device=utils.DEV)
-    apply_exact_had_to_linear(o_proj, had_dim=head_dim, output=False, R2=R2, device=utils.DEV)
+    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, R2=R2, device=v_proj.weight.device)
+    apply_exact_had_to_linear(o_proj, had_dim=head_dim, output=False, R2=R2, device=o_proj.weight.device)
 
 
 @torch.inference_mode()
@@ -306,18 +297,21 @@ def rotate_model(model, args):
     utils.cleanup_memory()
     layers = [layer for layer in root.layers]
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
-        rotate_attention_inputs(layers[idx], R1)
-        rotate_attention_output(layers[idx], R1)
-        rotate_mlp_input(layers[idx], R1)
-        rotate_mlp_output(layers[idx], R1)
+        # device_map 模式下将 R1 移动到当前层所在设备
+        layer_device = next(layer.parameters()).device
+        R1_layer = R1.to(device=layer_device)
+        rotate_attention_inputs(layers[idx], R1_layer)
+        rotate_attention_output(layers[idx], R1_layer)
+        rotate_mlp_input(layers[idx], R1_layer)
+        rotate_mlp_output(layers[idx], R1_layer)
         if hasattr(layers[idx], "self_attn"):
             if checkpoint is not None:
                 R2 = _resolve_r2_key(checkpoint, idx, layer_key_prefix).to(
-                    device=R1.device,
-                    dtype=preferred_rotation_dtype(R1.device),
+                    device=layer_device,
+                    dtype=preferred_rotation_dtype(layer_device),
                 )
             else:
-                R2 = get_orthogonal_matrix(head_dim, args.rotate_mode)
+                R2 = get_orthogonal_matrix(head_dim, args.rotate_mode).to(device=layer_device)
             rotate_ov_proj(layers[idx], num_heads, head_dim, R2=R2)
 
 

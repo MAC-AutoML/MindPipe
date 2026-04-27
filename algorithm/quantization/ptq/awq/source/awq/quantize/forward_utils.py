@@ -113,9 +113,7 @@ def build_layer_forward_kwargs(model, layer, hidden_states, layer_kwargs, batch_
     layer_rotary_embedding = getattr(getattr(layer, "self_attn", None), "rotary_emb", None)
     decoder_rotary_embedding = getattr(decoder_root, "rotary_emb", None)
     rotary_embedding = decoder_rotary_embedding or layer_rotary_embedding
-    rotary_device = _module_device(rotary_embedding)
-    if rotary_embedding is not None and rotary_device is not None and rotary_device != hidden_states.device:
-        rotary_embedding = rotary_embedding.to(hidden_states.device)
+    # device_map 模式下不手动移动 rotary_emb，由 dispatch_model 管理
 
     if rotary_embedding is None:
         return _filter_kwargs_for_layer(layer, kwargs)

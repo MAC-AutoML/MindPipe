@@ -9,6 +9,7 @@ import torch.nn as nn
 import transformers
 
 from algorithm.common.device import empty_cache
+from algorithm.common.modeling import move_tensors_to_device
 from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
 
 from splitquant.backbone_utils import build_batched_layer_kwargs
@@ -124,14 +125,13 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         _device_type = torch.device(dev).type
         traincast = functools.partial(torch.amp.autocast, device_type=_device_type, dtype=dtype)
 
-    # move embedding layer and first layer to target device
+    # device_map 模式下不手动移动 front modules 和 layers[0]
     layers = get_decoder_layers(model)
-    layers[0] = layers[0].to(dev)
-    move_front_modules(model, dev)
+    layer0_device = next(layers[0].parameters()).device
 
     # catch the first layer input
     inps = torch.zeros(
-        (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=dev
+        (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=layer0_device
     )
     cache = {"i": 0}
     class Catcher(nn.Module):
@@ -157,7 +157,7 @@ def cali_split_quant(args, model, dataloader, dev, logger):
                 break
             try:
                 sample = batch[0]
-                sample = sample.to(dev)
+                sample = sample.to(layer0_device)
                 model(sample, use_cache=False, **_build_calibration_forward_kwargs(model, sample))
             except ValueError:
                 pass
@@ -172,10 +172,8 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         }
     batched_layer_kwargs = build_batched_layer_kwargs(layer_kwargs, args.cali_bsz)
     
-    # move embedding layer and first layer to cpu
+    # device_map 模式下不手动移动到 cpu
     layers[0] = layers[0].module
-    layers[0] = layers[0].cpu()
-    move_front_modules(model, "cpu")
     # raise ValueError("Only support for llama-2/Llama-3/qwen-2 now")
     empty_cache(dev)
 
@@ -191,7 +189,24 @@ def cali_split_quant(args, model, dataloader, dev, logger):
     for i in range(num_train_layer):
         logger.info(f"========= Layer {i} =========")
         dtype_dict = {}
-        layer = layers[i].to(dev)
+        # device_map 模式下不手动移动 layer
+        layer = layers[i]
+        # 将输入数据移到当前层设备
+        layer_dev = next(layer.parameters()).device
+        fp_inps = fp_inps.to(layer_dev)
+        fp_outs = fp_outs.to(layer_dev)
+        layer_kwargs = move_tensors_to_device(layer_kwargs, layer_dev)
+        batched_layer_kwargs = move_tensors_to_device(batched_layer_kwargs, layer_dev)
+        if layer_kwargs_by_type is not None:
+            layer_kwargs_by_type = {
+                lt: move_tensors_to_device(kw, layer_dev)
+                for lt, kw in layer_kwargs_by_type.items()
+            }
+        if batched_layer_kwargs_by_type is not None:
+            batched_layer_kwargs_by_type = {
+                lt: move_tensors_to_device(kw, layer_dev)
+                for lt, kw in batched_layer_kwargs_by_type.items()
+            }
         active_layer_kwargs = _select_layer_kwargs(layer, layer_kwargs, layer_kwargs_by_type)
         active_batched_layer_kwargs = _select_layer_kwargs(layer, batched_layer_kwargs, batched_layer_kwargs_by_type)
         for name, param in layer.named_parameters():
@@ -214,7 +229,9 @@ def cali_split_quant(args, model, dataloader, dev, logger):
         else:
             raise NotImplementedError
 
-        layer = layer.to(dev)
+        # 将 layer（含新建的 diag 参数）移到当前层设备
+        layer = layer.to(layer_dev)
+        # device_map 模式下不手动移动 layer
         set_require_grad_all(layer, False)
         trained_params, paras_name = [], []
         if args.cali_trans:
@@ -283,7 +300,7 @@ def cali_split_quant(args, model, dataloader, dev, logger):
             logger.info(f"layer {i} lwc lac iter {epoch}, lr {cur_lr:.8f}  time {time.time() - start_tick:.6f}s, mse: {float(mse):.8f}" )
 
         fp_inps, fp_outs = fp_outs, fp_inps
-        layers[i] = layer.to("cpu")
+        # device_map 模式下不手动移动到 cpu
         flat_parameters[i] = get_paras_dict_by_name(layer, required_names=paras_name)
         torch.save(flat_parameters, os.path.join(args.exp_dir, f"flat_parameters.pth"))
         logger.info("saved paramaters at {}".format(os.path.join(args.exp_dir, f"flat_parameters.pth")))

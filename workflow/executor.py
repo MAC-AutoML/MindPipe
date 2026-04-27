@@ -82,6 +82,14 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     dtype = config.common_args.get("dtype", "auto")
     attn_implementation = config.common_args.get("attn_implementation")
     device_map = config.common_args.get("device_map")
+
+    # 剪枝和量化都要求 device_map，因为内部已移除所有权重 .to(device)
+    if config.stages and device_map is None:
+        raise ValueError(
+            "当使用剪枝或量化时，必须通过 --device_map 指定设备映射（推荐 auto）。"
+            "例如: CUDA_VISIBLE_DEVICES=0,1 python main.py --device_map auto ..."
+        )
+
     model, tokenizer_bundle = load_model_and_tokenizer(config.model_path,dtype=dtype,attn_implementation=attn_implementation,device_map=device_map,)
     sequence_length = int(common_args["sequence_length"])
     model.seqlen = sequence_length

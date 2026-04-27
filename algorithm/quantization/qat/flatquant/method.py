@@ -209,6 +209,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
             from flatquant.model_tools.minicpm_utils import apply_flatquant_to_minicpm
             from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
             from flatquant.train_utils import cali_flat_quant
+            from flatquant.backbone_utils import get_decoder_layers as flatquant_layers
 
             resolved_dev = resolve_device(args.device)
             ref_utils.DEV = resolved_dev
@@ -232,6 +233,10 @@ class FlatQuantMethod(BaseQuantizationMethod):
 
             model = apply_wrapper(source_args, model)
             LOGGER.info("Applied FlatQuant wrappers to model")
+
+            # 将 wrapper 新建的参数移到每层实际设备（覆盖 resume/reload/cali 全路径）
+            for layer in flatquant_layers(model):
+                layer.to(next(layer.parameters()).device)
 
             if source_args.resume:
                 load_flat_parameters(source_args, model, path=args.flatquant_resume_from)

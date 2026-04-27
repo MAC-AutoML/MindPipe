@@ -509,15 +509,16 @@ def auto_scale_block(model, module, module_kwargs, w_bit, q_config, input_feat):
 
 
 def apply_scale(module, scales_list, input_feat_dict=None, device=None):
-    runtime_device = resolve_device(device)
     for prev_op_name, layer_names, scales in scales_list:
         prev_op = get_op_by_name(module, prev_op_name)
         layers = [get_op_by_name(module, name) for name in layer_names]
 
-        prev_op.to(runtime_device)
-        for layer in layers:
-            layer.to(runtime_device)
-        scales = scales.to(runtime_device)
+        # device_map 模式下不手动移动模块权重
+        # scales 对齐到实际操作设备：norm/linear 用 weight.device，GELU/SiLU 用第一个 linear 的设备
+        if isinstance(prev_op, (nn.GELU, BloomGelu, GELUActivation, nn.SiLU)):
+            scales = scales.to(layers[0].weight.device)
+        else:
+            scales = scales.to(prev_op.weight.device)
 
         if isinstance(prev_op, nn.Linear):
             assert len(layers) == 1
@@ -536,7 +537,3 @@ def apply_scale(module, scales_list, input_feat_dict=None, device=None):
             for layer_name in layer_names:
                 inp = input_feat_dict[layer_name]
                 inp.div_(scales.view(1, -1).to(inp.device).to(inp.dtype))
-
-        prev_op.cpu()
-        for layer in layers:
-            layer.cpu()

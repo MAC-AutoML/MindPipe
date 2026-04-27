@@ -12,7 +12,9 @@ from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
 from ....common.modeling import find_linear_layers
+from ....common.modeling import get_layer_device
 from ....common.modeling import get_text_backbone
+from ....common.modeling import move_tensors_to_device
 from ....common.modeling import unwrap_layer_output
 from ....common.runtime import prepend_python_path
 from ...base import BaseQuantizationMethod
@@ -52,7 +54,10 @@ class GPTQMethod(BaseQuantizationMethod):
 
             quantizer_artifacts = {}
             for layer_index, block in enumerate(backbone.layers):
-                block = block.to(args.device)
+                target_device = get_layer_device(backbone, layer_index)
+                input_states = input_states.to(target_device)
+                output_states = output_states.to(target_device)
+                layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
                 linear_layers = find_linear_layers(block)
                 layer_groups = build_decoder_layer_groups(block, set(linear_layers))
 
@@ -111,9 +116,6 @@ class GPTQMethod(BaseQuantizationMethod):
                             block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
                         )
 
-                backbone.layers[layer_index] = block.cpu()
-                del block
-                empty_cache(args.device)
                 input_states, output_states = output_states, input_states
 
         return {

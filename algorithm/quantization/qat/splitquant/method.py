@@ -213,6 +213,7 @@ class SplitQuantMethod(BaseQuantizationMethod):
             from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3
             from splitquant.model_tools.qwen_split_utils import apply_splitquant_to_qwen
             from splitquant.train_utils import cali_split_quant
+            from splitquant.backbone_utils import get_decoder_layers as splitquant_layers
 
             resolved_dev = resolve_device(args.device)
             ref_utils.DEV = resolved_dev
@@ -242,6 +243,10 @@ class SplitQuantMethod(BaseQuantizationMethod):
 
             model = apply_wrapper(source_args, model)
             LOGGER.info("Applied SplitQuant wrappers to model")
+
+            # 将 wrapper 新建的参数移到每层实际设备（覆盖 resume/reload/cali 全路径）
+            for layer in splitquant_layers(model):
+                layer.to(next(layer.parameters()).device)
 
             if source_args.resume:
                 load_splitquant_parameters(source_args, model, path=args.flatquant_resume_from)

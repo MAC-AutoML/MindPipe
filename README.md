@@ -119,11 +119,14 @@ python -m pip install -r requirements.txt
 
 ### 量化
 
+> **重要**：所有量化方法（包括单卡运行）现在统一要求通过 `CUDA_VISIBLE_DEVICES` 指定可见设备 + `--device_map`（推荐 `auto`）进行模型加载。与剪枝一致，量化流程内部依赖 `dispatch_model` 进行设备管理。
+
 ```bash
-python main.py \
+# 单卡量化（仅使用 GPU 0）
+CUDA_VISIBLE_DEVICES=0 python main.py \
   --quantization awq \
   --model_path /path/to/model \
-  --device cuda:0 \
+  --device_map auto \
   --dtype float16 \
   --calibration_dataset pileval \
   --evaluation_dataset wikitext2 \
@@ -136,7 +139,7 @@ python main.py \
 
 ### 剪枝
 
-> **重要**：所有剪枝方法（包括单卡运行）现在统一要求通过 `CUDA_VISIBLE_DEVICES` 指定可见设备 + `--device_map auto` 进行模型加载。不再支持 `--device cuda:0` 直接加载剪枝模型。这是因为剪枝流程内部依赖 `dispatch_model` 进行设备管理，直接 `.to(device)` 会破坏分片钩子。
+> **重要**：所有剪枝方法（包括单卡运行）现在统一要求通过 `CUDA_VISIBLE_DEVICES` 指定可见设备 + `--device_map`（推荐 `auto`）进行模型加载。不再支持 `--device cuda:0` 直接加载剪枝模型。这是因为剪枝流程内部依赖 `dispatch_model` 进行设备管理，直接 `.to(device)` 会破坏分片钩子。
 
 ```bash
 # 单卡剪枝（仅使用 GPU 0）
@@ -202,14 +205,14 @@ MindPipe 通过 `algorithm/common/device.py` 提供 GPU/NPU 统一抽象层，�
 使用方式：
 
 ```bash
-# GPU
-python main.py --quantization gptq --model_path /path/to/model --device cuda:0 ...
+# GPU（单卡）
+CUDA_VISIBLE_DEVICES=0 python main.py --quantization gptq --model_path /path/to/model --device_map auto ...
+
+# GPU（多卡）
+CUDA_VISIBLE_DEVICES=0,1 python main.py --quantization gptq --model_path /path/to/model --device_map auto ...
 
 # NPU（需安装 torch_npu）
-python main.py --quantization gptq --model_path /path/to/model --device npu:0 ...
-
-# 自动检测
-python main.py --quantization gptq --model_path /path/to/model --device auto ...
+CUDA_VISIBLE_DEVICES=0 python main.py --quantization gptq --model_path /path/to/model --device_map auto ...
 ```
 
 ### NPU fail-fast
@@ -267,7 +270,7 @@ results/<model>/<algorithm>/metrics.json
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--device` | `auto` | `cuda:0` / `npu:0` / `auto` |
-| `--device_map` | None | 传给 `from_pretrained` 的 `device_map`，剪枝必须传 `auto`；量化可选 |
+| `--device_map` | None | 传给 `from_pretrained` 的 `device_map`，剪枝和量化都必须指定（推荐 `auto`） |
 | `--dtype` | `bfloat16` | `float16` / `bfloat16` |
 | `--sequence_length` | 512 | 序列长度 |
 | `--calibration_samples` | 128 | 校准样本数 |
@@ -295,7 +298,7 @@ results/<model>/<algorithm>/metrics.json
 | `--structure_pattern` | `unstructured` | 剪枝结构模式；当前仅对 `wanda` / `sparsegpt` / `alps` 生效，用于指定 `n:m` 半结构化剪枝 |
 | `--damp_percent` | 0.01 | Hessian 阻尼系数 |
 
-> **device_map 必须性说明**：剪枝方法（含单卡场景）要求 `CUDA_VISIBLE_DEVICES` + `--device_map auto` 组合使用。内部流程已移除所有手动的 `.to(device)` / `.cpu()` 权重搬运，改由 `dispatch_model` 统一管理设备放置。量化方法仍可使用 `--device cuda:0` 单卡加载。
+> **device_map 必须性说明**：剪枝和量化方法（含单卡场景）均要求 `CUDA_VISIBLE_DEVICES` + `--device_map`（推荐 `auto`）组合使用。内部流程已移除所有手动的 `.to(device)` / `.cpu()` 权重搬运，改由 `dispatch_model` 统一管理设备放置。
 
 > **校准数据集选择**：各算法均支持 `wikitext2` / `c4` / `pileval` / `pg19` 四种校准数据集。上表"推荐校准数据集"列为各算法原始论文使用的默认数据集，效果最好。ShortGPT 强烈推荐 `pg19`（长文本书籍，Block Influence 统计更稳定），使用其他数据集不会报错但可能影响精度。`--calibration_samples` 控制采样窗口数，ShortGPT 适当增大（如 256 或 512）可提升重要性排序的稳定性。
 

@@ -15,8 +15,10 @@ from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
+from ....common.modeling import get_layer_device
 from ....common.modeling import get_text_backbone
 from ....common.modeling import load_model_and_tokenizer
+from ....common.modeling import move_tensors_to_device
 from ....common.modeling import unwrap_layer_output
 from ....common.runtime import prepend_python_path
 
@@ -657,12 +659,13 @@ class QuaRotMethod(BaseQuantizationMethod):
             return
 
         try:
-            model.to(args.device)
+            # device_map 模式下不手动移动模型，输入数据放到模型所在设备
+            input_device = next(model.parameters()).device
             with torch.no_grad():
                 for input_ids, _labels in calibration_batches:
-                    model(input_ids=input_ids.to(args.device), use_cache=False)
+                    model(input_ids=input_ids.to(input_device), use_cache=False)
         finally:
-            model.cpu()
+            # device_map 模式下不手动移动到 cpu
             for wrapper in active_wrappers:
                 wrapper.finish_k_equalize_calibration()
             ref_utils.cleanup_memory(verbos=False)
@@ -718,13 +721,14 @@ class QuaRotMethod(BaseQuantizationMethod):
             if model_type != model_utils.LLAMA_MODEL:
                 return original_rotate_mlp_output(layer, q_matrix, model_type)
             weight = layer.mlp.down_proj
-            rotation_dtype = rotation_utils.preferred_rotation_dtype(rotation_utils.utils.DEV)
+            weight_device = weight.weight.data.device
+            rotation_dtype = rotation_utils.preferred_rotation_dtype(weight_device)
             dtype = weight.weight.data.dtype
-            rotated = weight.weight.data.to(device=rotation_utils.utils.DEV, dtype=rotation_dtype)
-            weight.weight.data = torch.matmul(q_matrix.T, rotated).to(device="cpu", dtype=dtype)
+            rotated = weight.weight.data.to(dtype=rotation_dtype)
+            weight.weight.data = torch.matmul(q_matrix.T.to(device=weight_device, dtype=rotation_dtype), rotated).to(dtype=dtype)
             if weight.bias is not None:
-                bias = weight.bias.data.to(device=rotation_utils.utils.DEV, dtype=rotation_dtype)
-                weight.bias.data = torch.matmul(q_matrix.T, bias).to(device="cpu", dtype=dtype)
+                bias = weight.bias.data.to(dtype=rotation_dtype)
+                weight.bias.data = torch.matmul(q_matrix.T.to(device=weight_device, dtype=rotation_dtype), bias).to(dtype=dtype)
 
         def rotate_ov_proj(layer, model_type, head_num, head_dim):
             if model_type != model_utils.LLAMA_MODEL:
@@ -746,13 +750,14 @@ class QuaRotMethod(BaseQuantizationMethod):
             if model_type != model_utils.LLAMA_MODEL:
                 return original_rotate_mlp_output(layer, q_matrix, model_type)
             weight = layer.mlp.down_proj
-            rotation_dtype = rotation_utils.preferred_rotation_dtype(rotation_utils.utils.DEV)
+            weight_device = weight.weight.data.device
+            rotation_dtype = rotation_utils.preferred_rotation_dtype(weight_device)
             dtype = weight.weight.data.dtype
-            rotated = weight.weight.data.to(device=rotation_utils.utils.DEV, dtype=rotation_dtype)
-            weight.weight.data = torch.matmul(q_matrix.T, rotated).to(device="cpu", dtype=dtype)
+            rotated = weight.weight.data.to(dtype=rotation_dtype)
+            weight.weight.data = torch.matmul(q_matrix.T.to(device=weight_device, dtype=rotation_dtype), rotated).to(dtype=dtype)
             if weight.bias is not None:
-                bias = weight.bias.data.to(device=rotation_utils.utils.DEV, dtype=rotation_dtype)
-                weight.bias.data = torch.matmul(q_matrix.T, bias).to(device="cpu", dtype=dtype)
+                bias = weight.bias.data.to(dtype=rotation_dtype)
+                weight.bias.data = torch.matmul(q_matrix.T.to(device=weight_device, dtype=rotation_dtype), bias).to(dtype=dtype)
 
         def rotate_ov_proj(layer, model_type, head_num, head_dim):
             if model_type != model_utils.LLAMA_MODEL:
@@ -765,20 +770,18 @@ class QuaRotMethod(BaseQuantizationMethod):
     @staticmethod
     def _patch_qwen2_5_vl_merger_output_centering(rotation_utils) -> None:
         def rotate_extra_modules(modules, q_matrix: torch.Tensor) -> None:
-            rotation_dtype = rotation_utils.preferred_rotation_dtype(rotation_utils.utils.DEV)
-            q_transposed = q_matrix.T.to(device=rotation_utils.utils.DEV, dtype=rotation_dtype)
             for module in modules:
+                weight_device = module.weight.data.device
+                rotation_dtype = rotation_utils.preferred_rotation_dtype(weight_device)
                 dtype = module.weight.data.dtype
-                weight = module.weight.data.to(device=rotation_utils.utils.DEV, dtype=rotation_dtype)
+                q_transposed = q_matrix.T.to(device=weight_device, dtype=rotation_dtype)
+                weight = module.weight.data.to(dtype=rotation_dtype)
                 centered_weight = weight - weight.mean(dim=0, keepdim=True)
-                module.weight.data = torch.matmul(q_transposed, centered_weight).to(device="cpu", dtype=dtype)
+                module.weight.data = torch.matmul(q_transposed, centered_weight).to(dtype=dtype)
                 if module.bias is not None:
-                    bias = module.bias.data.to(device=rotation_utils.utils.DEV, dtype=rotation_dtype)
+                    bias = module.bias.data.to(dtype=rotation_dtype)
                     centered_bias = bias - bias.mean()
-                    module.bias.data = torch.matmul(q_transposed, centered_bias).to(
-                        device="cpu",
-                        dtype=dtype,
-                    )
+                    module.bias.data = torch.matmul(q_transposed, centered_bias).to(dtype=dtype)
 
         rotation_utils.rotate_extra_modules = rotate_extra_modules
 
@@ -786,7 +789,7 @@ class QuaRotMethod(BaseQuantizationMethod):
         quantizer_artifacts: dict[str, object] = {}
         int8_down_proj = bool(getattr(args, "int8_down_proj", False))
         for layer_index, block in enumerate(backbone.layers):
-            block = block.to(args.device)
+            # device_map 模式下不手动移动 block，由 dispatch_model 管理
             # Keep RTN behavior aligned with upstream QuaRot: quantize true Linear modules
             # (including those wrapped by ActQuantWrapper.module).
             linear_layers = quant_utils.find_qlayers(block, layers=[torch.nn.Linear])
@@ -814,9 +817,7 @@ class QuaRotMethod(BaseQuantizationMethod):
                     "group_size": args.weight_group_size,
                     "symmetric": args.weight_symmetric,
                 }
-            backbone.layers[layer_index] = block.cpu()
-            del block
-            empty_cache(args.device)
+            # device_map 模式下不手动移动到 cpu
         return quantizer_artifacts
 
     def _apply_qwen2_5_vl_visual_rtn_quantization(
@@ -831,7 +832,7 @@ class QuaRotMethod(BaseQuantizationMethod):
         if visual is None:
             return {}
 
-        visual = visual.to(args.device)
+        # device_map 模式下不手动移动 visual
         prefix = self._get_qwen2_5_vl_visual_prefix(model)
         visual_weight_bits = self._resolve_qwen2_5_vl_visual_weight_bits(args)
         quantizer_artifacts: dict[str, object] = {}
@@ -853,8 +854,7 @@ class QuaRotMethod(BaseQuantizationMethod):
                 "symmetric": args.weight_symmetric,
             }
 
-        visual.cpu()
-        empty_cache(args.device)
+        # device_map 模式下不手动移动到 cpu
         return quantizer_artifacts
 
     def _apply_gptq_quantization(
@@ -884,7 +884,11 @@ class QuaRotMethod(BaseQuantizationMethod):
         )
 
         for layer_index, block in enumerate(backbone.layers):
-            block = block.to(args.device)
+            target_device = get_layer_device(backbone, layer_index)
+            input_states = input_states.to(target_device)
+            output_states = output_states.to(target_device)
+            layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
+            # device_map 模式下不手动移动 block，由 dispatch_model 管理
             full_linears = quant_utils.find_qlayers(block, layers=[torch.nn.Linear])
             act_wrappers = quant_utils.find_qlayers(block, layers=[quant_utils.ActQuantWrapper])
             normalized_to_actual = {}
@@ -1005,9 +1009,7 @@ class QuaRotMethod(BaseQuantizationMethod):
                         hidden_states = hidden_states[0]
                     output_states[sample_index] = hidden_states
 
-            backbone.layers[layer_index] = block.cpu()
-            del block
-            empty_cache(args.device)
+            # device_map 模式下不手动移动到 cpu
             input_states, output_states = output_states, input_states
 
         return quantizer_artifacts

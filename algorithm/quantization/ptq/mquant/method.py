@@ -20,6 +20,7 @@ from PIL import Image
 
 from ....common.device import resolve_device
 from ....common.modeling import MiniCPMTokenizerAdapter
+from ....common.modeling import move_tensors_to_device
 from ....common.runtime import prepend_python_path
 from ...base import BaseQuantizationMethod
 
@@ -675,7 +676,8 @@ def _mindpipe_internvl_visual_clip_rtn(
 
     layers = model.vision_model.encoder.layers
     for layer_idx in range(len(layers)):
-        layer = layers[layer_idx].to(dev)
+        # device_map 模式下不手动移动 layer
+        layer = layers[layer_idx]
         subset = quant_utils.find_qlayers(layer, layers=[torch.nn.Linear])
         for name, linear in subset.items():
             if any(skip_name in name for skip_name in args.skip_names) or "L1" in name:
@@ -830,8 +832,8 @@ def _mindpipe_gptq_internvl_fwrd_visual_clip_resblocks(
     use_cache = model.model.config.llm_config.use_cache
     model.model.config.llm_config.use_cache = False
     layers = model.model.vision_model.encoder.layers
-
-    layers[0] = layers[0].to(dev)
+    # device_map 模式下不手动移动 layers[0]
+    layer0_device = next(layers[0].parameters()).device
     inps = [None] * args.nsamples
     cache = {"i": 0}
 
@@ -875,7 +877,12 @@ def _mindpipe_gptq_internvl_fwrd_visual_clip_resblocks(
 
     for layer_idx in range(len(layers)):
         print(f"\nLayer {layer_idx}:", flush=True, end=" ")
-        layer = layers[layer_idx].to(dev)
+        # device_map 模式下不手动移动 layer
+        layer = layers[layer_idx]
+        # 将输入数据移到当前层设备
+        layer_dev = next(layer.parameters()).device
+        inps = [move_tensors_to_device(inp, layer_dev) if inp is not None else inp for inp in inps]
+        outs = [move_tensors_to_device(o, layer_dev) if o is not None else o for o in outs]
         full = internvl_gptq_plus.quant_utils.find_qlayers(layer, layers=[torch.nn.Linear])
         for names in sequential:
             if any(skip_name in name for skip_name in args.skip_names for name in names):
@@ -1042,8 +1049,8 @@ def _mindpipe_gptq_internvl_fwrd_llm(
     """Collect InternVL2 language hidden states from positional args or `hidden_states=...` kwargs."""
     print("-----GPTQ Quantization LLM-----")
     layers = model.model.language_model.model.layers
-
-    layers[0] = layers[0].to(dev)
+    # device_map 模式下不手动移动 layers[0]
+    layer0_device = next(layers[0].parameters()).device
     inps = [None] * args.nsamples
     attention_masks = [None] * args.nsamples
     position_ids = [None] * args.nsamples
@@ -1094,7 +1101,14 @@ def _mindpipe_gptq_internvl_fwrd_llm(
 
     for layer_idx in range(len(layers)):
         print(f"\nLayer {layer_idx}:", flush=True, end=" ")
-        layer = layers[layer_idx].to(dev)
+        # device_map 模式下不手动移动 layer
+        layer = layers[layer_idx]
+        # 将输入数据移到当前层设备
+        layer_dev = next(layer.parameters()).device
+        inps = [move_tensors_to_device(inp, layer_dev) if inp is not None else inp for inp in inps]
+        outs = [move_tensors_to_device(o, layer_dev) if o is not None else o for o in outs]
+        attention_masks = [move_tensors_to_device(m, layer_dev) if m is not None else m for m in attention_masks]
+        position_ids = [move_tensors_to_device(p, layer_dev) if p is not None else p for p in position_ids]
         full = internvl_gptq_plus.quant_utils.find_qlayers(layer, layers=[torch.nn.Linear])
         for names in sequential:
             if any(skip_name in name for skip_name in args.skip_names for name in names):
@@ -1682,8 +1696,8 @@ def _minicpmv_gptq_fwrd_visual_clip_resblocks(
     use_cache = model.model.config.use_cache
     model.model.config.use_cache = False
     layers = model.model.vpm.encoder.layers
-
-    layers[0] = layers[0].to(dev)
+    # device_map 模式下不手动移动 layers[0]
+    layer0_device = next(layers[0].parameters()).device
     inps = [None] * args.nsamples
     attention_masks = [None] * args.nsamples
     cache = {"i": 0}
@@ -1716,7 +1730,13 @@ def _minicpmv_gptq_fwrd_visual_clip_resblocks(
     outs = [None] * args.nsamples
     for layer_idx in range(len(layers)):
         print(f"\nLayer {layer_idx}:", flush=True, end=" ")
-        layer = layers[layer_idx].to(dev)
+        # device_map 模式下不手动移动 layer
+        layer = layers[layer_idx]
+        # 将输入数据移到当前层设备
+        layer_dev = next(layer.parameters()).device
+        inps = [move_tensors_to_device(inp, layer_dev) if inp is not None else inp for inp in inps]
+        outs = [move_tensors_to_device(o, layer_dev) if o is not None else o for o in outs]
+        attention_masks = [move_tensors_to_device(m, layer_dev) if m is not None else m for m in attention_masks]
         full = minicpmv_gptq_plus.quant_utils.find_qlayers(layer, layers=[torch.nn.Linear])
         sequential = [
             _resolve_minicpmv_gptq_name_group(
@@ -2273,6 +2293,18 @@ def _qwen3_vl_gptq_llm(
     for layer_idx in range(len(layers)):
         print(f"\nLayer {layer_idx}:", flush=True, end=" ")
         layer = layers[layer_idx]
+        # 将输入数据移到当前层设备
+        layer_dev = next(layer.parameters()).device
+        inps = [move_tensors_to_device(inp, layer_dev) if inp is not None else inp for inp in inps]
+        outs = [move_tensors_to_device(o, layer_dev) if o is not None else o for o in outs]
+        attention_masks = [move_tensors_to_device(m, layer_dev) if m is not None else m for m in attention_masks]
+        position_ids = [move_tensors_to_device(p, layer_dev) if p is not None else p for p in position_ids]
+        position_embeddings = [move_tensors_to_device(pe, layer_dev) if pe is not None else pe for pe in position_embeddings]
+        visual_pos_masks = [move_tensors_to_device(m, layer_dev) if m is not None else m for m in visual_pos_masks]
+        deepstack_visual_embeds = [
+            [move_tensors_to_device(e, layer_dev) if e is not None else e for e in embeds] if embeds is not None else None
+            for embeds in deepstack_visual_embeds
+        ]
         full = quant_utils.find_qlayers(layer, layers=[torch.nn.Linear])
 
         for names in sequential:

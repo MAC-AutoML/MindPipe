@@ -32,7 +32,8 @@ def get_act_scales(model, calibration_batches, device):
             hooks.append(module.register_forward_hook(functools.partial(stat_input_hook, name=qualified_name)))
 
     for token_ids, _labels in calibration_batches:
-        model(input_ids=token_ids.to(device), use_cache=False)
+        # device_map 模式下输入数据放到模型所在设备
+        model(input_ids=token_ids.to(next(model.parameters()).device), use_cache=False)
 
     for hook in hooks:
         hook.remove()
