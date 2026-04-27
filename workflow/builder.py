@@ -251,6 +251,13 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--qlora_double_quant", type=_bool_flag, default=True)
     parser.add_argument("--qlora_quant_type", default="nf4", choices=["fp4", "nf4"])
     parser.add_argument("--qlora_merge_adapter", type=_bool_flag, default=False)
+    # QA-LoRA
+    parser.add_argument(
+        "--qalora_group_size",
+        type=int,
+        default=None,
+        help="QA-LoRA adapter pooling group size. Defaults to --weight_group_size, then --group_size.",
+    )
     # AWQ
     parser.add_argument("--awq_search", type=_bool_flag, default=True)
     parser.add_argument(
@@ -799,11 +806,11 @@ def build_run_config(args) -> WorkflowConfig:
                 f"当前为 {args.sparsity_ratio}"
             )
 
-    if has_quantization and args.quantization == "qlora":
+    if has_quantization and args.quantization in {"qlora", "qalora"}:
         if args.eval_vlm:
-            raise ValueError("QLoRA v1 is text-only; set --eval_vlm false.")
+            raise ValueError(f"{args.quantization} v1 is text-only; set --eval_vlm false.")
         if args.weight_bits not in {2, 3, 4}:
-            raise ValueError("QLoRA currently supports --weight_bits in {2, 3, 4}.")
+            raise ValueError(f"{args.quantization} currently supports --weight_bits in {{2, 3, 4}}.")
 
     model_name = model_slug(args.model_path)
     base_common_args = vars(args).copy()
