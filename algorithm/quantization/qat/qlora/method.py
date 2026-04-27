@@ -407,6 +407,55 @@ def _resolve_compute_dtype(dtype_name: str) -> torch.dtype:
     return torch.float16
 
 
+def _requested_quant_backend(weight_bits: int) -> str:
+    return "bnb_4bit" if int(weight_bits) == 4 else "fake_quant"
+
+
+def _resolve_quant_backend(weight_bits: int, resolved_device: torch.device) -> tuple[str, str | None]:
+    requested_backend = _requested_quant_backend(weight_bits)
+    if requested_backend != "bnb_4bit":
+        return requested_backend, None
+    if resolved_device.type == "cuda":
+        return requested_backend, None
+    return "fake_quant", (
+        "QLoRA W4 currently uses bitsandbytes 4bit on CUDA only; "
+        f"falling back to fake-quant W4 on device={resolved_device}."
+    )
+
+
+def _load_qlora_model(
+    *,
+    model_path: str,
+    wrapper_cls,
+    auto_model_cls,
+    base_config,
+    compute_dtype: torch.dtype,
+    attn_implementation: str,
+    resolved_device: torch.device,
+    quantization_config=None,
+):
+    load_kwargs = {
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+        "torch_dtype": compute_dtype,
+        "attn_implementation": attn_implementation,
+    }
+    if quantization_config is not None:
+        load_kwargs["quantization_config"] = quantization_config
+    if wrapper_cls is not None:
+        load_kwargs["config"] = base_config
+
+    if resolved_device.type == "cuda":
+        device_index = 0 if resolved_device.index is None else int(resolved_device.index)
+        load_kwargs["device_map"] = {"": device_index}
+
+    model_cls = wrapper_cls if wrapper_cls is not None else auto_model_cls
+    qlora_model = model_cls.from_pretrained(model_path, **load_kwargs)
+    if resolved_device.type != "cuda":
+        qlora_model.to(resolved_device)
+    return qlora_model
+
+
 def _dataset_loader_name(path: Path) -> str:
     suffixes = tuple(s.lower() for s in path.suffixes)
     if suffixes[-2:] == (".json", ".gz") or suffixes[-1:] in {(".json",), (".jsonl",)}:
@@ -676,7 +725,7 @@ class _SupervisedCollator:
 
 class QLoRAMethod(BaseQuantizationMethod):
     name = "qlora"
-    npu_ready = False
+    npu_ready = True  # Experimental NPU path falls back to fake-quant for W4 because bitsandbytes is CUDA-only.
     default_calibration_dataset = "pileval"
 
     def resolve_output_dir(self, args) -> Path:
@@ -707,9 +756,10 @@ class QLoRAMethod(BaseQuantizationMethod):
         if int(args.weight_bits) not in {2, 3, 4}:
             raise ValueError("QLoRA currently supports --weight_bits in {2, 3, 4}.")
         resolved_device = resolve_device(args.device)
-        if resolved_device.type != "cuda":
+        if resolved_device.type not in {"cuda", "npu"}:
             raise NotImplementedError(
-                f"QLoRA v1 currently supports CUDA only; got device={resolved_device}."
+                "QLoRA v1 currently supports accelerator execution on CUDA, "
+                f"plus an experimental fake-quant fallback path on NPU; got device={resolved_device}."
             )
 
     def apply_fake_quantization(self, model, tokenizer_bundle, args) -> dict[str, object]:
@@ -780,8 +830,10 @@ class QLoRAMethod(BaseQuantizationMethod):
 
         compute_dtype = _resolve_compute_dtype(args.dtype)
         resolved_device = resolve_device(args.device)
-        device_index = 0 if resolved_device.index is None else int(resolved_device.index)
-        quant_backend = "bnb_4bit" if int(args.weight_bits) == 4 else "fake_quant"
+        requested_backend = _requested_quant_backend(int(args.weight_bits))
+        quant_backend, backend_fallback_reason = _resolve_quant_backend(int(args.weight_bits), resolved_device)
+        if backend_fallback_reason:
+            LOGGER.warning(backend_fallback_reason)
 
         # The base model was already loaded by the executor for general workflows.
         # QLoRA needs a dedicated training model instance so that LoRA injection and quantized/fake-quant
@@ -820,27 +872,16 @@ class QLoRAMethod(BaseQuantizationMethod):
                 bnb_4bit_use_double_quant=bool(args.qlora_double_quant),
                 bnb_4bit_quant_type=args.qlora_quant_type,
             )
-            if wrapper_cls is not None:
-                qlora_model = wrapper_cls.from_pretrained(
-                    args.model_path,
-                    config=base_config,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=True,
-                    torch_dtype=compute_dtype,
-                    attn_implementation=args.attn_implementation,
-                    device_map={"": device_index},
-                    quantization_config=quantization_config,
-                )
-            else:
-                qlora_model = AutoModelForCausalLM.from_pretrained(
-                    args.model_path,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=True,
-                    torch_dtype=compute_dtype,
-                    attn_implementation=args.attn_implementation,
-                    device_map={"": device_index},
-                    quantization_config=quantization_config,
-                )
+            qlora_model = _load_qlora_model(
+                model_path=args.model_path,
+                wrapper_cls=wrapper_cls,
+                auto_model_cls=AutoModelForCausalLM,
+                base_config=base_config,
+                compute_dtype=compute_dtype,
+                attn_implementation=args.attn_implementation,
+                resolved_device=resolved_device,
+                quantization_config=quantization_config,
+            )
             qlora_model.config.use_cache = False
             qlora_model = prepare_model_for_kbit_training(
                 qlora_model,
@@ -848,25 +889,15 @@ class QLoRAMethod(BaseQuantizationMethod):
             )
             target_modules = _find_lora_target_modules(qlora_model, bnb)
         else:
-            if wrapper_cls is not None:
-                qlora_model = wrapper_cls.from_pretrained(
-                    args.model_path,
-                    config=base_config,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=True,
-                    torch_dtype=compute_dtype,
-                    attn_implementation=args.attn_implementation,
-                    device_map={"": device_index},
-                )
-            else:
-                qlora_model = AutoModelForCausalLM.from_pretrained(
-                    args.model_path,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=True,
-                    torch_dtype=compute_dtype,
-                    attn_implementation=args.attn_implementation,
-                    device_map={"": device_index},
-                )
+            qlora_model = _load_qlora_model(
+                model_path=args.model_path,
+                wrapper_cls=wrapper_cls,
+                auto_model_cls=AutoModelForCausalLM,
+                base_config=base_config,
+                compute_dtype=compute_dtype,
+                attn_implementation=args.attn_implementation,
+                resolved_device=resolved_device,
+            )
             quantized_linear_layers = _replace_with_fake_quant_linears(qlora_model, args)
             qlora_model.config.use_cache = False
             qlora_model = _prepare_model_for_fake_quant_training(
@@ -885,6 +916,8 @@ class QLoRAMethod(BaseQuantizationMethod):
             task_type="CAUSAL_LM",
         )
         qlora_model = get_peft_model(qlora_model, lora_config)
+        if quant_backend != "bnb_4bit":
+            qlora_model.to(resolved_device)
 
         train_args = TrainingArguments(
             output_dir=str(trainer_output_dir),
@@ -968,6 +1001,8 @@ class QLoRAMethod(BaseQuantizationMethod):
             "qlora_config": {
                 "weight_bits": int(args.weight_bits),
                 "backend": quant_backend,
+                "requested_backend": requested_backend,
+                "backend_fallback_reason": backend_fallback_reason,
                 "quant_type": args.qlora_quant_type if quant_backend == "bnb_4bit" else "uniform_fake_quant",
                 "double_quant": bool(args.qlora_double_quant) if quant_backend == "bnb_4bit" else False,
                 "lora_r": int(args.qlora_lora_r),
