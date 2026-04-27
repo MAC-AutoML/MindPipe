@@ -55,9 +55,17 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
     stage_start = time.perf_counter()
     stage_output_dir = ensure_dir(stage_method.resolve_output_dir(stage_args))
     if stage.stage_type == "quantization":
-        artifacts = stage_method.apply_fake_quantization(model, tokenizer_bundle, stage_args)
+        stage_result = stage_method.apply_fake_quantization(model, tokenizer_bundle, stage_args)
     else:
-        artifacts = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
+        stage_result = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
+
+    if not isinstance(stage_result, dict):
+        raise TypeError(
+            f"Stage method {stage_method.__class__.__name__} must return a dict, got {type(stage_result)!r}."
+        )
+
+    next_model = stage_result.pop("_updated_model", model)
+    next_tokenizer_bundle = stage_result.pop("_updated_tokenizer_bundle", tokenizer_bundle)
     return {
         "stage_type": stage.stage_type,
         "algorithm_name": stage.algorithm_name,
@@ -68,8 +76,8 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
         },
         "output_dir": str(stage_output_dir),
         "elapsed_seconds": time.perf_counter() - stage_start,
-        "artifacts": artifacts,
-    }
+        "artifacts": stage_result,
+    }, next_model, next_tokenizer_bundle
 
 
 def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
@@ -94,7 +102,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         stage_args.model_path = config.model_path
         if final_output_dir is None:
             final_output_dir = _resolve_final_output_dir(config, stage_method, stage_args)
-        stage_record = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
+        stage_record, model, tokenizer_bundle = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
         stage_records.append(stage_record)
         gc.collect()
         empty_cache(common_args["device"])

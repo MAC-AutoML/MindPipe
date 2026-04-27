@@ -211,6 +211,46 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--splitquant_reload_matrix_from", default=None)
     parser.add_argument("--splitquant_save_matrix", type=_bool_flag, default=False)
     parser.add_argument("--static_groups", type=_bool_flag, default=False)
+    # QLoRA
+    parser.add_argument("--qlora_train_file", default=None, help="Local supervised training file for QLoRA (.json/.jsonl/.csv/.parquet).")
+    parser.add_argument("--qlora_eval_file", default=None, help="Optional local supervised evaluation file for QLoRA.")
+    parser.add_argument("--qlora_eval_split_ratio", type=float, default=0.0, help="Optional holdout split ratio when only --qlora_train_file is provided.")
+    parser.add_argument("--qlora_input_field", default="input", help="Input/prompt field name in the local QLoRA dataset.")
+    parser.add_argument("--qlora_output_field", default="output", help="Target/response field name in the local QLoRA dataset.")
+    parser.add_argument("--qlora_max_train_samples", type=int, default=None, help="Optional cap on QLoRA training samples.")
+    parser.add_argument("--qlora_max_eval_samples", type=int, default=None, help="Optional cap on QLoRA eval samples.")
+    parser.add_argument(
+        "--qlora_plain_text_default_samples",
+        type=int,
+        default=1024,
+        help=(
+            "Default number of training samples for plain-text QLoRA when --qlora_train_file and "
+            "--qlora_max_train_samples are both omitted."
+        ),
+    )
+    parser.add_argument("--qlora_source_max_len", type=int, default=None, help="Optional source token cap for QLoRA. Defaults to sequence_length - qlora_target_max_len.")
+    parser.add_argument("--qlora_target_max_len", type=int, default=256, help="Target token cap for QLoRA supervision.")
+    parser.add_argument("--qlora_train_on_source", type=_bool_flag, default=False, help="Whether QLoRA should include prompt tokens in the loss.")
+    parser.add_argument("--qlora_per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--qlora_per_device_eval_batch_size", type=int, default=1)
+    parser.add_argument("--qlora_gradient_accumulation_steps", type=int, default=16)
+    parser.add_argument("--qlora_learning_rate", type=float, default=2e-4)
+    parser.add_argument("--qlora_weight_decay", type=float, default=0.0)
+    parser.add_argument("--qlora_num_train_epochs", type=float, default=1.0)
+    parser.add_argument("--qlora_max_steps", type=int, default=-1)
+    parser.add_argument("--qlora_logging_steps", type=int, default=10)
+    parser.add_argument("--qlora_save_steps", type=int, default=250)
+    parser.add_argument("--qlora_save_total_limit", type=int, default=2)
+    parser.add_argument("--qlora_warmup_ratio", type=float, default=0.03)
+    parser.add_argument("--qlora_lr_scheduler_type", default="constant")
+    parser.add_argument("--qlora_dataloader_num_workers", type=int, default=0)
+    parser.add_argument("--qlora_gradient_checkpointing", type=_bool_flag, default=True)
+    parser.add_argument("--qlora_lora_r", type=int, default=64)
+    parser.add_argument("--qlora_lora_alpha", type=int, default=16)
+    parser.add_argument("--qlora_lora_dropout", type=float, default=0.0)
+    parser.add_argument("--qlora_double_quant", type=_bool_flag, default=True)
+    parser.add_argument("--qlora_quant_type", default="nf4", choices=["fp4", "nf4"])
+    parser.add_argument("--qlora_merge_adapter", type=_bool_flag, default=False)
     # AWQ
     parser.add_argument("--awq_search", type=_bool_flag, default=True)
     parser.add_argument(
@@ -758,6 +798,12 @@ def build_run_config(args) -> WorkflowConfig:
                 f"n:m 半结构化剪枝 ({args.structure_pattern}) 的稀疏率必须为 0.5，"
                 f"当前为 {args.sparsity_ratio}"
             )
+
+    if has_quantization and args.quantization == "qlora":
+        if args.eval_vlm:
+            raise ValueError("QLoRA v1 is text-only; set --eval_vlm false.")
+        if args.weight_bits not in {2, 3, 4}:
+            raise ValueError("QLoRA currently supports --weight_bits in {2, 3, 4}.")
 
     model_name = model_slug(args.model_path)
     base_common_args = vars(args).copy()

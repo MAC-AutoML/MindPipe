@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SUITE_SCRIPT="$REPO_ROOT/scripts/repro/run_qlora_adapted_models_text_suite.sh"
+
+if [[ ! -x "$SUITE_SCRIPT" ]]; then
+  chmod +x "$SUITE_SCRIPT"
+fi
+
+# This launcher is pinned to the current QLoRA evaluation round:
+# - models: llama2, llama_family, qwen2_5, qwen3, qwen2_5_vl, qwen3_vl, qwen3_5
+# - calibration: pileval, 1024 samples
+# - evaluation: wikitext2 PPL + zero-shot without hellaswag
+# - quant configs: FP, W2A16, W3A16, W4A16
+# Note: W2/W3 use fake-quant QLoRA; W4 uses bitsandbytes 4bit QLoRA.
+exec env \
+  PYTHON_BIN="${PYTHON_BIN:-/mnt/42_store/lcw/miniconda3/envs/mindpipe/bin/python}" \
+  GPU_ID="${GPU_ID:-1}" \
+  NPU_ID="${NPU_ID:-0}" \
+  DEVICE="${DEVICE:-cuda:0}" \
+  DTYPE="${DTYPE:-bfloat16}" \
+  ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}" \
+  DATA_PATH="${DATA_PATH:-/mnt/42_store/lcw/data2/Huawei/datasets}" \
+  CALIBRATION_DATASET="${CALIBRATION_DATASET:-pileval}" \
+  CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-1024}" \
+  QLORA_MAX_TRAIN_SAMPLES="${QLORA_MAX_TRAIN_SAMPLES:-1024}" \
+  EVALUATION_DATASET="${EVALUATION_DATASET:-wikitext2}" \
+  SEQUENCE_LENGTH="${SEQUENCE_LENGTH:-2048}" \
+  BATCH_SIZE="${BATCH_SIZE:-1}" \
+  MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}" \
+  ZERO_SHOT_BATCH_SIZE="${ZERO_SHOT_BATCH_SIZE:-1}" \
+  ZERO_SHOT_NUM_FEWSHOT="${ZERO_SHOT_NUM_FEWSHOT:-0}" \
+  ZERO_SHOT_TASKS_STR="${ZERO_SHOT_TASKS_STR:-boolq piqa rte winogrande arc_easy arc_challenge openbookqa}" \
+  SEED="${SEED:-0}" \
+  GROUP_SIZE="${GROUP_SIZE:-128}" \
+  WEIGHT_GROUP_SIZE="${WEIGHT_GROUP_SIZE:-128}" \
+  ACTIVATION_BITS="${ACTIVATION_BITS:-16}" \
+  WEIGHT_SYMMETRIC="${WEIGHT_SYMMETRIC:-true}" \
+  WEIGHT_CLIP="${WEIGHT_CLIP:-false}" \
+  QLORA_PER_DEVICE_TRAIN_BATCH_SIZE="${QLORA_PER_DEVICE_TRAIN_BATCH_SIZE:-1}" \
+  QLORA_PER_DEVICE_EVAL_BATCH_SIZE="${QLORA_PER_DEVICE_EVAL_BATCH_SIZE:-1}" \
+  QLORA_GRADIENT_ACCUMULATION_STEPS="${QLORA_GRADIENT_ACCUMULATION_STEPS:-16}" \
+  QLORA_NUM_TRAIN_EPOCHS="${QLORA_NUM_TRAIN_EPOCHS:-1}" \
+  QLORA_MAX_STEPS="${QLORA_MAX_STEPS:--1}" \
+  QLORA_LOGGING_STEPS="${QLORA_LOGGING_STEPS:-10}" \
+  QLORA_SAVE_STEPS="${QLORA_SAVE_STEPS:-1000}" \
+  QLORA_SAVE_TOTAL_LIMIT="${QLORA_SAVE_TOTAL_LIMIT:-1}" \
+  QLORA_LEARNING_RATE="${QLORA_LEARNING_RATE:-2e-4}" \
+  QLORA_WEIGHT_DECAY="${QLORA_WEIGHT_DECAY:-0.0}" \
+  QLORA_WARMUP_RATIO="${QLORA_WARMUP_RATIO:-0.03}" \
+  QLORA_LR_SCHEDULER_TYPE="${QLORA_LR_SCHEDULER_TYPE:-constant}" \
+  QLORA_GRADIENT_CHECKPOINTING="${QLORA_GRADIENT_CHECKPOINTING:-true}" \
+  QLORA_LORA_R="${QLORA_LORA_R:-64}" \
+  QLORA_LORA_ALPHA="${QLORA_LORA_ALPHA:-16}" \
+  QLORA_LORA_DROPOUT="${QLORA_LORA_DROPOUT:-0.0}" \
+  QLORA_DOUBLE_QUANT="${QLORA_DOUBLE_QUANT:-true}" \
+  QLORA_QUANT_TYPE="${QLORA_QUANT_TYPE:-nf4}" \
+  QLORA_MERGE_ADAPTER="${QLORA_MERGE_ADAPTER:-false}" \
+  LOG_LEVEL="${LOG_LEVEL:-INFO}" \
+  RUN_FP_BASELINE="${RUN_FP_BASELINE:-true}" \
+  SKIP_EXISTING="${SKIP_EXISTING:-true}" \
+  CONTINUE_ON_ERROR="${CONTINUE_ON_ERROR:-false}" \
+  DRY_RUN="${DRY_RUN:-false}" \
+  MODEL_FILTER="${MODEL_FILTER:-}" \
+  OUTPUT_BASE="${OUTPUT_BASE:-$REPO_ROOT/new_results/quantization_suite/qlora_text_suite}" \
+  "$SUITE_SCRIPT" "$@"
