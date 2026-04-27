@@ -5,25 +5,37 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from algorithm.common.modeling import (
+    get_head_geometry,
+    get_mlp_projections,
+    get_q_stride,
+    supports_head_pruning,
+)
+
 
 # ---------------------------------------------------------------------------
 # Head geometry helpers
 # ---------------------------------------------------------------------------
 
 def _get_head_geometry(layer):
-    attn = layer.self_attn
-    config = getattr(attn, "config", None)
-    num_heads = int(getattr(attn, "num_heads", getattr(config, "num_attention_heads")))
-    num_kv_heads = int(getattr(attn, "num_key_value_heads", getattr(config, "num_key_value_heads", num_heads)))
-    hidden_size = int(getattr(attn, "hidden_size", getattr(config, "hidden_size")))
-    head_dim = int(getattr(attn, "head_dim", hidden_size // num_heads))
-    num_kv_groups = num_heads // num_kv_heads
-    return num_heads, num_kv_heads, num_kv_groups, head_dim
+    """获取 head 几何信息，linear_attention 层返回 None。"""
+    return get_head_geometry(layer)
 
 
 def _expand_attention_mask_to_kv(attn_mask, layer, device):
-    """Expand a per-group or per-Q-head keep mask into Q/KV channel masks."""
-    num_heads, num_kv_heads, num_kv_groups, head_dim = _get_head_geometry(layer)
+    """Expand a per-group or per-Q-head keep mask into Q/KV channel masks.
+
+    返回 (q_row_mask, kv_mask, o_col_mask)：
+    - q_row_mask: q_proj 的行掩码（包含 query+gate 的 q_stride 步长）
+    - kv_mask: k_proj/v_proj 的行掩码（head_dim 步长）
+    - o_col_mask: o_proj 的列掩码（head_dim 步长，按 Q head 展开）
+    """
+    geo = _get_head_geometry(layer)
+    if geo is None:
+        raise ValueError("linear_attention 层不支持 head 掩码展开")
+    num_heads, num_kv_heads, num_kv_groups, head_dim = geo
+    q_stride = get_q_stride(layer)
+
     attn_mask = attn_mask.to(dtype=torch.bool)
     if attn_mask.numel() == num_kv_heads:
         kv_head_mask = attn_mask
@@ -39,9 +51,13 @@ def _expand_attention_mask_to_kv(attn_mask, layer, device):
             f"Expected {num_kv_heads} attention groups or {num_heads} Q-head mask elements, "
             f"got {attn_mask.numel()}."
         )
-    q_mask = q_head_mask.repeat_interleave(head_dim).to(device)
+    # q_proj 行掩码（包含 query+gate）
+    q_mask = q_head_mask.repeat_interleave(q_stride).to(device)
+    # KV 行掩码
     kv_mask = kv_head_mask.repeat_interleave(head_dim).to(device)
-    return q_mask, kv_mask
+    # o_proj 列掩码：按 Q head 展开到 num_heads * head_dim
+    o_col_mask = q_head_mask.repeat_interleave(head_dim).to(device)
+    return q_mask, kv_mask, o_col_mask
 
 
 # ---------------------------------------------------------------------------
@@ -131,22 +147,28 @@ def _slice_prune_in_channels(linear: nn.Linear, remove_idxs: list[int], keep_idx
 # ---------------------------------------------------------------------------
 
 def pseudo_mask_attention(layer, group_keep_mask: torch.Tensor, device):
-    """Zero out pruned attention group weights without changing shapes."""
-    q_mask, kv_mask = _expand_attention_mask_to_kv(group_keep_mask, layer, device)
+    """Zero out pruned attention group weights without changing shapes.
+
+    linear_attention 层会直接跳过（不做任何操作）。
+    """
+    if not supports_head_pruning(layer):
+        return
+    q_mask, kv_mask, o_col_mask = _expand_attention_mask_to_kv(group_keep_mask, layer, device)
     attn = layer.self_attn
     attn.q_proj.weight.data *= q_mask.to(attn.q_proj.weight.device).unsqueeze(-1)
     attn.k_proj.weight.data *= kv_mask.to(attn.k_proj.weight.device).unsqueeze(-1)
     attn.v_proj.weight.data *= kv_mask.to(attn.v_proj.weight.device).unsqueeze(-1)
-    attn.o_proj.weight.data *= q_mask.to(attn.o_proj.weight.device).unsqueeze(0)
+    attn.o_proj.weight.data *= o_col_mask.to(attn.o_proj.weight.device).unsqueeze(0)
 
 
 def pseudo_mask_mlp(layer, neuron_keep_mask: torch.Tensor, device):
     """Zero out pruned MLP neuron weights without changing shapes."""
-    mask = neuron_keep_mask.to(layer.mlp.up_proj.weight.device).unsqueeze(-1).to(layer.mlp.up_proj.weight.data.dtype)
-    layer.mlp.up_proj.weight.data *= mask
-    layer.mlp.gate_proj.weight.data *= mask
-    mask_t = neuron_keep_mask.to(layer.mlp.down_proj.weight.device).unsqueeze(0).to(layer.mlp.down_proj.weight.data.dtype)
-    layer.mlp.down_proj.weight.data *= mask_t
+    up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+    mask = neuron_keep_mask.to(up_proj.weight.device).unsqueeze(-1).to(up_proj.weight.data.dtype)
+    up_proj.weight.data *= mask
+    gate_proj.weight.data *= mask
+    mask_t = neuron_keep_mask.to(down_proj.weight.device).unsqueeze(0).to(down_proj.weight.data.dtype)
+    down_proj.weight.data *= mask_t
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +176,17 @@ def pseudo_mask_mlp(layer, neuron_keep_mask: torch.Tensor, device):
 # ---------------------------------------------------------------------------
 
 def prune_attention(layer, remove_groups: list[int], device):
-    """Remove attention groups by slicing weights and updating layer attributes."""
-    num_heads, num_kv_heads, num_kv_groups, head_dim = _get_head_geometry(layer)
+    """Remove attention groups by slicing weights and updating layer attributes.
+
+    linear_attention 层会直接跳过（不做任何操作）。
+    """
+    if not supports_head_pruning(layer):
+        return
+    geo = _get_head_geometry(layer)
+    if geo is None:
+        return
+    num_heads, num_kv_heads, num_kv_groups, head_dim = geo
+    q_stride = get_q_stride(layer)
 
     all_groups = list(range(num_kv_heads))
     keep_groups = sorted(set(all_groups) - set(remove_groups))
@@ -170,26 +201,33 @@ def prune_attention(layer, remove_groups: list[int], device):
         start = group_idx * num_kv_groups
         remove_q_channels.extend(range(start, start + num_kv_groups))
 
-    # Expand to per-channel indices
+    # q_proj 行索引（考虑 query+gate 绑定，步长 q_stride）
     keep_q_idxs = []
     for h in keep_q_channels:
-        keep_q_idxs.extend(range(h * head_dim, (h + 1) * head_dim))
+        keep_q_idxs.extend(range(h * q_stride, (h + 1) * q_stride))
     remove_q_idxs = []
     for h in remove_q_channels:
-        remove_q_idxs.extend(range(h * head_dim, (h + 1) * head_dim))
+        remove_q_idxs.extend(range(h * q_stride, (h + 1) * q_stride))
+
+    # o_proj 列索引（标准 head_dim 步长）
+    keep_o_idxs = []
+    for h in keep_q_channels:
+        keep_o_idxs.extend(range(h * head_dim, (h + 1) * head_dim))
+    remove_o_idxs = []
+    for h in remove_q_channels:
+        remove_o_idxs.extend(range(h * head_dim, (h + 1) * head_dim))
 
     attn = layer.self_attn
 
     # o_proj: prune INPUT columns
-    if remove_q_idxs:
-        _slice_prune_in_channels(attn.o_proj, remove_q_idxs, keep_q_idxs)
+    if remove_o_idxs:
+        _slice_prune_in_channels(attn.o_proj, remove_o_idxs, keep_o_idxs)
 
     # q_proj: prune OUTPUT rows
     if remove_q_idxs:
         _slice_prune_out_channels(attn.q_proj, remove_q_idxs, keep_q_idxs)
 
     # --- KV handling (GQA-aware) ---
-    # Determine which KV heads to keep
     kv_keep_heads = keep_groups
     kv_remove_heads = remove_groups
 
@@ -204,8 +242,7 @@ def prune_attention(layer, remove_groups: list[int], device):
         _slice_prune_out_channels(attn.k_proj, remove_kv_idxs, keep_kv_idxs)
         _slice_prune_out_channels(attn.v_proj, remove_kv_idxs, keep_kv_idxs)
 
-    # Update layer attributes on the attention module itself. The shared decoder
-    # config cannot represent per-layer heterogeneous head counts.
+    # Update layer attributes on the attention module itself.
     new_num_heads = len(keep_q_channels)
     new_num_kv_heads = len(kv_keep_heads)
     for attr, val in [
@@ -222,8 +259,8 @@ def prune_attention(layer, remove_groups: list[int], device):
 
 def prune_mlp(layer, remove_neurons: list[int], device):
     """Remove MLP intermediate neurons by slicing weights."""
-    mlp = layer.mlp
-    intermediate_size = mlp.up_proj.weight.shape[0]
+    up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+    intermediate_size = up_proj.weight.shape[0]
     all_neurons = list(range(intermediate_size))
     keep_neurons = sorted(set(all_neurons) - set(remove_neurons))
     remove_neurons_sorted = sorted(set(remove_neurons))
@@ -232,14 +269,14 @@ def prune_mlp(layer, remove_neurons: list[int], device):
         return
 
     # up_proj, gate_proj: prune OUTPUT rows
-    _slice_prune_out_channels(mlp.up_proj, remove_neurons_sorted, keep_neurons)
-    _slice_prune_out_channels(mlp.gate_proj, remove_neurons_sorted, keep_neurons)
+    _slice_prune_out_channels(up_proj, remove_neurons_sorted, keep_neurons)
+    _slice_prune_out_channels(gate_proj, remove_neurons_sorted, keep_neurons)
 
     # down_proj: prune INPUT columns
-    _slice_prune_in_channels(mlp.down_proj, remove_neurons_sorted, keep_neurons)
+    _slice_prune_in_channels(down_proj, remove_neurons_sorted, keep_neurons)
 
     # Update layer attribute
-    mlp.intermediate_size = len(keep_neurons)
+    layer.mlp.intermediate_size = len(keep_neurons)
 
 
 # ---------------------------------------------------------------------------
@@ -258,10 +295,13 @@ def sync_config(backbone):
     kv_group_counts = []
     intermediate_sizes = []
     for layer in backbone.layers:
-        num_heads, num_kv_heads, num_kv_groups, _ = _get_head_geometry(layer)
-        head_counts.append(num_heads)
-        kv_head_counts.append(num_kv_heads)
-        kv_group_counts.append(num_kv_groups)
+        if supports_head_pruning(layer):
+            geo = _get_head_geometry(layer)
+            if geo is not None:
+                num_heads, num_kv_heads, num_kv_groups, _ = geo
+                head_counts.append(num_heads)
+                kv_head_counts.append(num_kv_heads)
+                kv_group_counts.append(num_kv_groups)
         intermediate_sizes.append(int(layer.mlp.intermediate_size))
 
     decoder_config = backbone.decoder_config

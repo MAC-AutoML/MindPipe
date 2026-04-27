@@ -731,6 +731,81 @@ def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> l
     return [sorted(available_names)]
 
 
+# ── 混合注意力层抽象（Qwen3.5 等混合架构） ──
+
+
+def get_attn_output_proj(layer):
+    """获取注意力层的输出投影。
+
+    兼容标准 self_attn.o_proj 和 Qwen3.5 linear_attn.out_proj。
+    """
+    if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "o_proj"):
+        return layer.self_attn.o_proj
+    if hasattr(layer, "linear_attn") and hasattr(layer.linear_attn, "out_proj"):
+        return layer.linear_attn.out_proj
+    return None
+
+
+def supports_head_pruning(layer) -> bool:
+    """判断该层是否支持 attention head 结构化剪枝。
+
+    linear_attention 层（如 Qwen3.5 的 GatedDeltaNet）没有标准的 head 概念，
+    不适合做 head 级别的结构化剪枝，应仅剪 MLP。
+    """
+    return hasattr(layer, "self_attn") and hasattr(layer.self_attn, "q_proj")
+
+
+def get_head_geometry(layer):
+    """获取 attention head 的几何信息。
+
+    返回 (num_heads, num_kv_heads, num_kv_groups, head_dim)，
+    linear_attention 层返回 None。
+    """
+    if not supports_head_pruning(layer):
+        return None
+    attn = layer.self_attn
+    config = getattr(attn, "config", None)
+    num_heads = int(getattr(attn, "num_heads", getattr(config, "num_attention_heads")))
+    num_kv_heads = int(getattr(attn, "num_key_value_heads", getattr(config, "num_key_value_heads", num_heads)))
+    hidden_size = int(getattr(attn, "hidden_size", getattr(config, "hidden_size")))
+    head_dim = int(getattr(attn, "head_dim", getattr(config, "head_dim", hidden_size // num_heads)))
+    num_kv_groups = num_heads // num_kv_heads
+    return num_heads, num_kv_heads, num_kv_groups, head_dim
+
+
+def get_q_stride(layer) -> int | None:
+    """获取 q_proj 中每个 head 占的行数。
+
+    标准 attention 是 head_dim；
+    Qwen3.5 full-attn 是 head_dim * 2（query+gate 绑定）。
+    linear_attention 层返回 None。
+    """
+    geo = get_head_geometry(layer)
+    if geo is None:
+        return None
+    num_heads, _, _, head_dim = geo
+    q_proj = layer.self_attn.q_proj
+    expected_q_size = num_heads * head_dim
+    actual_q_size = q_proj.out_features
+    return head_dim * 2 if actual_q_size == expected_q_size * 2 else head_dim
+
+
+def get_attn_projections(layer):
+    """获取注意力层的所有投影层 (q_proj, k_proj, v_proj, o_proj)。
+
+    linear_attention 层返回 None。
+    """
+    if not supports_head_pruning(layer):
+        return None
+    attn = layer.self_attn
+    return attn.q_proj, attn.k_proj, attn.v_proj, attn.o_proj
+
+
+def get_mlp_projections(layer):
+    """获取 MLP 的三个投影层 (up_proj, gate_proj, down_proj)。"""
+    return layer.mlp.up_proj, layer.mlp.gate_proj, layer.mlp.down_proj
+
+
 # ── 多卡并行设备管理 helpers ──
 
 

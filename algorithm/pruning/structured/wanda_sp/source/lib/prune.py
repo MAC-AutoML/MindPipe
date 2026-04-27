@@ -3,6 +3,14 @@ import torch.nn as nn
 
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
+from algorithm.common.modeling import (
+    get_attn_output_proj,
+    get_attn_projections as _get_attn_projections,
+    get_head_geometry as _get_head_geometry,
+    get_mlp_projections as _get_mlp_projections,
+    get_q_stride,
+    supports_head_pruning,
+)
 from .layerwrapper import WrappedGPT
 
 
@@ -34,25 +42,42 @@ def find_layers(module, layers=[nn.Linear], name=""):
 
 
 def get_attention_projections(layer):
+    """获取注意力投影层，linear_attention 层返回 None。"""
+    result = _get_attn_projections(layer)
+    if result is None:
+        return None
+    q, k, v, o = result
     return (
-        resolve_linear_module(layer.self_attn.q_proj),
-        resolve_linear_module(layer.self_attn.k_proj),
-        resolve_linear_module(layer.self_attn.v_proj),
-        resolve_linear_module(layer.self_attn.o_proj),
+        resolve_linear_module(q),
+        resolve_linear_module(k),
+        resolve_linear_module(v),
+        resolve_linear_module(o),
     )
 
 
 def get_mlp_projections(layer):
+    """获取 MLP 投影层。"""
+    up, gate, down = _get_mlp_projections(layer)
     return (
-        resolve_linear_module(layer.mlp.up_proj),
-        resolve_linear_module(layer.mlp.gate_proj),
-        resolve_linear_module(layer.mlp.down_proj),
+        resolve_linear_module(up),
+        resolve_linear_module(gate),
+        resolve_linear_module(down),
     )
 
 
 def get_projection_subset(layer):
-    o_proj = resolve_linear_module(layer.self_attn.o_proj)
+    """获取 WandaSP 剪枝目标投影子集。
+
+    full_attention 层返回 attn_output + mlp.down_proj，
+    linear_attention 层仅返回 mlp.down_proj（不剪 attention）。
+    """
     down_proj = resolve_linear_module(layer.mlp.down_proj)
+    if not supports_head_pruning(layer):
+        # linear_attention 层：只剪 MLP
+        if down_proj is None:
+            raise KeyError("Failed to resolve mlp.down_proj")
+        return {"mlp.down_proj": down_proj}
+    o_proj = resolve_linear_module(layer.self_attn.o_proj)
     if o_proj is None or down_proj is None:
         available = ", ".join(sorted(find_layers(layer).keys()))
         raise KeyError(
@@ -60,7 +85,7 @@ def get_projection_subset(layer):
             f"available_layers=[{available}]"
         )
     return {
-        "self_attn.o_proj": o_proj,
+        "attn_output": o_proj,
         "mlp.down_proj": down_proj,
     }
 
@@ -139,36 +164,44 @@ def move_layer_kwargs(layer_kwargs, device):
 
 
 def get_attention_head_geometry(layer):
-    attn = layer.self_attn
-    config = getattr(attn, "config", None)
-    num_heads = int(getattr(attn, "num_heads", getattr(config, "num_attention_heads")))
-    num_kv_heads = int(
-        getattr(attn, "num_key_value_heads", getattr(config, "num_key_value_heads", num_heads))
-    )
-    hidden_size = int(getattr(attn, "hidden_size", getattr(config, "hidden_size")))
-    head_dim = int(getattr(attn, "head_dim", hidden_size // num_heads))
-    num_kv_groups = num_heads // num_kv_heads
-    return num_heads, num_kv_heads, num_kv_groups, head_dim
+    """获取 head 几何信息，linear_attention 层返回 None。"""
+    return _get_head_geometry(layer)
 
 
 def aggregate_attention_metric(layer, metric):
-    num_heads, _, _, head_dim = get_attention_head_geometry(layer)
+    """将逐通道 metric 聚合为逐 head metric。linear_attention 层不聚合。"""
+    geo = get_attention_head_geometry(layer)
+    if geo is None:
+        return metric
+    num_heads, _, _, head_dim = geo
     return metric.reshape(num_heads, head_dim).sum(dim=1)
 
 
 def expand_attention_masks(layer, attn_mask, device):
+    """将 per-head mask 展开为 per-channel mask。
+
+    返回 (q_row_mask, kv_mask, o_col_mask)：
+    - q_row_mask: q_proj 的行掩码（考虑 query+gate 绑定的 q_stride）
+    - kv_mask: k_proj/v_proj 的行掩码
+    - o_col_mask: o_proj 的列掩码（标准 head_dim 步长）
+    """
     num_heads, num_kv_heads, num_kv_groups, head_dim = get_attention_head_geometry(layer)
+    q_stride = get_q_stride(layer)
+
     if attn_mask.numel() != num_heads:
         raise ValueError(
             f"Expected {num_heads} attention heads in structured Wanda mask, got {attn_mask.numel()}."
         )
-    q_mask = attn_mask.repeat_interleave(head_dim)
+    # q_proj 行掩码
+    q_row_mask = attn_mask.repeat_interleave(q_stride)
     if num_kv_heads == num_heads:
-        kv_mask = q_mask
+        kv_mask = attn_mask.repeat_interleave(head_dim)
     else:
         kv_head_mask = attn_mask.reshape(num_kv_heads, num_kv_groups).any(dim=1)
         kv_mask = kv_head_mask.repeat_interleave(head_dim)
-    return q_mask.to(device), kv_mask.to(device)
+    # o_proj 列掩码
+    o_col_mask = attn_mask.repeat_interleave(head_dim)
+    return q_row_mask.to(device), kv_mask.to(device), o_col_mask.to(device)
 
 
 def compute_output_bias(mean_input, mask, output_weight):
@@ -178,23 +211,29 @@ def compute_output_bias(mean_input, mask, output_weight):
 
 
 def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bias=True, unstr=False):
-    q_proj, k_proj, v_proj, o_proj = get_attention_projections(layer)
     up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+
+    # linear_attention 层没有标准 head 结构，跳过 attention 剪枝
+    can_prune_attn = supports_head_pruning(layer) and attn_mask is not None
+
+    if can_prune_attn:
+        q_proj, k_proj, v_proj, o_proj = get_attention_projections(layer)
+
     if unstr:
-        if attn_mask is not None:
-            q_mask, kv_mask = expand_attention_masks(layer, attn_mask, device)
-            q_proj.weight.data *= q_mask.unsqueeze(-1)
+        if can_prune_attn:
+            q_row_mask, kv_mask, o_col_mask = expand_attention_masks(layer, attn_mask, device)
+            q_proj.weight.data *= q_row_mask.unsqueeze(-1)
             k_proj.weight.data *= kv_mask.unsqueeze(-1)
             v_proj.weight.data *= kv_mask.unsqueeze(-1)
 
             output_weight = o_proj.weight.data
             if bias:
-                output_bias = compute_output_bias(attn_mean_inp, q_mask, output_weight)
+                output_bias = compute_output_bias(attn_mean_inp, o_col_mask, output_weight)
                 if o_proj.bias is None:
                     o_proj.bias = nn.Parameter(
                         torch.zeros(output_weight.shape[0], device=device, dtype=output_weight.dtype)
                     )
-            o_proj.weight.data *= q_mask.unsqueeze(0)
+            o_proj.weight.data *= o_col_mask.unsqueeze(0)
             if bias:
                 o_proj.bias.data = output_bias
 
@@ -213,12 +252,13 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             if bias:
                 down_proj.bias.data = output_bias
     else:
-        if attn_mask is not None:
-            num_heads, _, _, head_dim = get_attention_head_geometry(layer)
+        if can_prune_attn:
+            num_heads, num_kv_heads, num_kv_groups, head_dim = get_attention_head_geometry(layer)
             retain_heads = torch.count_nonzero(attn_mask)
-            q_mask, kv_mask = expand_attention_masks(layer, attn_mask, device)
-            q_indices = torch.where(q_mask)[0]
+            q_row_mask, kv_mask, o_col_mask = expand_attention_masks(layer, attn_mask, device)
+            q_indices = torch.where(q_row_mask)[0]
             kv_indices = torch.where(kv_mask)[0]
+            o_indices = torch.where(o_col_mask)[0]
             q_proj.weight.data = q_proj.weight.data[q_indices]
             k_proj.weight.data = k_proj.weight.data[kv_indices]
             v_proj.weight.data = v_proj.weight.data[kv_indices]
@@ -228,12 +268,23 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
 
             output_weight = o_proj.weight.data
             if bias:
-                output_bias = compute_output_bias(attn_mean_inp, q_mask.to(device), output_weight)
-            output_weight = o_proj.weight.data[:, q_indices]
+                output_bias = compute_output_bias(attn_mean_inp, o_col_mask.to(device), output_weight)
+            output_weight = o_proj.weight.data[:, o_indices]
+            # 更新 attention 属性（包括 GQA 相关属性）
+            new_num_kv_heads = kv_indices.numel() // head_dim
             layer.self_attn.num_heads = retain_heads
             layer.self_attn.hidden_size = retain_heads * head_dim
+            for attr, val in [
+                ("num_attention_heads", retain_heads),
+                ("num_key_value_heads", new_num_kv_heads),
+                ("num_key_value_groups", num_kv_groups),
+            ]:
+                try:
+                    setattr(layer.self_attn, attr, val)
+                except AttributeError:
+                    pass
             if bias:
-                o_proj.in_features = q_indices.numel()
+                o_proj.in_features = o_indices.numel()
                 o_proj.bias.data = output_bias
             o_proj.weight.data = output_weight
 
@@ -296,7 +347,7 @@ def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
                 wrapped_layers[name].scaler_row.reshape((1, -1))
             )
 
-            if name == "self_attn.o_proj":
+            if name == "attn_output":
                 W_metric = aggregate_attention_metric(layer, W_metric.mean(axis=0))
                 thresh = torch.sort(W_metric)[0][int(args.pruning_ratio * W_metric.numel())]
                 W_mask = W_metric >= thresh
