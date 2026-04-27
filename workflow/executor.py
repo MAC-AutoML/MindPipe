@@ -55,9 +55,17 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
     stage_start = time.perf_counter()
     stage_output_dir = ensure_dir(stage_method.resolve_output_dir(stage_args))
     if stage.stage_type == "quantization":
-        artifacts = stage_method.apply_fake_quantization(model, tokenizer_bundle, stage_args)
+        stage_result = stage_method.apply_fake_quantization(model, tokenizer_bundle, stage_args)
     else:
-        artifacts = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
+        stage_result = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
+
+    if not isinstance(stage_result, dict):
+        raise TypeError(
+            f"Stage method {stage_method.__class__.__name__} must return a dict, got {type(stage_result)!r}."
+        )
+
+    next_model = stage_result.pop("_updated_model", model)
+    next_tokenizer_bundle = stage_result.pop("_updated_tokenizer_bundle", tokenizer_bundle)
     return {
         "stage_type": stage.stage_type,
         "algorithm_name": stage.algorithm_name,
@@ -68,8 +76,8 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
         },
         "output_dir": str(stage_output_dir),
         "elapsed_seconds": time.perf_counter() - stage_start,
-        "artifacts": artifacts,
-    }
+        "artifacts": stage_result,
+    }, next_model, next_tokenizer_bundle
 
 
 def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
@@ -103,7 +111,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         stage_args.model_path = config.model_path
         if final_output_dir is None:
             final_output_dir = _resolve_final_output_dir(config, stage_method, stage_args)
-        stage_record = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
+        stage_record, model, tokenizer_bundle = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
         stage_records.append(stage_record)
         gc.collect()
         empty_cache(common_args["device"])
@@ -124,21 +132,24 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         artifacts = {"stages": stage_records}
 
     metrics_path = final_output_dir / "metrics.json"
+    artifacts_path = final_output_dir / "artifacts.json"
     metrics_metadata = copy.deepcopy(config.result_metadata)
     metrics_metadata.update(
         {
             "model_path": config.model_path,
             "device": common_args["device"],
             "dtype": dtype,
+            "artifacts_path": artifacts_path.name,
         }
     )
+    write_json(artifacts_path, artifacts)
 
     # ── 评测阶段（可通过 --eval_ppl false 跳过） ──
     common_args["evaluation_output_dir"] = str(final_output_dir)
     common_args["model_path"] = config.model_path
     common_args["evaluation_save_callback"] = lambda metrics: write_json(
         metrics_path,
-        {**metrics, **metrics_metadata, "artifacts": artifacts},
+        {**metrics, **metrics_metadata},
     )
     metrics = run_evaluations(
         model=model,
@@ -151,12 +162,14 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         model.save_pretrained(model_dir)
         tokenizer_bundle.save_pretrained(str(model_dir))
         artifacts["saved_model_dir"] = str(model_dir)
+        write_json(artifacts_path, artifacts)
 
-    metrics_path = write_json(metrics_path, {**metrics, "artifacts": artifacts})
+    metrics_path = write_json(metrics_path, metrics)
     return WorkflowRunResult(
         model_path=config.model_path,
         output_dir=str(final_output_dir),
         metrics_path=str(metrics_path),
+        artifacts_path=str(artifacts_path),
         metrics=metrics,
         artifacts=artifacts,
     )

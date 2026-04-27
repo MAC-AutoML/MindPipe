@@ -365,6 +365,29 @@ def _patch_minicpmv_remote_class(model_path: str) -> None:
     minicpmv_cls._mindpipe_chat_patched = True
 
 
+def _patch_internvl_remote_class(model_path: str) -> None:
+    _ensure_transformers_remote_code_compat()
+    internvl_cls = get_class_from_dynamic_module("modeling_internvl_chat.InternVLChatModel", model_path)
+    if getattr(internvl_cls, "_mindpipe_post_init_patched", False):
+        return
+
+    original_init = internvl_cls.__init__
+
+    def patched_init(self, config, *args, **kwargs):
+        original_init(self, config, *args, **kwargs)
+        if not hasattr(self, "all_tied_weights_keys"):
+            tied_weights = getattr(self, "_tied_weights_keys", None)
+            if isinstance(tied_weights, dict):
+                self.all_tied_weights_keys = dict(tied_weights)
+            elif isinstance(tied_weights, (list, tuple, set)):
+                self.all_tied_weights_keys = {str(key): str(key) for key in tied_weights}
+            else:
+                self.all_tied_weights_keys = {}
+
+    internvl_cls.__init__ = patched_init
+    internvl_cls._mindpipe_post_init_patched = True
+
+
 def _prepare_minicpm_tokenizer_env() -> None:
     os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
@@ -580,6 +603,7 @@ def load_model_and_tokenizer(
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
         processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     elif config.model_type == "internvl_chat" or "InternVLChatModel" in architectures:
+        _patch_internvl_remote_class(model_path)
         multimodal_model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
         if not hasattr(multimodal_model, "language_model"):
             raise AttributeError(f"InternVL model from {model_path} does not expose a `language_model` decoder.")

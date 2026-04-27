@@ -1,0 +1,19 @@
+schema: mindpipe/config/v1
+
+model:
+  name: Meta-Llama-3.1-8B-Instruct
+  model_path: /mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct
+
+defaults:
+  eval_vlm: false
+
+recipes:
+  w8a8:
+    weight_bits: 8
+    activation_bits: 8
+  smoke10:
+    weight_bits: 8
+    activation_bits: 8
+    calibration_samples: 10
+    max_eval_chunks: 4
+    eval_zero_shot: false

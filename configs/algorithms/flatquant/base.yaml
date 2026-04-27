@@ -1,0 +1,19 @@
+schema: mindpipe/config/v1
+
+defaults:
+  quantization: flatquant
+  attn_implementation: sdpa
+  flatquant_epochs: 15
+  flatquant_calibration_batch_size: 32
+  flatquant_lr: 5.0e-3
+  query_bits: 16
+  key_bits: 4
+  value_bits: 4
+  kv_group_size: 128
+  weight_method: rtn
+  flatquant_cali_trans: true
+  flatquant_add_diag: true
+  flatquant_lwc: true
+  flatquant_lac: true
+  flatquant_direct_inv: true
+  flatquant_deactive_amp: true

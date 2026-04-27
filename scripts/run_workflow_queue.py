@@ -63,6 +63,13 @@ BOOLEAN_FLAG_NAMES = (
     "flatquant_deactive_amp",
     "flatquant_direct_inv",
     "flatquant_separate_vtrans",
+    "splitquant_cali_trans",
+    "splitquant_add_diag",
+    "splitquant_lwc",
+    "splitquant_lac",
+    "splitquant_warmup",
+    "splitquant_deactive_amp",
+    "splitquant_separate_vtrans",
     "static_groups",
     "awq_search",
     "use_variant",
@@ -139,6 +146,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--flatquant_deactive_amp", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--flatquant_direct_inv", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--flatquant_separate_vtrans", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--splitquant_epochs", type=int, default=15)
+    parser.add_argument("--splitquant_calibration_batch_size", type=int, default=32)
+    parser.add_argument("--splitquant_lr", type=float, default=5e-3)
+    parser.add_argument("--splitquant_cali_trans", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--splitquant_add_diag", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--splitquant_lwc", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--splitquant_lac", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--splitquant_diag_init", default="sq_style", choices=["sq_style", "one_style"])
+    parser.add_argument("--splitquant_diag_alpha", type=float, default=0.3)
+    parser.add_argument("--splitquant_warmup", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--splitquant_deactive_amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--splitquant_separate_vtrans", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--static_groups", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--awq_search", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--rotation_mode", default="hadamard", choices=["hadamard", "random"])
@@ -232,6 +251,18 @@ def resolve_job_settings(args, job: JobSpec) -> dict[str, Any]:
         "flatquant_deactive_amp": args.flatquant_deactive_amp,
         "flatquant_direct_inv": args.flatquant_direct_inv,
         "flatquant_separate_vtrans": args.flatquant_separate_vtrans,
+        "splitquant_epochs": args.splitquant_epochs,
+        "splitquant_calibration_batch_size": args.splitquant_calibration_batch_size,
+        "splitquant_lr": args.splitquant_lr,
+        "splitquant_cali_trans": args.splitquant_cali_trans,
+        "splitquant_add_diag": args.splitquant_add_diag,
+        "splitquant_lwc": args.splitquant_lwc,
+        "splitquant_lac": args.splitquant_lac,
+        "splitquant_diag_init": args.splitquant_diag_init,
+        "splitquant_diag_alpha": args.splitquant_diag_alpha,
+        "splitquant_warmup": args.splitquant_warmup,
+        "splitquant_deactive_amp": args.splitquant_deactive_amp,
+        "splitquant_separate_vtrans": args.splitquant_separate_vtrans,
         "static_groups": args.static_groups,
         "awq_search": args.awq_search,
         "rotation_mode": args.rotation_mode,
@@ -255,7 +286,7 @@ def resolve_job_settings(args, job: JobSpec) -> dict[str, Any]:
 
 def _build_quantization_run_spec(job: JobSpec, settings: dict[str, Any]) -> str:
     run_spec = f"{job.quantization_algorithm}_w{settings['weight_bits']}a{settings['activation_bits']}"
-    if job.quantization_algorithm == "flatquant":
+    if job.quantization_algorithm in {"flatquant", "splitquant"}:
         run_spec += f"_q{settings['query_bits']}k{settings['key_bits']}v{settings['value_bits']}"
     return run_spec
 
@@ -364,6 +395,16 @@ def build_command(args, job: JobSpec, gpu_index: int) -> list[str]:
         settings["flatquant_diag_init"],
         "--flatquant_diag_alpha",
         str(settings["flatquant_diag_alpha"]),
+        "--splitquant_epochs",
+        str(settings["splitquant_epochs"]),
+        "--splitquant_calibration_batch_size",
+        str(settings["splitquant_calibration_batch_size"]),
+        "--splitquant_lr",
+        str(settings["splitquant_lr"]),
+        "--splitquant_diag_init",
+        settings["splitquant_diag_init"],
+        "--splitquant_diag_alpha",
+        str(settings["splitquant_diag_alpha"]),
         "--rotation_mode",
         settings["rotation_mode"],
         "--block_size",

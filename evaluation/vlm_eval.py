@@ -6,8 +6,10 @@ import contextlib
 import gc
 import importlib
 import inspect
+import json
 import logging
 import math
+import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -20,6 +22,7 @@ from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from algorithm.common.io import ensure_dir
 from algorithm.common.io import model_slug
+from algorithm.common.io import write_json
 from algorithm.common.modeling import MiniCPMTokenizerAdapter
 
 
@@ -156,6 +159,68 @@ def _resolve_model_name(common_args: dict[str, Any]) -> str:
     return "mindpipe_model"
 
 
+def _resolve_vlm_progress_path(common_args: dict[str, Any]) -> Path:
+    output_root = common_args.get("evaluation_output_dir")
+    if output_root:
+        return ensure_dir(Path(output_root)) / "vlm_eval_progress.json"
+    explicit_work_dir = common_args.get("vlm_work_dir")
+    if explicit_work_dir:
+        return ensure_dir(Path(explicit_work_dir)).parent / "vlm_eval_progress.json"
+    return ensure_dir(Path("results")) / "vlm_eval_progress.json"
+
+
+def _load_json_payload(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _extract_existing_vlm_records(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    if "vlm_eval" in payload and isinstance(payload.get("vlm_eval"), dict):
+        datasets = payload["vlm_eval"].get("datasets")
+        return datasets if isinstance(datasets, dict) else {}
+    datasets = payload.get("datasets")
+    return datasets if isinstance(datasets, dict) else {}
+
+
+def _vlm_record_is_complete(record: dict[str, Any], mode: str) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if mode == "infer":
+        return bool(record.get("inference_completed"))
+    if mode == "eval":
+        return "evaluation" in record or "evaluation_skipped" in record
+    return bool(record.get("inference_completed")) and (
+        "evaluation" in record or "evaluation_skipped" in record
+    )
+
+
+def _persist_vlm_progress(
+    progress_path: Path,
+    *,
+    mode: str,
+    model_name: str,
+    work_dir: Path,
+    results: dict[str, Any],
+) -> None:
+    write_json(
+        progress_path,
+        {
+            "vlm_eval": {
+                "mode": mode,
+                "model_name": model_name,
+                "work_dir": str(work_dir),
+                "datasets": results,
+            }
+        },
+    )
+
+
 def _default_max_new_tokens(dataset_name: str | None, dataset_type: str) -> int:
     if dataset_name == "OCRBench":
         return 32
@@ -197,6 +262,109 @@ def _model_input_device(model, fallback_device):
 
 def _open_image(image_path: str) -> Image.Image:
     return Image.open(image_path).convert("RGB")
+
+
+def _resolve_vlmeval_img_root(dataset_name: str | None) -> str | None:
+    if not dataset_name:
+        return dataset_name
+    try:
+        image_base_module = importlib.import_module("vlmeval.dataset.image_base")
+        resolver = getattr(image_base_module, "img_root_map", None)
+        if callable(resolver):
+            return str(resolver(dataset_name))
+    except Exception:
+        pass
+    return dataset_name
+
+
+def _looks_like_url(value: str) -> bool:
+    return "://" in value
+
+
+def _guess_media_kind(value: str) -> str | None:
+    mime, _ = mimetypes.guess_type(value)
+    if not mime:
+        return None
+    return mime.split("/")[0]
+
+
+def _resolve_media_value(value: Any, dataset_name: str | None) -> str:
+    candidate = str(value).strip()
+    if not candidate or _looks_like_url(candidate):
+        return candidate
+
+    path = Path(candidate).expanduser()
+    if path.exists():
+        return str(path.resolve())
+
+    lmu_root = os.environ.get("LMUData")
+    if not lmu_root:
+        return candidate
+
+    dataset_root_name = _resolve_vlmeval_img_root(dataset_name)
+    dataset_root = Path(lmu_root).expanduser() / "images"
+    if dataset_root_name:
+        dataset_root = dataset_root / dataset_root_name
+
+    fallback_candidates: list[Path] = []
+    if path.is_absolute():
+        parts = list(path.parts)
+        if "images" in parts:
+            image_index = parts.index("images")
+            relative_parts = parts[image_index + 1 :]
+            if relative_parts:
+                fallback_candidates.append(Path(lmu_root).expanduser() / "images" / Path(*relative_parts))
+    else:
+        fallback_candidates.append(dataset_root / path)
+    fallback_candidates.append(dataset_root / path.name)
+
+    for fallback in fallback_candidates:
+        if fallback.exists():
+            return str(fallback.resolve())
+    return candidate
+
+
+def _normalize_vlm_message(message: Any, dataset_name: str | None) -> list[dict[str, Any]]:
+    def normalize_item(item_type: str, value: Any, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        normalized: dict[str, Any] = {"type": item_type}
+        if extra:
+            normalized.update(extra)
+        if item_type == "text":
+            normalized["value"] = str(value)
+            return normalized
+        if item_type not in {"image", "video"}:
+            raise ValueError(f"Unsupported VLM message item type: {item_type}")
+        resolved = _resolve_media_value(value, dataset_name)
+        if not _looks_like_url(resolved):
+            resolved_path = Path(resolved).expanduser()
+            if not resolved_path.exists():
+                raise AssertionError(
+                    f"Invalid {item_type} value for dataset `{dataset_name}`: {value!r}"
+                )
+        normalized["value"] = resolved
+        return normalized
+
+    if isinstance(message, str):
+        return [normalize_item("text", message)]
+    if isinstance(message, dict):
+        if "type" not in message or "value" not in message:
+            raise AssertionError(f"Invalid VLM message dict: {message!r}")
+        extra = {key: value for key, value in message.items() if key not in {"type", "value"}}
+        return [normalize_item(str(message["type"]), message["value"], extra)]
+    if isinstance(message, list):
+        normalized_items: list[dict[str, Any]] = []
+        for item in message:
+            if isinstance(item, str):
+                media_kind = _guess_media_kind(item)
+                item_type = media_kind if media_kind in {"image", "video"} else "text"
+                normalized_items.append(normalize_item(item_type, item))
+                continue
+            if not isinstance(item, dict) or "type" not in item or "value" not in item:
+                raise AssertionError(f"Invalid VLM message item: {item!r}")
+            extra = {key: value for key, value in item.items() if key not in {"type", "value"}}
+            normalized_items.append(normalize_item(str(item["type"]), item["value"], extra))
+        return normalized_items
+    raise AssertionError(f"Unsupported VLM message type: {type(message)!r}")
 
 
 @contextlib.contextmanager
@@ -474,6 +642,10 @@ def _build_qwen2_wrapper(
         def build_prompt(self, line, dataset):
             raise NotImplementedError("MindPipe Qwen2/Qwen2.5-VL wrapper relies on dataset prompts.")
 
+        def generate(self, message, dataset=None):
+            normalized = _normalize_vlm_message(message, dataset)
+            return self.generate_inner(normalized, dataset)
+
         def _ensure_model_ready(self):
             if self._model_prepared:
                 return
@@ -574,6 +746,10 @@ def _build_qwen3_wrapper(
 
         def build_prompt(self, line, dataset):
             raise NotImplementedError("MindPipe Qwen3/Qwen3.5-VL wrapper relies on dataset prompts.")
+
+        def generate(self, message, dataset=None):
+            normalized = _normalize_vlm_message(message, dataset)
+            return self.generate_inner(normalized, dataset)
 
         def _ensure_model_ready(self):
             if self._model_prepared:
@@ -697,6 +873,10 @@ def _build_minicpm_wrapper(
 
         def build_prompt(self, line, dataset):
             raise NotImplementedError("MindPipe MiniCPM-V wrapper relies on dataset prompts.")
+
+        def generate(self, message, dataset=None):
+            normalized = _normalize_vlm_message(message, dataset)
+            return self.generate_inner(normalized, dataset)
 
         def _ensure_model_ready(self):
             if self._model_prepared:
@@ -836,6 +1016,10 @@ def _build_internvl_wrapper(
 
         def build_prompt(self, line, dataset):
             raise NotImplementedError("MindPipe InternVL2 wrapper relies on dataset prompts.")
+
+        def generate(self, message, dataset=None):
+            normalized = _normalize_vlm_message(message, dataset)
+            return self.generate_inner(normalized, dataset)
 
         def _ensure_model_ready(self):
             if self._model_prepared:
@@ -1092,6 +1276,8 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
     work_dir = _resolve_work_dir(common_args)
     model_name = _resolve_model_name(common_args)
     mode = str(common_args.get("vlm_mode", "all"))
+    resume_enabled = bool(common_args.get("vlm_resume", False))
+    progress_path = _resolve_vlm_progress_path(common_args)
     wrapper = _build_wrapper(model, tokenizer_bundle, common_args, modules)
     # 把清理逻辑放在模型 wrapper 外层，后续新接入的 VLM 模型也能直接复用，
     # 不需要在每个模型分支里重复写一套显存回收代码。
@@ -1102,8 +1288,25 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
     )
 
     results: dict[str, Any] = {}
+    if resume_enabled:
+        metrics_root = common_args.get("evaluation_output_dir")
+        metrics_path = (
+            ensure_dir(Path(metrics_root)) / "metrics.json"
+            if metrics_root
+            else work_dir.parent / "metrics.json"
+        )
+        for payload in (_load_json_payload(metrics_path), _load_json_payload(progress_path)):
+            for dataset_name, record in _extract_existing_vlm_records(payload).items():
+                if isinstance(record, dict):
+                    results[dataset_name] = record
+
     with _temporary_env(PRED_FORMAT=str(common_args.get("vlm_pred_format", "xlsx"))):
         for dataset_name in dataset_names:
+            existing_record = results.get(dataset_name)
+            if resume_enabled and _vlm_record_is_complete(existing_record, mode):
+                print(f"[vlm_eval] Skip completed dataset: {dataset_name}")
+                continue
+
             dataset = modules["build_dataset"](dataset_name)
             if dataset is None:
                 raise ValueError(f"Failed to build VLMEvalKit dataset: {dataset_name}")
@@ -1141,23 +1344,35 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
                 "dataset_modality": dataset_modality,
                 "result_file": result_file,
             }
+            if isinstance(existing_record, dict):
+                record.update(existing_record)
+                record["dataset_type"] = dataset_type
+                record["dataset_modality"] = dataset_modality
+                record["result_file"] = result_file
 
             if mode != "eval":
-                infer_fn = modules["infer_data_job"]
-                infer_kwargs = {
-                    "work_dir": str(work_dir),
-                    "model_name": model_name,
-                    "dataset": dataset,
-                    "verbose": bool(common_args.get("vlm_verbose", False)),
-                    "api_nproc": int(common_args.get("vlm_api_nproc", 4)),
-                    "ignore_failed": bool(common_args.get("vlm_ignore_failed", False)),
-                }
-                if "use_vllm" in inspect.signature(infer_fn).parameters:
-                    infer_kwargs["use_vllm"] = False
-                wrapper = infer_fn(wrapper, **infer_kwargs)
-                result_file = _resolve_existing_result_file(result_file)
-                record["result_file"] = result_file
-                record["inference_completed"] = True
+                resolved_existing_result = _resolve_existing_result_file(result_file)
+                if resume_enabled and Path(resolved_existing_result).exists():
+                    result_file = resolved_existing_result
+                    record["result_file"] = resolved_existing_result
+                    record["inference_completed"] = True
+                    print(f"[vlm_eval] Reuse existing predictions for dataset: {dataset_name}")
+                else:
+                    infer_fn = modules["infer_data_job"]
+                    infer_kwargs = {
+                        "work_dir": str(work_dir),
+                        "model_name": model_name,
+                        "dataset": dataset,
+                        "verbose": bool(common_args.get("vlm_verbose", False)),
+                        "api_nproc": int(common_args.get("vlm_api_nproc", 4)),
+                        "ignore_failed": bool(common_args.get("vlm_ignore_failed", False)),
+                    }
+                    if "use_vllm" in inspect.signature(infer_fn).parameters:
+                        infer_kwargs["use_vllm"] = False
+                    wrapper = infer_fn(wrapper, **infer_kwargs)
+                    result_file = _resolve_existing_result_file(result_file)
+                    record["result_file"] = result_file
+                    record["inference_completed"] = True
 
             if mode != "infer":
                 skip_reason = _eval_skip_reason(dataset_name, modules["MMBenchOfficialServer"])
@@ -1174,10 +1389,27 @@ def evaluate_vlm(model, tokenizer_bundle, common_args: dict[str, Any]) -> dict[s
                     record["evaluation"] = _json_safe(dataset.evaluate(result_file, **judge_kwargs))
 
             results[dataset_name] = record
+            if resume_enabled:
+                _persist_vlm_progress(
+                    progress_path,
+                    mode=mode,
+                    model_name=model_name,
+                    work_dir=work_dir,
+                    results=results,
+                )
             # 在数据集切换处再清一次，避免前一个 benchmark split 的高水位缓存
             # 继续带到下一个 split。
             gc.collect()
             empty_cache(common_args.get("device", "auto"))
+
+    if resume_enabled:
+        _persist_vlm_progress(
+            progress_path,
+            mode=mode,
+            model_name=model_name,
+            work_dir=work_dir,
+            results=results,
+        )
 
     return {
         "mode": mode,

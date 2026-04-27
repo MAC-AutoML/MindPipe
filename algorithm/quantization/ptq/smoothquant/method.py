@@ -17,7 +17,16 @@ from ...base import BaseQuantizationMethod
 
 
 LOGGER = logging.getLogger(__name__)
-SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen2_5_vl", "minicpm", "minicpmv"}
+SUPPORTED_MODEL_TYPES = {
+    "llama",
+    "qwen2",
+    "qwen2_5_vl",
+    "qwen3",
+    "qwen3_vl",
+    "qwen3_5",
+    "minicpm",
+    "minicpmv",
+}
 SUPPORTED_BIT_CONFIGS = {(8, 8)}
 
 
@@ -49,7 +58,7 @@ def _format_alpha(alpha: float) -> str:
 
 class SmoothQuantMethod(BaseQuantizationMethod):
     name = "smoothquant"
-    npu_ready = False
+    npu_ready = True
     default_calibration_dataset = "pileval"
 
     def resolve_output_dir(self, args) -> Path:
@@ -64,7 +73,7 @@ class SmoothQuantMethod(BaseQuantizationMethod):
         model_type = getattr(model.config, "model_type", None)
         if model_type not in SUPPORTED_MODEL_TYPES:
             raise NotImplementedError(
-                "SmoothQuant currently supports LLaMA-, Qwen2/Qwen2.5-, and MiniCPM-style text decoders only; "
+                "SmoothQuant currently supports LLaMA-, Qwen2/Qwen3/Qwen3.5-, and MiniCPM-style text decoders only; "
                 f"got model_type={model_type!r}."
             )
         bit_config = (int(args.weight_bits), int(args.activation_bits))

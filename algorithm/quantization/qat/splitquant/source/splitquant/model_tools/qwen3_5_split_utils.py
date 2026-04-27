@@ -7,13 +7,13 @@ from splitquant.quant_utils import set_quantizer_state
 from splitquant.split_linear import SplitQuantizedLinear
 from splitquant.utils import skip_initialization
 
-from splitquant.model_tools.qwen_split_utils import SplitQuantQwenMLP
 from splitquant.model_tools.qwen_split_utils import _build_group_trans
 from splitquant.model_tools.qwen_split_utils import _resolve_split_group_size
 from splitquant.model_tools.qwen_split_utils import _weight_device
 
 from transformers.models.qwen3_5.modeling_qwen3_5 import ALL_ATTENTION_FUNCTIONS as QWEN3_5_ATTENTION_FUNCTIONS
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Attention
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNorm
 from transformers.models.qwen3_5.modeling_qwen3_5 import apply_mask_to_padding_states
 from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb as qwen3_5_apply_rotary_pos_emb
 from transformers.models.qwen3_5.modeling_qwen3_5 import eager_attention_forward as qwen3_5_eager_attention_forward
@@ -37,6 +37,19 @@ def _resolve_attention_interface(attention_functions, implementation, eager_atte
     return attention_functions[implementation]
 
 
+def _reparameterize_qwen3_5_rmsnorm(norm: Qwen3_5RMSNorm, trans: nn.Module) -> None:
+    weight = norm.weight.data
+    ori_dtype = weight.dtype
+    weight = weight.to(torch.float64)
+    scale = trans.diag_scale.to(torch.float64)
+    # Qwen3.5 RMSNorm applies (1 + weight) after normalization, so the
+    # equivalent fusion for a per-channel scale s is:
+    #   (1 + new_weight) = (1 + old_weight) * s
+    weight = (1.0 + weight) * scale - 1.0
+    norm.weight.data = weight.to(ori_dtype)
+    trans.use_diag = False
+
+
 class SplitQuantQwen3_5Attention(Qwen3_5Attention):
     def __init__(self, args, module: Qwen3_5Attention):
         super().__init__(module.config, module.layer_idx)
@@ -56,6 +69,7 @@ class SplitQuantQwen3_5Attention(Qwen3_5Attention):
         self.o_proj = SplitQuantizedLinear(args, module.o_proj)
         self.q_norm = module.q_norm
         self.k_norm = module.k_norm
+        self._parent_input_layernorm = None
         self.add_fq_trans()
 
         self._ori_mode = False
@@ -79,7 +93,7 @@ class SplitQuantQwen3_5Attention(Qwen3_5Attention):
 
     def add_fq_trans(self):
         if self.args.w_bits < 16 or self.args.a_bits < 16:
-            self.ln_trans = _build_group_trans(
+            self._ln_trans = _build_group_trans(
                 self.q_proj.linear.weight.shape[1],
                 self.group_size,
                 self.args.add_diag,
@@ -92,16 +106,19 @@ class SplitQuantQwen3_5Attention(Qwen3_5Attention):
                 "Qwen3.5 attention output transform",
             )
         else:
-            self.ln_trans, self.o_trans = None, None
+            self._ln_trans, self.o_trans = None, None
+        # Keep the public attribute unset so SplitQuant's shared RMSNorm fusion
+        # path does not apply the wrong Qwen3.5 formula.
+        self.ln_trans = None
         self.kcache_trans = None
         self.vcache_trans = None
 
     def _trans_forward_after_ln(self, hidden_states):
-        if self.ln_trans is not None:
-            hidden_states = self.ln_trans(hidden_states)
-        query_states = self.q_proj(hidden_states, qa_trans=self.ln_trans)
-        key_states = self.k_proj(hidden_states, qa_trans=self.ln_trans)
-        value_states = self.v_proj(hidden_states, qa_trans=self.ln_trans)
+        if self._ln_trans is not None:
+            hidden_states = self._ln_trans(hidden_states)
+        query_states = self.q_proj(hidden_states, qa_trans=self._ln_trans)
+        key_states = self.k_proj(hidden_states, qa_trans=self._ln_trans)
+        value_states = self.v_proj(hidden_states, qa_trans=self._ln_trans)
         return query_states, key_states, value_states
 
     def _ori_forward_after_ln(self, hidden_states):
@@ -197,14 +214,18 @@ class SplitQuantQwen3_5Attention(Qwen3_5Attention):
         return attn_output, attn_weights
 
     def reparameterize(self):
-        if self.ln_trans is not None:
-            self.ln_trans.to_eval_mode()
+        if self._ln_trans is not None:
+            self._ln_trans.to_eval_mode()
         if self.o_trans is not None:
             self.o_trans.to_eval_mode()
-        self.q_proj.reparameterize(qa_trans=self.ln_trans)
-        self.k_proj.reparameterize(qa_trans=self.ln_trans)
-        self.v_proj.reparameterize(qa_trans=self.ln_trans)
+        self.q_proj.reparameterize(qa_trans=self._ln_trans)
+        self.k_proj.reparameterize(qa_trans=self._ln_trans)
+        self.v_proj.reparameterize(qa_trans=self._ln_trans)
         self.o_proj.reparameterize(qa_trans=self.o_trans)
+        if self._ln_trans is not None and self._ln_trans.add_diag:
+            if self._parent_input_layernorm is None:
+                raise RuntimeError("Qwen3.5 attention is missing parent input_layernorm for sq_style fusion.")
+            _reparameterize_qwen3_5_rmsnorm(self._parent_input_layernorm, self._ln_trans)
 
     def init_diag_scale(self, alpha=0.5):
         if self.diag_init != "sq_style":
@@ -213,8 +234,8 @@ class SplitQuantQwen3_5Attention(Qwen3_5Attention):
             [self.q_proj.linear.weight, self.k_proj.linear.weight, self.v_proj.linear.weight],
             dim=0,
         ).abs().max(dim=0)[0]
-        if self.ln_trans is not None:
-            self.ln_trans.diag_scale.data = get_init_scale(qkvw_smax, self.ln_smax, alpha)
+        if self._ln_trans is not None:
+            self._ln_trans.diag_scale.data = get_init_scale(qkvw_smax, self.ln_smax, alpha)
         if self.o_trans is not None:
             ow_smax = self.o_proj.linear.weight.abs().max(dim=0)[0]
             self.o_trans.diag_scale.data = get_init_scale(ow_smax, self.o_smax, alpha)
@@ -222,10 +243,135 @@ class SplitQuantQwen3_5Attention(Qwen3_5Attention):
         self.diag_init = None
 
     def rep_matrix_only(self):
-        if self.ln_trans is not None:
-            self.ln_trans.to_eval_mode()
+        if self._ln_trans is not None:
+            self._ln_trans.to_eval_mode()
         if self.o_trans is not None:
             self.o_trans.to_eval_mode()
+
+
+class SplitQuantQwen3_5MLP(nn.Module):
+    def __init__(self, args, module: nn.Module):
+        super().__init__()
+        self.args = args
+        self.hidden_size = module.hidden_size
+        self.intermediate_size = module.intermediate_size
+        self.act_fn = module.act_fn
+        self.group_size = _resolve_split_group_size(args) if (args.w_bits < 16 or args.a_bits < 16) else -1
+
+        self.up_proj = SplitQuantizedLinear(args, module.up_proj)
+        self.gate_proj = SplitQuantizedLinear(args, module.gate_proj)
+        self.down_proj = SplitQuantizedLinear(args, module.down_proj)
+        self._parent_post_attention_layernorm = None
+        self.add_fq_trans()
+
+        self._ori_mode = False
+        self.diag_init = args.diag_init
+        if self.diag_init == "sq_style":
+            stat_device = _weight_device(self.up_proj.linear)
+            self.register_buffer(
+                "up_smax",
+                torch.ones_like(
+                    self.up_proj.linear.weight.abs().max(dim=0)[0],
+                    device=stat_device,
+                ) * 1e-5,
+            )
+            self.register_buffer(
+                "down_smax",
+                torch.ones_like(
+                    self.down_proj.linear.weight.abs().max(dim=0)[0],
+                    device=stat_device,
+                ) * 1e-5,
+            )
+
+    def add_fq_trans(self):
+        if self.args.w_bits < 16 or self.args.a_bits < 16:
+            self._up_gate_trans = _build_group_trans(
+                self.up_proj.linear.weight.shape[1],
+                self.group_size,
+                self.args.add_diag,
+                "Qwen3.5 MLP up/gate transform",
+            )
+            self._down_trans = _build_group_trans(
+                self.down_proj.linear.weight.shape[1],
+                self.group_size,
+                self.args.add_diag,
+                "Qwen3.5 MLP down transform",
+            )
+        else:
+            self._up_gate_trans, self._down_trans = None, None
+        # Keep the public attributes unset so SplitQuant's shared RMSNorm fusion
+        # path does not apply the wrong Qwen3.5 formula.
+        self.up_gate_trans = None
+        self.down_trans = None
+
+    def _trans_forward(self, x):
+        if self._up_gate_trans is not None:
+            x_ts = self._up_gate_trans(x)
+        else:
+            x_ts = x
+        up_states = self.up_proj(x_ts, qa_trans=self._up_gate_trans)
+        gate_states = self.gate_proj(x_ts, qa_trans=self._up_gate_trans)
+
+        hidden_states = self.act_fn(gate_states) * up_states
+        if self._down_trans is not None:
+            hidden_states = self._down_trans(hidden_states)
+        return self.down_proj(hidden_states, qa_trans=self._down_trans)
+
+    def _ori_forward(self, x):
+        if self.diag_init == "sq_style":
+            self.up_smax = torch.maximum(
+                self.up_smax,
+                x.reshape(-1, x.shape[-1]).abs().max(0)[0].clone().detach(),
+            )
+        x = self.act_fn(self.gate_proj._ori_forward(x)) * self.up_proj._ori_forward(x)
+        if self.diag_init == "sq_style":
+            self.down_smax = torch.maximum(
+                self.down_smax,
+                x.reshape(-1, x.shape[-1]).abs().max(0)[0].clone().detach(),
+            )
+        return self.down_proj._ori_forward(x)
+
+    def forward(self, x):
+        if self._ori_mode:
+            return self._ori_forward(x)
+        return self._trans_forward(x)
+
+    def reparameterize(self):
+        if self._up_gate_trans is not None:
+            self._up_gate_trans.to_eval_mode()
+            self._down_trans.to_eval_mode()
+        self.gate_proj.reparameterize(qa_trans=self._up_gate_trans)
+        self.up_proj.reparameterize(qa_trans=self._up_gate_trans)
+        self.down_proj.reparameterize(qa_trans=self._down_trans)
+        if self._up_gate_trans is not None and self._up_gate_trans.add_diag:
+            if self._parent_post_attention_layernorm is None:
+                raise RuntimeError("Qwen3.5 MLP is missing parent post_attention_layernorm for sq_style fusion.")
+            _reparameterize_qwen3_5_rmsnorm(self._parent_post_attention_layernorm, self._up_gate_trans)
+        if self._down_trans is not None and self._down_trans.add_diag:
+            up_weight = self.up_proj.linear.weight
+            ori_dtype = up_weight.dtype
+            up_weight = up_weight.to(torch.float64).T.mul(self._down_trans.diag_scale.to(torch.float64)).T
+            self.up_proj.linear.weight.data = up_weight.to(ori_dtype)
+            self._down_trans.use_diag = False
+
+    def init_diag_scale(self, alpha=0.5):
+        assert hasattr(self, "up_smax") and hasattr(self, "down_smax")
+        upw_smax = torch.cat(
+            [self.up_proj.linear.weight, self.gate_proj.linear.weight],
+            dim=0,
+        ).abs().max(dim=0)[0]
+        downw_smax = self.down_proj.linear.weight.abs().max(dim=0)[0]
+        if self._up_gate_trans is not None:
+            self._up_gate_trans.diag_scale.data = get_init_scale(upw_smax, self.up_smax, alpha)
+        if self._down_trans is not None:
+            self._down_trans.diag_scale.data = get_init_scale(downw_smax, self.down_smax, alpha)
+        del self.up_smax, self.down_smax
+        self.diag_init = None
+
+    def rep_matrix_only(self):
+        if self._up_gate_trans is not None:
+            self._up_gate_trans.to_eval_mode()
+            self._down_trans.to_eval_mode()
 
 
 class SplitQuantQwen3_5GatedDeltaNet(nn.Module):
@@ -254,6 +400,7 @@ class SplitQuantQwen3_5GatedDeltaNet(nn.Module):
         self.chunk_gated_delta_rule = module.chunk_gated_delta_rule
         self.recurrent_gated_delta_rule = module.recurrent_gated_delta_rule
         self.group_size = _resolve_split_group_size(args) if (args.w_bits < 16 or args.a_bits < 16) else -1
+        self._parent_input_layernorm = None
 
         self.in_proj_qkv = SplitQuantizedLinear(args, module.in_proj_qkv)
         self.in_proj_z = SplitQuantizedLinear(args, module.in_proj_z)
@@ -265,14 +412,15 @@ class SplitQuantQwen3_5GatedDeltaNet(nn.Module):
         self._ori_mode = False
         self.diag_init = args.diag_init
         if self.diag_init == "sq_style":
-            stat_device = _weight_device(self.in_proj_qkv.linear)
+            input_proj_weight = self.in_proj_qkv.linear.weight
             self.register_buffer(
                 "ln_smax",
                 torch.ones_like(
-                    self.in_proj_qkv.linear.weight.abs().max(dim=0)[0],
-                    device=stat_device,
+                    input_proj_weight.abs().max(dim=0)[0],
+                    device=input_proj_weight.device,
                 ) * 1e-5,
             )
+            stat_device = _weight_device(self.out_proj.linear)
             self.register_buffer(
                 "o_smax",
                 torch.ones_like(
@@ -283,12 +431,15 @@ class SplitQuantQwen3_5GatedDeltaNet(nn.Module):
 
     def add_fq_trans(self):
         if self.args.w_bits < 16 or self.args.a_bits < 16:
-            self.ln_trans = _build_group_trans(
+            self._ln_trans = _build_group_trans(
                 self.in_proj_qkv.linear.weight.shape[1],
                 self.group_size,
                 self.args.add_diag,
-                "Qwen3.5 linear attention input transform",
+                "Qwen3.5 linear attention shared input transform",
             )
+        else:
+            self._ln_trans = None
+        if self.args.w_bits < 16 or self.args.a_bits < 16:
             self.o_trans = _build_group_trans(
                 self.out_proj.linear.weight.shape[1],
                 self.group_size,
@@ -296,21 +447,23 @@ class SplitQuantQwen3_5GatedDeltaNet(nn.Module):
                 "Qwen3.5 linear attention output transform",
             )
         else:
-            self.ln_trans, self.o_trans = None, None
+            self.o_trans = None
+        # Keep the shared attribute unset so method-global LN fusion is skipped
+        # for Qwen3.5 linear-attention blocks.
+        self.ln_trans = None
         self.kcache_trans = None
         self.vcache_trans = None
 
     def _trans_forward_inputs(self, hidden_states):
-        if self.ln_trans is not None:
-            hidden_states = self.ln_trans(hidden_states)
-        mixed_qkv = self.in_proj_qkv(hidden_states, qa_trans=self.ln_trans).transpose(1, 2)
-        z = self.in_proj_z(hidden_states, qa_trans=self.ln_trans)
-        b = self.in_proj_b(hidden_states, qa_trans=self.ln_trans)
-        a = self.in_proj_a(hidden_states, qa_trans=self.ln_trans)
+        transformed_hidden_states = self._ln_trans(hidden_states) if self._ln_trans is not None else hidden_states
+        mixed_qkv = self.in_proj_qkv(transformed_hidden_states, qa_trans=self._ln_trans).transpose(1, 2)
+        z = self.in_proj_z(transformed_hidden_states, qa_trans=self._ln_trans)
+        b = self.in_proj_b(transformed_hidden_states, qa_trans=self._ln_trans)
+        a = self.in_proj_a(transformed_hidden_states, qa_trans=self._ln_trans)
         return mixed_qkv, z, b, a
 
     def _ori_forward_inputs(self, hidden_states):
-        if self.diag_init == "sq_style":
+        if self.diag_init == "sq_style" and hasattr(self, "ln_smax"):
             self.ln_smax = torch.maximum(
                 self.ln_smax,
                 hidden_states.reshape(-1, hidden_states.shape[-1]).abs().max(0)[0].clone().detach(),
@@ -429,7 +582,7 @@ class SplitQuantQwen3_5GatedDeltaNet(nn.Module):
         core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
 
-        if self._ori_mode and self.diag_init == "sq_style":
+        if self._ori_mode and self.diag_init == "sq_style" and hasattr(self, "o_smax"):
             self.o_smax = torch.maximum(
                 self.o_smax,
                 core_attn_out.reshape(-1, core_attn_out.shape[-1]).abs().max(0)[0].clone().detach(),
@@ -438,39 +591,42 @@ class SplitQuantQwen3_5GatedDeltaNet(nn.Module):
         return self._project_output(core_attn_out)
 
     def reparameterize(self):
-        if self.ln_trans is not None:
-            self.ln_trans.to_eval_mode()
+        if self._ln_trans is not None:
+            self._ln_trans.to_eval_mode()
         if self.o_trans is not None:
             self.o_trans.to_eval_mode()
-        self.in_proj_qkv.reparameterize(qa_trans=self.ln_trans)
-        self.in_proj_z.reparameterize(qa_trans=self.ln_trans)
-        self.in_proj_b.reparameterize(qa_trans=self.ln_trans)
-        self.in_proj_a.reparameterize(qa_trans=self.ln_trans)
+        self.in_proj_qkv.reparameterize(qa_trans=self._ln_trans)
+        self.in_proj_z.reparameterize(qa_trans=self._ln_trans)
+        self.in_proj_b.reparameterize(qa_trans=self._ln_trans)
+        self.in_proj_a.reparameterize(qa_trans=self._ln_trans)
+        if self._ln_trans is not None and self._ln_trans.add_diag:
+            if self._parent_input_layernorm is None:
+                raise RuntimeError("Qwen3.5 linear attention is missing parent input_layernorm for shared sq_style fusion.")
+            _reparameterize_qwen3_5_rmsnorm(self._parent_input_layernorm, self._ln_trans)
         self.out_proj.reparameterize(qa_trans=self.o_trans)
 
     def init_diag_scale(self, alpha=0.5):
         if self.diag_init != "sq_style":
             return
-        in_proj_smax = torch.cat(
-            [
+        if self._ln_trans is not None:
+            input_proj_weights = [
                 self.in_proj_qkv.linear.weight,
                 self.in_proj_z.linear.weight,
                 self.in_proj_b.linear.weight,
                 self.in_proj_a.linear.weight,
-            ],
-            dim=0,
-        ).abs().max(dim=0)[0]
-        if self.ln_trans is not None:
-            self.ln_trans.diag_scale.data = get_init_scale(in_proj_smax, self.ln_smax, alpha)
+            ]
+            in_proj_smax = torch.cat(input_proj_weights, dim=0).abs().max(dim=0)[0]
+            self._ln_trans.diag_scale.data = get_init_scale(in_proj_smax, self.ln_smax, alpha)
+            del self.ln_smax
         if self.o_trans is not None:
             out_proj_smax = self.out_proj.linear.weight.abs().max(dim=0)[0]
             self.o_trans.diag_scale.data = get_init_scale(out_proj_smax, self.o_smax, alpha)
-        del self.ln_smax, self.o_smax
+            del self.o_smax
         self.diag_init = None
 
     def rep_matrix_only(self):
-        if self.ln_trans is not None:
-            self.ln_trans.to_eval_mode()
+        if self._ln_trans is not None:
+            self._ln_trans.to_eval_mode()
         if self.o_trans is not None:
             self.o_trans.to_eval_mode()
 
@@ -486,9 +642,15 @@ class SplitQuantQwen3_5DecoderLayer(nn.Module):
             self.self_attn = SplitQuantQwen3_5Attention(args, ori_layer.self_attn)
         else:
             raise ValueError(f"Unsupported Qwen3.5 layer_type: {self.layer_type}")
-        self.mlp = SplitQuantQwenMLP(args, ori_layer.mlp)
+        self.mlp = SplitQuantQwen3_5MLP(args, ori_layer.mlp)
         self.input_layernorm = ori_layer.input_layernorm
         self.post_attention_layernorm = ori_layer.post_attention_layernorm
+        if isinstance(self.self_attn, SplitQuantQwen3_5Attention):
+            self.self_attn._parent_input_layernorm = self.input_layernorm
+        if isinstance(self.self_attn, SplitQuantQwen3_5GatedDeltaNet):
+            self.self_attn._parent_input_layernorm = self.input_layernorm
+        if isinstance(self.mlp, SplitQuantQwen3_5MLP):
+            self.mlp._parent_post_attention_layernorm = self.post_attention_layernorm
 
     def forward(
         self,

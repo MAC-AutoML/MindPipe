@@ -54,44 +54,44 @@ def save_parametrized_checkpoint(model, args):
 
 def load_splitquant_parameters(args, model, path=None):
     if path is None:
-        flat_parameters = torch.load(os.path.join(args.exp_dir, f"flat_parameters.pth"))
+        splitquant_parameters = torch.load(os.path.join(args.exp_dir, "splitquant_parameters.pth"))
     else:
-        flat_parameters = torch.load(os.path.join(path, f"flat_parameters.pth"))
+        splitquant_parameters = torch.load(os.path.join(path, "splitquant_parameters.pth"))
     layers = get_decoder_layers(model)
     
-    for i in range(len(flat_parameters.keys())):
-        flat_param = flat_parameters[i]
-        layers[i].load_state_dict(flat_param, strict=False)
+    for i in range(len(splitquant_parameters.keys())):
+        splitquant_param = splitquant_parameters[i]
+        layers[i].load_state_dict(splitquant_param, strict=False)
     return model
 
 
 def save_splitquant_matrices(args, model, rank=None):
-    flat_matrices = {}
+    splitquant_matrices = {}
     layers = get_decoder_layers(model)
     for i in range(len(layers)):
         layer = layers[i]
         layer.self_attn.rep_matrix_only()
         layer.mlp.rep_matrix_only()
         paras_name = ["trans.matrix", "trans.diag_scale", "clip_factor_w", "clip_factor_a"]
-        flat_matrices[i] = get_paras_dict_by_name(layer, required_names=paras_name)
+        splitquant_matrices[i] = get_paras_dict_by_name(layer, required_names=paras_name)
     if rank is not None:
-        matrices_path = os.path.join(args.exp_dir, f"flat_matrices_{rank}.pth")
+        matrices_path = os.path.join(args.exp_dir, f"splitquant_matrices_{rank}.pth")
     else:
-        matrices_path = os.path.join(args.exp_dir, f"flat_matrices.pth")
-    torch.save(flat_matrices, matrices_path)
-    logging.info("saved paramaters at {}".format(matrices_path))
+        matrices_path = os.path.join(args.exp_dir, "splitquant_matrices.pth")
+    torch.save(splitquant_matrices, matrices_path)
+    logging.info("saved parameters at %s", matrices_path)
 
 
 def load_splitquant_matrices(args, model, path=None):
     if path is None:
-        flat_parameters = torch.load(os.path.join(args.exp_dir, f"flat_matrices.pth"))
+        splitquant_matrices = torch.load(os.path.join(args.exp_dir, "splitquant_matrices.pth"))
     else:
-        flat_parameters = torch.load(os.path.join(path, f"flat_matrices.pth"))
+        splitquant_matrices = torch.load(os.path.join(path, "splitquant_matrices.pth"))
     layers = get_decoder_layers(model)
     
-    for i in range(len(flat_parameters.keys())):
-        flat_param = flat_parameters[i]
+    for i in range(len(splitquant_matrices.keys())):
+        splitquant_param = splitquant_matrices[i]
         layers[i].self_attn.rep_matrix_only()
         layers[i].mlp.rep_matrix_only()
-        layers[i].load_state_dict(flat_param, strict=False)
+        layers[i].load_state_dict(splitquant_param, strict=False)
     return model

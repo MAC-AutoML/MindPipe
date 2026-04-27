@@ -31,13 +31,15 @@ def _is_qwen3_5_model(model) -> bool:
     return str(model_type) in {"qwen3_5", "qwen3_5_text"}
 
 
-def get_named_linears(module, model=None):
+def get_named_linears(module, model=None, qwen3_5_quantize_linear_attn=True):
     linears = {name: m for name, m in module.named_modules() if isinstance(m, nn.Linear)}
     if model is not None and _is_qwen3_5_model(model):
-        # Qwen3.5 attention projections (both linear/full attention token mixer)
-        # are highly sensitive under current AWQ settings.
-        # Keep attention in higher precision and quantize MLP only.
-        if getattr(module, "layer_type", None) in {"linear_attention", "full_attention"}:
+        layer_type = getattr(module, "layer_type", None)
+        # Quantize Qwen3.5 linear-attention token-mixer linears by default.
+        # Callers can still disable this for targeted fallback experiments.
+        if layer_type == "full_attention":
+            linears = {name: m for name, m in linears.items() if name.startswith("mlp.")}
+        elif layer_type == "linear_attention" and not qwen3_5_quantize_linear_attn:
             linears = {name: m for name, m in linears.items() if name.startswith("mlp.")}
     return linears
 
@@ -192,6 +194,7 @@ def run_awq(
     auto_scale=True,
     mse_range=True,
     clip_targets="auto",
+    qwen3_5_quantize_linear_attn=True,
     # some configs for ablation study
     calib_data="pileval",
     device=None,
@@ -263,7 +266,11 @@ def run_awq(
     for i in tqdm.tqdm(range(len(layers)), desc="Running AWQ..."):
         layer = layers[i]
         # device_map 模式下不手动移动层，由 dispatch_model 管理
-        named_linears = get_named_linears(layer, model=model)
+        named_linears = get_named_linears(
+            layer,
+            model=model,
+            qwen3_5_quantize_linear_attn=qwen3_5_quantize_linear_attn,
+        )
 
         # firstly, get input features of all linear layers
         def cache_input_hook(m, x, y, name, feat_dict):
@@ -303,6 +310,7 @@ def run_awq(
                 w_bit=w_bit,
                 q_config=q_config,
                 input_feat=input_feat,
+                qwen3_5_quantize_linear_attn=qwen3_5_quantize_linear_attn,
             )
             # apply_scale(layer, scales_list, input_feat_dict=input_feat)
             apply_scale(layers[i], scales_list, input_feat_dict=input_feat, device=runtime_device)

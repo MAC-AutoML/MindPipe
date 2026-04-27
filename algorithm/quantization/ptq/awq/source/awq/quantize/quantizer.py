@@ -64,8 +64,9 @@ def pseudo_quantize_tensor(
     w, n_bit=8, zero_point=True, q_group_size=-1, inplace=False, get_scale_zp=False
 ):
     org_w_shape = w.shape
+    if q_group_size > 0 and org_w_shape[-1] % q_group_size != 0:
+        q_group_size = -1
     if q_group_size > 0:
-        assert org_w_shape[-1] % q_group_size == 0
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
     if zero_point:
@@ -109,6 +110,7 @@ def pseudo_quantize_model_weight(
     model,
     w_bit,
     q_config,
+    qwen3_5_quantize_linear_attn=True,
     device=None,
 ):
     from .pre_quant import get_blocks, get_named_linears
@@ -116,7 +118,11 @@ def pseudo_quantize_model_weight(
     runtime_device = resolve_device(device)
     layers = get_blocks(model)
     for i in tqdm(range(len(layers)), desc="pseudo weight quantization..."):
-        named_linears = get_named_linears(layers[i], model=model)
+        named_linears = get_named_linears(
+            layers[i],
+            model=model,
+            qwen3_5_quantize_linear_attn=qwen3_5_quantize_linear_attn,
+        )
         for n, m in named_linears.items():
             # device_map 模式下不手动移动模块，直接在当前设备上量化
             m.weight.data = pseudo_quantize_tensor(

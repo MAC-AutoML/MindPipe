@@ -1,0 +1,30 @@
+schema: mindpipe/config/v1
+
+model:
+  name: Qwen3-VL-2B-Instruct
+  model_path: /mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct
+
+defaults:
+  eval_vlm: true
+  vlm_datasets:
+    - OCRBench
+    - TextVQA_VAL
+    - ChartQA_TEST
+    - InfoVQA_VAL
+  vlm_mode: all
+  vlm_api_nproc: 4
+  vlm_verbose: false
+  vlm_ignore_failed: false
+  vlm_pred_format: tsv
+
+recipes:
+  w8a8:
+    weight_bits: 8
+    activation_bits: 8
+  smoke10:
+    weight_bits: 8
+    activation_bits: 8
+    calibration_samples: 10
+    max_eval_chunks: 4
+    eval_zero_shot: false
+    eval_vlm: false

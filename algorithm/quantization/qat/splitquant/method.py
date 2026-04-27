@@ -72,9 +72,6 @@ class SplitQuantMethod(BaseQuantizationMethod):
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
 
     def _validate_args(self, args) -> None:
-        if args.flatquant_direct_inv:
-            raise ValueError("SplitQuant currently supports only SVD-style grouped transforms; set --flatquant_direct_inv false.")
-
         split_group_size = _resolve_split_group_size(args)
         if (args.weight_bits < 16 or args.activation_bits < 16) and split_group_size <= 0:
             raise ValueError(
@@ -99,26 +96,25 @@ class SplitQuantMethod(BaseQuantizationMethod):
             a_bits=args.activation_bits,
             a_groupsize=args.activation_group_size if args.activation_bits < 16 else -1,
             act_order=args.use_activation_order,
-            add_diag=args.flatquant_add_diag,
-            cali_bsz=args.flatquant_calibration_batch_size,
+            add_diag=args.splitquant_add_diag,
+            cali_bsz=args.splitquant_calibration_batch_size,
             cali_dataset=args.calibration_dataset,
-            cali_trans=args.flatquant_cali_trans,
-            deactive_amp=args.flatquant_deactive_amp,
-            diag_alpha=args.flatquant_diag_alpha,
-            diag_init=args.flatquant_diag_init,
-            direct_inv=False,
-            epochs=args.flatquant_epochs,
+            cali_trans=args.splitquant_cali_trans,
+            deactive_amp=args.splitquant_deactive_amp,
+            diag_alpha=args.splitquant_diag_alpha,
+            diag_init=args.splitquant_diag_init,
+            epochs=args.splitquant_epochs,
             exp_dir=str(output_dir),
             exp_name="default",
-            flat_lr=args.flatquant_lr,
+            lr=args.splitquant_lr,
             gptq=args.weight_method == "gptq",
             gptq_mse=False,
             hf_token=args.hf_token,
             k_asym=not args.key_symmetric,
             k_bits=args.key_bits,
             k_groupsize=args.kv_group_size if args.key_bits < 16 else -1,
-            lac=args.flatquant_lac,
-            lwc=args.flatquant_lwc,
+            lac=args.splitquant_lac,
+            lwc=args.splitquant_lwc,
             model=args.model_path,
             model_name=model_slug(args.model_path),
             nsamples=args.calibration_samples,
@@ -134,10 +130,10 @@ class SplitQuantMethod(BaseQuantizationMethod):
                 or args.key_bits < 16
                 or args.value_bits < 16
             ),
-            reload_matrix=bool(args.flatquant_reload_matrix_from),
-            resume=bool(args.flatquant_resume_from),
-            separate_vtrans=args.flatquant_separate_vtrans,
-            save_matrix=args.flatquant_save_matrix,
+            reload_matrix=bool(args.splitquant_reload_matrix_from),
+            resume=bool(args.splitquant_resume_from),
+            separate_vtrans=args.splitquant_separate_vtrans,
+            save_matrix=args.splitquant_save_matrix,
             seed=args.seed,
             split_group_size=split_group_size,
             v_asym=not args.value_symmetric,
@@ -146,7 +142,7 @@ class SplitQuantMethod(BaseQuantizationMethod):
             w_asym=not args.weight_symmetric,
             w_bits=args.weight_bits,
             w_groupsize=args.weight_group_size if args.weight_bits < 16 else -1,
-            warmup=args.flatquant_warmup,
+            warmup=args.splitquant_warmup,
         )
 
     def apply_fake_quantization(self, model, tokenizer_bundle, args) -> dict[str, object]:
@@ -154,7 +150,7 @@ class SplitQuantMethod(BaseQuantizationMethod):
         source_root = Path(__file__).resolve().parent / "source"
         output_dir = self.resolve_output_dir(args)
         source_args = self._build_source_args(args, output_dir)
-        parameter_checkpoint_path = output_dir / "flat_parameters.pth"
+        parameter_checkpoint_path = output_dir / "splitquant_parameters.pth"
         config_artifact = {
             "weight_bits": source_args.w_bits,
             "activation_bits": source_args.a_bits,
@@ -164,12 +160,20 @@ class SplitQuantMethod(BaseQuantizationMethod):
             "calibration_samples": source_args.nsamples,
             "calibration_batch_size": source_args.cali_bsz,
             "epochs": source_args.epochs,
-            "flat_lr": source_args.flat_lr,
+            "lr": source_args.lr,
+            "weight_group_size": source_args.w_groupsize,
+            "activation_group_size": source_args.a_groupsize,
+            "kv_group_size": max(source_args.k_groupsize, source_args.v_groupsize),
             "lwc": source_args.lwc,
             "lac": source_args.lac,
             "cali_trans": source_args.cali_trans,
             "add_diag": source_args.add_diag,
-            "direct_inv": source_args.direct_inv,
+            "diag_init": source_args.diag_init,
+            "diag_alpha": source_args.diag_alpha,
+            "warmup": source_args.warmup,
+            "deactive_amp": source_args.deactive_amp,
+            "separate_vtrans": source_args.separate_vtrans,
+            "save_matrix": source_args.save_matrix,
             "split_group_size": source_args.split_group_size,
             "weight_quantizer": "none",
         }
@@ -177,8 +181,7 @@ class SplitQuantMethod(BaseQuantizationMethod):
         if not source_args.quantize:
             return {
                 "source_root": str(source_root),
-                "flatquant_config": {**config_artifact, "epochs": 0, "flat_lr": 0.0, "lwc": False, "lac": False, "cali_trans": False, "add_diag": False},
-                "splitquant_config": {**config_artifact, "epochs": 0, "flat_lr": 0.0, "lwc": False, "lac": False, "cali_trans": False, "add_diag": False},
+                "splitquant_config": {**config_artifact, "epochs": 0, "lr": 0.0, "lwc": False, "lac": False, "cali_trans": False, "add_diag": False},
                 "quantized_linear_count": 0,
                 "quantized_linear_layers": {},
                 "skipped_reason": "all quantization bit-widths are 16; keep baseline model unchanged",
@@ -249,11 +252,11 @@ class SplitQuantMethod(BaseQuantizationMethod):
                 layer.to(next(layer.parameters()).device)
 
             if source_args.resume:
-                load_splitquant_parameters(source_args, model, path=args.flatquant_resume_from)
-                LOGGER.info("Loaded SplitQuant parameters from %s", args.flatquant_resume_from)
+                load_splitquant_parameters(source_args, model, path=args.splitquant_resume_from)
+                LOGGER.info("Loaded SplitQuant parameters from %s", args.splitquant_resume_from)
             elif source_args.reload_matrix:
-                load_splitquant_matrices(source_args, model, path=args.flatquant_reload_matrix_from)
-                LOGGER.info("Loaded SplitQuant matrices from %s", args.flatquant_reload_matrix_from)
+                load_splitquant_matrices(source_args, model, path=args.splitquant_reload_matrix_from)
+                LOGGER.info("Loaded SplitQuant matrices from %s", args.splitquant_reload_matrix_from)
             elif source_args.cali_trans or source_args.add_diag or source_args.lwc or source_args.lac:
                 cali_split_quant(source_args, model, calibration_batches, args.device, LOGGER)
             if source_args.save_matrix:
@@ -285,11 +288,10 @@ class SplitQuantMethod(BaseQuantizationMethod):
         config_artifact["weight_quantizer"] = weight_quantizer_name
         artifacts = {
             "source_root": str(source_root),
-            "flatquant_config": copy.deepcopy(config_artifact),
             "splitquant_config": copy.deepcopy(config_artifact),
             "quantized_linear_count": len(quantizer_artifacts),
             "quantized_linear_layers": quantizer_artifacts,
         }
         if parameter_checkpoint_path.exists():
-            artifacts["flat_parameters_path"] = str(parameter_checkpoint_path)
+            artifacts["splitquant_parameters_path"] = str(parameter_checkpoint_path)
         return artifacts

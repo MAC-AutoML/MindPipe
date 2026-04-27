@@ -79,6 +79,12 @@ def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--eval_vlm", type=_bool_flag, default=False)
     parser.add_argument("--vlm_datasets", nargs="+", default=[])
     parser.add_argument("--vlm_mode", default="all", choices=["all", "infer", "eval"])
+    parser.add_argument(
+        "--vlm_resume",
+        type=_bool_flag,
+        default=False,
+        help="Resume VLM evaluation from existing per-dataset artifacts in the same output_dir when possible.",
+    )
     parser.add_argument("--vlm_work_dir", default=None)
     parser.add_argument("--vlm_eval_kit_root", default=DEFAULT_VLMEVALKIT_ROOT)
     parser.add_argument("--vlm_judge", default=None)
@@ -189,9 +195,71 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--flatquant_resume_from", default=None)
     parser.add_argument("--flatquant_reload_matrix_from", default=None)
     parser.add_argument("--flatquant_save_matrix", type=_bool_flag, default=False)
+    # SplitQuant
+    parser.add_argument("--splitquant_epochs", type=int, default=15)
+    parser.add_argument("--splitquant_calibration_batch_size", type=int, default=32)
+    parser.add_argument("--splitquant_lr", type=float, default=5e-3)
+    parser.add_argument("--splitquant_cali_trans", type=_bool_flag, default=True)
+    parser.add_argument("--splitquant_add_diag", type=_bool_flag, default=True)
+    parser.add_argument("--splitquant_lwc", type=_bool_flag, default=True)
+    parser.add_argument("--splitquant_lac", type=_bool_flag, default=True)
+    parser.add_argument("--splitquant_diag_init", default="sq_style", choices=["sq_style", "one_style"])
+    parser.add_argument("--splitquant_diag_alpha", type=float, default=0.3)
+    parser.add_argument("--splitquant_warmup", type=_bool_flag, default=False)
+    parser.add_argument("--splitquant_deactive_amp", type=_bool_flag, default=True)
+    parser.add_argument("--splitquant_separate_vtrans", type=_bool_flag, default=False)
+    parser.add_argument("--splitquant_resume_from", default=None)
+    parser.add_argument("--splitquant_reload_matrix_from", default=None)
+    parser.add_argument("--splitquant_save_matrix", type=_bool_flag, default=False)
     parser.add_argument("--static_groups", type=_bool_flag, default=False)
+    # QLoRA
+    parser.add_argument("--qlora_train_file", default=None, help="Local supervised training file for QLoRA (.json/.jsonl/.csv/.parquet).")
+    parser.add_argument("--qlora_eval_file", default=None, help="Optional local supervised evaluation file for QLoRA.")
+    parser.add_argument("--qlora_eval_split_ratio", type=float, default=0.0, help="Optional holdout split ratio when only --qlora_train_file is provided.")
+    parser.add_argument("--qlora_input_field", default="input", help="Input/prompt field name in the local QLoRA dataset.")
+    parser.add_argument("--qlora_output_field", default="output", help="Target/response field name in the local QLoRA dataset.")
+    parser.add_argument("--qlora_max_train_samples", type=int, default=None, help="Optional cap on QLoRA training samples.")
+    parser.add_argument("--qlora_max_eval_samples", type=int, default=None, help="Optional cap on QLoRA eval samples.")
+    parser.add_argument(
+        "--qlora_plain_text_default_samples",
+        type=int,
+        default=1024,
+        help=(
+            "Default number of training samples for plain-text QLoRA when --qlora_train_file and "
+            "--qlora_max_train_samples are both omitted."
+        ),
+    )
+    parser.add_argument("--qlora_source_max_len", type=int, default=None, help="Optional source token cap for QLoRA. Defaults to sequence_length - qlora_target_max_len.")
+    parser.add_argument("--qlora_target_max_len", type=int, default=256, help="Target token cap for QLoRA supervision.")
+    parser.add_argument("--qlora_train_on_source", type=_bool_flag, default=False, help="Whether QLoRA should include prompt tokens in the loss.")
+    parser.add_argument("--qlora_per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--qlora_per_device_eval_batch_size", type=int, default=1)
+    parser.add_argument("--qlora_gradient_accumulation_steps", type=int, default=16)
+    parser.add_argument("--qlora_learning_rate", type=float, default=2e-4)
+    parser.add_argument("--qlora_weight_decay", type=float, default=0.0)
+    parser.add_argument("--qlora_num_train_epochs", type=float, default=1.0)
+    parser.add_argument("--qlora_max_steps", type=int, default=-1)
+    parser.add_argument("--qlora_logging_steps", type=int, default=10)
+    parser.add_argument("--qlora_save_steps", type=int, default=250)
+    parser.add_argument("--qlora_save_total_limit", type=int, default=2)
+    parser.add_argument("--qlora_warmup_ratio", type=float, default=0.03)
+    parser.add_argument("--qlora_lr_scheduler_type", default="constant")
+    parser.add_argument("--qlora_dataloader_num_workers", type=int, default=0)
+    parser.add_argument("--qlora_gradient_checkpointing", type=_bool_flag, default=True)
+    parser.add_argument("--qlora_lora_r", type=int, default=64)
+    parser.add_argument("--qlora_lora_alpha", type=int, default=16)
+    parser.add_argument("--qlora_lora_dropout", type=float, default=0.0)
+    parser.add_argument("--qlora_double_quant", type=_bool_flag, default=True)
+    parser.add_argument("--qlora_quant_type", default="nf4", choices=["fp4", "nf4"])
+    parser.add_argument("--qlora_merge_adapter", type=_bool_flag, default=False)
     # AWQ
     parser.add_argument("--awq_search", type=_bool_flag, default=True)
+    parser.add_argument(
+        "--awq_reuse_search_result",
+        type=_bool_flag,
+        default=False,
+        help="Reuse an existing awq_search.pt under the target AWQ output_dir instead of rerunning AWQ search.",
+    )
     parser.add_argument(
         "--awq_search_sequence_length",
         type=int,
@@ -217,6 +285,83 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
             "AWQ clip target selection. "
             "Use 'auto' for model-specific defaults, 'none' to disable clip, 'all' for all supported linears, "
             "or a comma-separated list such as 'self_attn.v_proj,self_attn.o_proj,mlp.down_proj'."
+        ),
+    )
+    parser.add_argument(
+        "--awq_qwen3_5_quantize_linear_attn",
+        type=_bool_flag,
+        default=True,
+        help=(
+            "Enable Qwen3.5 linear_attn AWQ weight quantization. "
+            "When enabled, AWQ quantizes linear_attn.in_proj_qkv/in_proj_z/in_proj_b/in_proj_a/out_proj "
+            "instead of keeping the entire linear-attention token mixer in higher precision. "
+            "Set this flag to false to fall back to the old high-precision behavior."
+        ),
+    )
+    parser.add_argument(
+        "--awq_vlm_dataset_name",
+        default=None,
+        help=(
+            "Optional VLM dataset for multimodal AWQ calibration on supported VLMs "
+            "(currently Qwen2-VL / Qwen2.5-VL visual blocks and merger / connector). "
+            "Falls back to --mquant_dataset_name when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--awq_vlm_calib_num",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on the number of multimodal samples used in AWQ visual / connector calibration. "
+            "Falls back to --mquant_calib_num or --calibration_samples."
+        ),
+    )
+    parser.add_argument(
+        "--awq_vlm_quant_visual",
+        type=_bool_flag,
+        default=None,
+        help="AWQ only: whether to quantize the visual encoder blocks during multimodal AWQ calibration.",
+    )
+    parser.add_argument(
+        "--awq_vlm_quant_connector",
+        type=_bool_flag,
+        default=None,
+        help="AWQ only: whether to quantize the visual merger / connector during multimodal AWQ calibration.",
+    )
+    parser.add_argument(
+        "--awq_vlm_quant_llm",
+        type=_bool_flag,
+        default=None,
+        help=(
+            "AWQ only: whether to quantize the language decoder when multimodal AWQ calibration is enabled. "
+            "This currently reuses the standard text AWQ path."
+        ),
+    )
+    parser.add_argument(
+        "--awq_visual_w_bits",
+        type=int,
+        default=None,
+        help=(
+            "Optional AWQ override for visual encoder weight bits during multimodal quantization. "
+            "Defaults to --weight_bits when unset."
+        ),
+    )
+    parser.add_argument(
+        "--awq_connector_w_bits",
+        type=int,
+        default=None,
+        help=(
+            "Optional AWQ override for visual connector / merger weight bits during multimodal quantization. "
+            "Defaults to --awq_visual_w_bits or --weight_bits when unset."
+        ),
+    )
+    parser.add_argument(
+        "--awq_llm_w_bits",
+        type=int,
+        default=None,
+        help=(
+            "Optional AWQ override for language decoder weight bits during multimodal quantization. "
+            "Defaults to --weight_bits when unset."
         ),
     )
     # QuaRot / SpinQuant
@@ -324,6 +469,16 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         default=False,
         help="QuaRot only: experiment flag for Qwen3-VL GPTQ runs. Quantize online-Hadamard down_proj with RTN instead of GPTQ.",
     )
+    parser.add_argument(
+        "--quarot_static_acts",
+        type=_bool_flag,
+        default=False,
+        help=(
+            "QuaRot only: collect layer-wise min/max on the text calibration dataset and "
+            "use fixed input-activation scales during evaluation, similar to MQuant static activation quantization. "
+            "This currently applies to decoder input activations only; KV-cache quantization remains dynamic."
+        ),
+    )
     # MQuant GPTQ-specific calibration (multimodal datasets)
     parser.add_argument(
         "--mquant_dataset_name",
@@ -341,6 +496,74 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=20,
         help="Max new tokens per prompt when collecting MQuant GPTQ activations.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_dataset_name",
+        default=None,
+        help="Optional VLM dataset for multimodal GPTQ calibration (currently Qwen2-VL / Qwen2.5-VL). Falls back to --mquant_dataset_name when omitted.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_calib_num",
+        type=int,
+        default=None,
+        help="Optional cap on the number of multimodal samples used in GPTQ calibration. Falls back to --mquant_calib_num or --calibration_samples.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_quant_visual",
+        type=_bool_flag,
+        default=None,
+        help="GPTQ only: whether to quantize the visual encoder branch during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_quant_connector",
+        type=_bool_flag,
+        default=None,
+        help="GPTQ only: whether to quantize the visual merger / connector branch during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--gptq_vlm_quant_llm",
+        type=_bool_flag,
+        default=None,
+        help="GPTQ only: whether to quantize the language decoder branch during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--spinquant_vlm_dataset_name",
+        default=None,
+        help=(
+            "Optional VLM dataset for multimodal SpinQuant calibration on supported VLMs "
+            "(first pass: Qwen2-VL / Qwen2.5-VL / Qwen3-VL visual blocks, optional connector, and language decoder). "
+            "Falls back to --gptq_vlm_dataset_name / --mquant_dataset_name when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--spinquant_vlm_calib_num",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on the number of multimodal samples used in SpinQuant visual / connector / llm calibration. "
+            "Falls back to --gptq_vlm_calib_num / --mquant_calib_num / --calibration_samples."
+        ),
+    )
+    parser.add_argument(
+        "--spinquant_vlm_quant_visual",
+        type=_bool_flag,
+        default=None,
+        help="SpinQuant only: whether to quantize the visual encoder blocks during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--spinquant_vlm_quant_connector",
+        type=_bool_flag,
+        default=None,
+        help="SpinQuant only: whether to quantize the visual merger / connector during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--spinquant_vlm_quant_llm",
+        type=_bool_flag,
+        default=None,
+        help=(
+            "SpinQuant only: whether to quantize the language decoder branch during multimodal calibration. "
+            "When disabled, SpinQuant can be used as a visual-only multimodal experiment."
+        ),
     )
     parser.add_argument(
         "--mquant_visual_w_bits",
@@ -576,6 +799,12 @@ def build_run_config(args) -> WorkflowConfig:
                 f"n:m 半结构化剪枝 ({args.structure_pattern}) 的稀疏率必须为 0.5，"
                 f"当前为 {args.sparsity_ratio}"
             )
+
+    if has_quantization and args.quantization == "qlora":
+        if args.eval_vlm:
+            raise ValueError("QLoRA v1 is text-only; set --eval_vlm false.")
+        if args.weight_bits not in {2, 3, 4}:
+            raise ValueError("QLoRA currently supports --weight_bits in {2, 3, 4}.")
 
     model_name = model_slug(args.model_path)
     base_common_args = vars(args).copy()

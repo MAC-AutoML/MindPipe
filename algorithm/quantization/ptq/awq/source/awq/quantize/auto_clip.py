@@ -46,9 +46,13 @@ def auto_clip_layer(
     org_w_shape = w.shape
     # w           [co, ci]      -> [co, 1, n_group, group size]
     # input_feat  [n_token, ci] -> [1, n_token, n_group, group size]
-    group_size = (
-        q_config["q_group_size"] if q_config["q_group_size"] > 0 else w.shape[1]
-    )
+    requested_group_size = q_config["q_group_size"]
+    if requested_group_size > 0 and w.shape[1] % requested_group_size == 0:
+        group_size = requested_group_size
+    else:
+        group_size = w.shape[1]
+    clip_q_config = dict(q_config)
+    clip_q_config["q_group_size"] = group_size
     input_feat = input_feat.view(-1, input_feat.shape[-1])
     input_feat = input_feat.reshape(1, input_feat.shape[0], -1, group_size)
     sample_step = max(1, input_feat.shape[1] // max(1, n_sample_token))
@@ -81,7 +85,7 @@ def auto_clip_layer(
             max_val = org_max_val * (1 - i_s / n_grid)
             min_val = -max_val
             cur_w = torch.clamp(w, min_val, max_val)
-            q_w = pseudo_quantize_tensor(cur_w, n_bit=n_bit, **q_config)
+            q_w = pseudo_quantize_tensor(cur_w, n_bit=n_bit, **clip_q_config)
             cur_out = (input_feat * q_w).sum(dim=-1)
 
             # co, 1, n_group, 1

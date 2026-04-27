@@ -1,0 +1,106 @@
+schema: mindpipe/config/v1
+
+model:
+  name: Llama-2-7b-hf
+  model_path: /mnt/82_store/LLM-weights/Llama-2-7b-hf
+
+defaults:
+  attn_implementation: sdpa
+  eval_vlm: false
+
+recipes:
+  w2a16:
+    weight_bits: 2
+    activation_bits: 16
+    omniquant_epochs: 40
+    omniquant_alpha: 0.5
+    omniquant_let: false
+    omniquant_lwc: true
+    omniquant_let_lr: 5.0e-3
+    omniquant_lwc_lr: 1.0e-2
+    omniquant_aug_loss: true
+
+  w3a16:
+    weight_bits: 3
+    activation_bits: 16
+    omniquant_epochs: 20
+    omniquant_alpha: 0.5
+    omniquant_let: false
+    omniquant_lwc: true
+    omniquant_let_lr: 5.0e-3
+    omniquant_lwc_lr: 1.0e-2
+    omniquant_aug_loss: false
+
+  w4a16:
+    weight_bits: 4
+    activation_bits: 16
+    omniquant_epochs: 20
+    omniquant_alpha: 0.5
+    omniquant_let: false
+    omniquant_lwc: true
+    omniquant_let_lr: 5.0e-3
+    omniquant_lwc_lr: 1.0e-2
+    omniquant_aug_loss: false
+    omniquant_deactive_amp: true
+
+  w4a4:
+    weight_bits: 4
+    activation_bits: 4
+    omniquant_epochs: 20
+    omniquant_alpha: 0.75
+    omniquant_let: true
+    omniquant_lwc: true
+    omniquant_let_lr: 1.0e-3
+    omniquant_lwc_lr: 1.0e-2
+    omniquant_aug_loss: false
+    omniquant_deactive_amp: true
+
+  w6a6:
+    weight_bits: 6
+    activation_bits: 6
+    omniquant_epochs: 20
+    omniquant_alpha: 0.5
+    omniquant_let: true
+    omniquant_lwc: true
+    omniquant_let_lr: 1.0e-3
+    omniquant_lwc_lr: 5.0e-3
+    omniquant_aug_loss: false
+    omniquant_deactive_amp: true
+
+  w8a8:
+    weight_bits: 8
+    activation_bits: 8
+    omniquant_epochs: 10
+    omniquant_alpha: 0.5
+    omniquant_let: true
+    omniquant_lwc: true
+    omniquant_let_lr: 1.0e-3
+    omniquant_lwc_lr: 5.0e-3
+    omniquant_aug_loss: false
+    omniquant_deactive_amp: true
+
+  w8a16:
+    weight_bits: 8
+    activation_bits: 16
+    omniquant_epochs: 20
+    omniquant_alpha: 0.5
+    omniquant_let: false
+    omniquant_lwc: true
+    omniquant_let_lr: 5.0e-3
+    omniquant_lwc_lr: 1.0e-2
+    omniquant_aug_loss: false
+
+  smoke10:
+    weight_bits: 4
+    activation_bits: 16
+    omniquant_epochs: 20
+    omniquant_alpha: 0.5
+    omniquant_let: false
+    omniquant_lwc: true
+    omniquant_let_lr: 5.0e-3
+    omniquant_lwc_lr: 1.0e-2
+    omniquant_aug_loss: false
+    omniquant_deactive_amp: true
+    calibration_samples: 10
+    max_eval_chunks: 4
+    eval_zero_shot: false

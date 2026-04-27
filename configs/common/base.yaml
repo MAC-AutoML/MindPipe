@@ -1,0 +1,23 @@
+schema: mindpipe/config/v1
+
+defaults:
+  seed: 42
+  dtype: float16
+  calibration_dataset: pileval
+  evaluation_dataset: wikitext2
+  calibration_samples: 128
+  sequence_length: 512
+  batch_size: 1
+  max_eval_chunks: 64
+
+  eval_ppl: true
+  eval_zero_shot: true
+  zero_shot_tasks:
+    - boolq
+    - rte
+    - winogrande
+    - arc_easy
+    - arc_challenge
+    - openbookqa
+  zero_shot_batch_size: 32
+  zero_shot_num_fewshot: 0

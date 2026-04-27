@@ -31,5 +31,6 @@ class WorkflowRunResult:
     model_path: str
     output_dir: str
     metrics_path: str
+    artifacts_path: str
     metrics: dict[str, Any]
     artifacts: dict[str, Any]
