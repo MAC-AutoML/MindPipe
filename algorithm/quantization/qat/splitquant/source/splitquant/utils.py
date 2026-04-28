@@ -71,3 +71,4 @@ def seed_everything(seed=0) -> None:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = True
     transformers.set_seed(seed)
+# Adapt SplitQuant to Qwen2.5, LLaMA-2, LLaMA-3, Qwen2.5-VL, and MiniCPM models.

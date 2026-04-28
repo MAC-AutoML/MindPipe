@@ -283,3 +283,4 @@ def set_act_quantizer_state(model, enable=True):
         if isinstance(m, ActivationQuantizer):
             m.enable = enable
     return model
+# Adapt SplitQuant to Qwen2.5, LLaMA-2, LLaMA-3, Qwen2.5-VL, and MiniCPM models.
