@@ -11,3 +11,4 @@ class Quantizer(torch.nn.Module):
         quantized_x = quarot.sym_quant(x, scales_x)
         packed_tensor = quarot.PackedQuantizedTensor(quantized_x, scales_x)
         return packed_tensor
+# Refactor the project structure and clarify the evaluation entrypoint.

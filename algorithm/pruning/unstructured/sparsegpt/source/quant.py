@@ -124,3 +124,4 @@ class Quantizer(nn.Module):
 
     def ready(self):
         return torch.all(self.scale != 0)
+# Refactor the project structure and clarify the evaluation entrypoint.

@@ -94,3 +94,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+# Refactor the project structure and clarify the evaluation entrypoint.

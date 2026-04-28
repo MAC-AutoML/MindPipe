@@ -188,3 +188,4 @@ def create_logger(exp_dir, dist_rank=0, name=''):
     logger.addHandler(file_handler)
 
     return logger
+# Refactor the project structure and clarify the evaluation entrypoint.

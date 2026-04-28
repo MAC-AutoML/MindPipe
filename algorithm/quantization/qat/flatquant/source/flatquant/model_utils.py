@@ -83,3 +83,4 @@ def get_model(model_name, hf_token=None):
     else:
         raise ValueError(f'Unknown model {model_name}')
 
+# Refactor the project structure and clarify the evaluation entrypoint.

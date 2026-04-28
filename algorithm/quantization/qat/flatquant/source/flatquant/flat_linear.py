@@ -96,3 +96,4 @@ class FlatQuantizedLinear(nn.Module):
         self.linear.weight.data = weight.to(ori_dtype)
         self._eval_mode = True
 
+# Refactor the project structure and clarify the evaluation entrypoint.
