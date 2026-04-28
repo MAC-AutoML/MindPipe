@@ -706,3 +706,4 @@ def apply_splitquant_to_qwen3_5(args, model):
         )
     set_quantizer_state(model, enable=True)
     return model
+# Adapt FlatQuant to new models and address SplitQuant degradation on Qwen3.5.

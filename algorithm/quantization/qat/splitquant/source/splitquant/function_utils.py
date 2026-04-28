@@ -40,3 +40,4 @@ def set_require_grad_all(model, requires_grad):
     for name, param in model.named_parameters():
         param.requires_grad = requires_grad
     return
+# Adapt FlatQuant to new models and address SplitQuant degradation on Qwen3.5.
