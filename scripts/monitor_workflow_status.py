@@ -140,3 +140,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+# Refactor the CLI into one unified main.py entrypoint with independent evaluation plus load and save support.
