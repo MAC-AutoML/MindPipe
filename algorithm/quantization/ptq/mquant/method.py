@@ -3449,3 +3449,4 @@ class MQuantMethod(BaseQuantizationMethod):
                 "act_skip_names": list(getattr(mquant_args, "act_skip_names", [])),
             },
         }
+# Synchronize quantization device_map support for multi-GPU execution.

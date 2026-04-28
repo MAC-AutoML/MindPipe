@@ -630,3 +630,4 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
         empty_cache(device)
 
     return quantized_linear_artifacts
+# Synchronize quantization device_map support for multi-GPU execution.
