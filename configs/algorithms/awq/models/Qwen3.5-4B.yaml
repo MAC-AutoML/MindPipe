@@ -19,3 +19,4 @@ recipes:
     calibration_samples: 10
     max_eval_chunks: 4
     eval_zero_shot: false
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

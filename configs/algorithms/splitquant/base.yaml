@@ -29,3 +29,4 @@ defaults:
   splitquant_lac: true
   splitquant_separate_vtrans: false
   splitquant_save_matrix: false
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

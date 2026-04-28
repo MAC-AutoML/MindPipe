@@ -34,3 +34,4 @@ class WorkflowRunResult:
     artifacts_path: str
     metrics: dict[str, Any]
     artifacts: dict[str, Any]
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

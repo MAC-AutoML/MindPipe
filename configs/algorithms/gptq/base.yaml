@@ -5,3 +5,4 @@ defaults:
   attn_implementation: sdpa
   group_size: 128
   damp_percent: 0.05
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.
