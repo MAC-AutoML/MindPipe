@@ -14,4 +14,3 @@ class RMSNorm(torch.nn.Module):
         variance = x.pow(2).sum(-1, keepdim=True) / self.mean_dim
         x = x * torch.rsqrt(variance + self.eps)
         return x.to(input_dtype)
-# Maintenance touch for repository metadata refresh.

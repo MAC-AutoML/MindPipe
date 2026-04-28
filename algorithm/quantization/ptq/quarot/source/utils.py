@@ -272,4 +272,3 @@ def distribute_model(model) -> None:
     )
 
     cleanup_memory()
-# Maintenance touch for repository metadata refresh.

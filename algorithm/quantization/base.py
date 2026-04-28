@@ -24,4 +24,3 @@ class BaseQuantizationMethod(ABC):
         model_name = model_slug(args.model_path)
         run_spec = f"{self.name}_w{args.weight_bits}a{args.activation_bits}_seq{args.sequence_length}"
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
-# Maintenance touch for repository metadata refresh.

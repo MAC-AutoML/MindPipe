@@ -384,4 +384,3 @@ def apply_flatquant_to_llama(args, model):
         # mlp
         model.model.layers[layer].mlp = FlatQuantLlamaMLP(args, model.model.layers[layer].mlp)
     return model
-# Maintenance touch for repository metadata refresh.

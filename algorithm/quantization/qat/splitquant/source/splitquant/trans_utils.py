@@ -129,4 +129,3 @@ class SVDSingleGroupTransMatrix(nn.Module):
             f"eval_mode={self._eval_mode}, in_features={self.in_features}, "
             f"group_size={self.group_size}, num_groups={self.num_groups})"
         )
-# Maintenance touch for repository metadata refresh.

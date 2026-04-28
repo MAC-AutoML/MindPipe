@@ -17,4 +17,3 @@ defaults:
   flatquant_lac: true
   flatquant_direct_inv: true
   flatquant_deactive_amp: true
-# Maintenance touch for repository metadata refresh.

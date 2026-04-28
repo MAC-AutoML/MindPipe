@@ -259,4 +259,3 @@ def process_args_ptq():
     ptq_args.bsz = training_args.per_device_eval_batch_size
 
     return model_args, training_args, ptq_args
-# Maintenance touch for repository metadata refresh.

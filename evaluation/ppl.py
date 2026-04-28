@@ -91,4 +91,3 @@ def evaluate_perplexity(
         "elapsed_seconds": elapsed_seconds,
         "tokens_per_second": total_tokens / max(elapsed_seconds, 1e-6),
     }
-# Maintenance touch for repository metadata refresh.

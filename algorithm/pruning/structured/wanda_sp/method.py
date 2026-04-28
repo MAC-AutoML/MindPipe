@@ -72,4 +72,3 @@ class WandaSPMethod(BasePruningMethod):
             "calibration_samples": source_args.nsamples,
             "pseudo_pruning": source_args.unstr,
         }
-# Maintenance touch for repository metadata refresh.

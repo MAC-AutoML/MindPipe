@@ -2,4 +2,3 @@ __pycache__/
 *.pyc
 results/
 .env
-# Maintenance touch for repository metadata refresh.

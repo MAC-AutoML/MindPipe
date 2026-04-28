@@ -19,4 +19,3 @@ def prepend_python_path(path: str | Path):
         except ValueError:
             pass
 
-# Maintenance touch for repository metadata refresh.

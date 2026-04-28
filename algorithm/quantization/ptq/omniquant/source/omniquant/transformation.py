@@ -155,4 +155,3 @@ def smooth_q_k_inplace(q_proj, k_proj, scales, q_scales=None):
     k_proj.weight.mul_(scales.view(-1, 1))
     if getattr(k_proj, "bias", None) is not None:
         k_proj.bias.mul_(scales.view(-1))
-# Maintenance touch for repository metadata refresh.

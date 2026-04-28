@@ -22,4 +22,3 @@ def write_json(path: str | Path, payload: dict) -> Path:
 def model_slug(model_path: str) -> str:
     return Path(model_path.rstrip("/")).name
 
-# Maintenance touch for repository metadata refresh.

@@ -393,4 +393,3 @@ def add_qk_rotation_wrapper_after_function_call_in_forward(
         functools.partial(QKRotationWrapper, *args, **kwargs),
     )
     setattr(module, attr_name, wrapper)
-# Maintenance touch for repository metadata refresh.

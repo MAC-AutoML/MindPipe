@@ -49,4 +49,3 @@ def simple_dispatch_model(model, device_map):
     model.hf_device_map = device_map
 
     return model
-# Maintenance touch for repository metadata refresh.

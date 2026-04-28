@@ -21,4 +21,3 @@ class OnlineHadamard(torch.nn.Module):
         x = quarot.functional.matmul_hadU_cuda(x, self.had_rem_dim, self.rem_dim)
         x = x.to(x_dtype)
         return x
-# Maintenance touch for repository metadata refresh.

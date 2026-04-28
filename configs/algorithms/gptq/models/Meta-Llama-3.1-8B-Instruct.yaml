@@ -19,4 +19,3 @@ recipes:
     calibration_samples: 10
     max_eval_chunks: 4
     eval_zero_shot: false
-# Maintenance touch for repository metadata refresh.

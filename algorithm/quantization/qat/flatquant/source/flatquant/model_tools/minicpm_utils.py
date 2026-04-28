@@ -400,4 +400,3 @@ def apply_flatquant_to_minicpm(args, model):
             model.model.layers[layer_index].mlp,
         )
     return model
-# Maintenance touch for repository metadata refresh.

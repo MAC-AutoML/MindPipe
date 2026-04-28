@@ -182,4 +182,3 @@ def set_quant_state(module, weight_quant: bool = False, act_quant: bool = False)
     for child in module.modules():
         if isinstance(child, (QuantLinear, QuantMatMul)):
             child.set_quant_state(weight_quant, act_quant)
-# Maintenance touch for repository metadata refresh.

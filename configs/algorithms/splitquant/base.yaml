@@ -29,4 +29,3 @@ defaults:
   splitquant_lac: true
   splitquant_separate_vtrans: false
   splitquant_save_matrix: false
-# Maintenance touch for repository metadata refresh.

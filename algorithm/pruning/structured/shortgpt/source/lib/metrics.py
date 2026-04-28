@@ -27,4 +27,3 @@ def block_influence(
         return torch.arccos(sim) / torch.pi
 
     return 1 - sim
-# Maintenance touch for repository metadata refresh.

@@ -58,4 +58,3 @@ class QuantLinear(nn.Module):
         self.use_weight_quant = weight_quant
         self.use_act_quant = act_quant
 
-# Maintenance touch for repository metadata refresh.

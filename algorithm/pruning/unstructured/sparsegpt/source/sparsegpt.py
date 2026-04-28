@@ -152,4 +152,3 @@ class SparseGPT:
             self.out1 = None
         self.H = None
         empty_cache(self.dev)
-# Maintenance touch for repository metadata refresh.

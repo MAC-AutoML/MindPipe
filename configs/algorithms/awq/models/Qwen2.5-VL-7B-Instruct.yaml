@@ -30,4 +30,3 @@ recipes:
     max_eval_chunks: 4
     eval_zero_shot: false
     eval_vlm: false
-# Maintenance touch for repository metadata refresh.

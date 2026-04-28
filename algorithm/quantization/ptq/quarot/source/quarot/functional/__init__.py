@@ -3,4 +3,3 @@ from .hadamard import (
     matmul_hadU_cuda, 
     random_hadamard_matrix, 
     apply_exact_had_to_linear)
-# Maintenance touch for repository metadata refresh.

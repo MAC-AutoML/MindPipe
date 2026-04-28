@@ -26,4 +26,3 @@ def auto_parallel(args):
     )
     print("CUDA_VISIBLE_DEVICES: ", os.environ["CUDA_VISIBLE_DEVICES"])
     return cuda_visible_devices
-# Maintenance touch for repository metadata refresh.

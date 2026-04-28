@@ -43,4 +43,3 @@ class QuantMatMul(nn.Module):
     def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         return self.matmul_func(x1, x2)
 
-# Maintenance touch for repository metadata refresh.

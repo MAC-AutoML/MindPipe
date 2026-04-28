@@ -102,4 +102,3 @@ class ShortGPTMethod(BasePruningMethod):
             "layer_importances": importances,
             "pseudo_pruning": True,
         }
-# Maintenance touch for repository metadata refresh.

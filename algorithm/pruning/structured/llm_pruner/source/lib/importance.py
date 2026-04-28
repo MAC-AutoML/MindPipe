@@ -173,4 +173,3 @@ class TaylorImportance:
         down_imp = self._compute_salience(down_proj).abs().sum(dim=0)  # [intermediate_size]
 
         return up_imp + gate_imp + down_imp  # [intermediate_size]
-# Maintenance touch for repository metadata refresh.

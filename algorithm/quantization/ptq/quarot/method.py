@@ -1203,4 +1203,3 @@ class QuaRotMethod(BaseQuantizationMethod):
             "quantized_linear_count": len(quantizer_artifacts),
             "quantized_linear_layers": quantizer_artifacts,
         }
-# Maintenance touch for repository metadata refresh.

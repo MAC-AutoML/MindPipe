@@ -53,4 +53,3 @@ def compute_layer_importances(
         del outputs, hidden_states
 
     return importances
-# Maintenance touch for repository metadata refresh.

@@ -103,4 +103,3 @@ def smooth_lm(model, scales, alpha=0.5):
         fcs = [layer.mlp.gate_proj, layer.mlp.up_proj]
         fcs_input_scales = scales[layer_name + ".mlp.gate_proj"]
         smooth_ln_fcs_llama_like(ffn_ln, fcs, fcs_input_scales, alpha)
-# Maintenance touch for repository metadata refresh.

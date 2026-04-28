@@ -356,4 +356,3 @@ class ALPS_prune:
         self.YtX = None
         self.XtX = None
         empty_cache(self.dev)
-# Maintenance touch for repository metadata refresh.

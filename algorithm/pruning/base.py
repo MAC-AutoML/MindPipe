@@ -27,4 +27,3 @@ class BasePruningMethod(ABC):
         pattern_suffix = f"_{pattern.replace(':', '-')}" if pattern != "unstructured" else ""
         run_spec = f"{self.name}_s{args.sparsity_ratio}{pattern_suffix}_seq{args.sequence_length}"
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
-# Maintenance touch for repository metadata refresh.

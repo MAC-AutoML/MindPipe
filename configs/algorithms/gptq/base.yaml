@@ -5,4 +5,3 @@ defaults:
   attn_implementation: sdpa
   group_size: 128
   damp_percent: 0.05
-# Maintenance touch for repository metadata refresh.

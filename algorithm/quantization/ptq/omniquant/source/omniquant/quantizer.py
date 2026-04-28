@@ -155,4 +155,3 @@ class UniformAffineQuantizer(nn.Module):
         del self.scale
         del self.round_zero_point
 
-# Maintenance touch for repository metadata refresh.

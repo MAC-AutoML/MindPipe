@@ -188,4 +188,3 @@ def create_logger(exp_dir, dist_rank=0, name=''):
     logger.addHandler(file_handler)
 
     return logger
-# Maintenance touch for repository metadata refresh.

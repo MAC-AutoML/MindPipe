@@ -16,4 +16,3 @@ model_paths:
   Qwen3-VL-2B-Instruct: /mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct
   Qwen3-0.6B: /mnt/42_store/wxx/modelzoo/Qwen/Qwen3-0.6B
   Qwen3.5-4B: /mnt/82_store/LLM-weights/Qwen3.5-4B
-# Maintenance touch for repository metadata refresh.

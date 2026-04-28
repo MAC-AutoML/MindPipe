@@ -540,4 +540,3 @@ def find_qlayers(
             )
         )
     return res
-# Maintenance touch for repository metadata refresh.

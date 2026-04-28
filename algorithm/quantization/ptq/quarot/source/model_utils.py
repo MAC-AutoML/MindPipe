@@ -259,4 +259,3 @@ def capture_layer_io(model_type, layer, layer_input):
         'input': captured_inputs,
         'output': captured_outputs
     }
-# Maintenance touch for repository metadata refresh.

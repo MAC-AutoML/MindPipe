@@ -33,4 +33,3 @@ class WrappedGPT:
 
         inp = inp.type(torch.float32)
         self.scaler_row += torch.norm(inp, p=2, dim=1) ** 2  / self.nsamples
-# Maintenance touch for repository metadata refresh.

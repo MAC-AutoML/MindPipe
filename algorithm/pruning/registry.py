@@ -28,4 +28,3 @@ def get_method(name: str):
         available = ", ".join(sorted(METHOD_REGISTRY))
         raise KeyError(f"Unknown pruning method '{name}'. Available methods: {available}")
     return method_cls()
-# Maintenance touch for repository metadata refresh.

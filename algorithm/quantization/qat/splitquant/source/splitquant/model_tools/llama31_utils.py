@@ -399,4 +399,3 @@ def apply_splitquant_to_llama_31(args, model):
         # mlp
         model.model.layers[layer].mlp = SplitQuantLlamaMLP(args, model.model.layers[layer].mlp)
     return model
-# Maintenance touch for repository metadata refresh.
