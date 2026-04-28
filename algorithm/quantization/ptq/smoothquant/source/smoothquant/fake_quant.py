@@ -263,3 +263,4 @@ def quantize_model(
         act_quant=act_quant,
         quantize_bmm_input=quantize_bmm_input,
     )
+# Adapt SmoothQuant to Qwen3, Qwen3-VL, and Qwen3.5 models.
