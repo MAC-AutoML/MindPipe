@@ -149,3 +149,4 @@ def evaluator(model, testenc, dev, args):
     model.config.use_cache = use_cache
     logging.info(f'\n{args.eval_dataset.upper()} PPL: {ppl.item():.3f}')
     return ppl.item()
+# Unify GPU and NPU runtime support.

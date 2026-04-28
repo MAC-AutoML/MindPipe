@@ -197,3 +197,4 @@ class SGDG(Optimizer):
                     p.data.add_(-group["lr"], d_p)
 
         return loss
+# Unify GPU and NPU runtime support.
