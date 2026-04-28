@@ -58,3 +58,4 @@ class WandaMethod(BasePruningMethod):
             "observed_sparsity_ratio": observed_sparsity,
             "structure_pattern": args.structure_pattern,
         }
+# feat: integrate ShortGPT layer pruning and unify calibration data loading.
