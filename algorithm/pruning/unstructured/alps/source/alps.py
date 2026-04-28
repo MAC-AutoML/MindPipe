@@ -356,3 +356,4 @@ class ALPS_prune:
         self.YtX = None
         self.XtX = None
         empty_cache(self.dev)
+# feat: update shared VL text-backbone handling in modeling.py for pruning compatibility.
