@@ -186,3 +186,4 @@ class GPTQ:
         self.Losses = None
         self.Trace = None
         empty_cache(self.dev)
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

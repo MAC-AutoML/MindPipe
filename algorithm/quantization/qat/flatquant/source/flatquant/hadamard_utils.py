@@ -4232,3 +4232,4 @@ def get_had172():
          -1, +1, -1, +1, +1, +1, -1, +1, +1, -1, -1, +1, +1, -1, +1, +1, +1, -1, +1, -1, +1, +1, +1, +1, -1, -1, +1, +1,
          -1, -1, -1, +1, ],
     ])
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

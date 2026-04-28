@@ -172,3 +172,4 @@ def get_global_rank() -> int:
         return int(os.environ["RANK"])
 
     return 0
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

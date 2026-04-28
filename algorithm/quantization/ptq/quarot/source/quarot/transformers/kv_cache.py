@@ -287,3 +287,4 @@ class MultiLayerPagedKVCache4Bit(Cache):
 
     def to_legacy_cache(self):
         return self
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.
