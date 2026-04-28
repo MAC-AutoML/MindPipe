@@ -53,3 +53,4 @@ def compute_layer_importances(
         del outputs, hidden_states
 
     return importances
+# Migrate pruning to device_map loading for future multi-GPU support.

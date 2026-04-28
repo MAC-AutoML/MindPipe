@@ -72,3 +72,4 @@ class WandaSPMethod(BasePruningMethod):
             "calibration_samples": source_args.nsamples,
             "pseudo_pruning": source_args.unstr,
         }
+# Migrate pruning to device_map loading for future multi-GPU support.

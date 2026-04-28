@@ -210,3 +210,4 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
         inps, outs = outs, inps
 
     decoder_config.use_cache = use_cache
+# Migrate pruning to device_map loading for future multi-GPU support.

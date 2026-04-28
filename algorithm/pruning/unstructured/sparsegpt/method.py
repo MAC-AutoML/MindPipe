@@ -136,3 +136,4 @@ class SparseGPTMethod(BasePruningMethod):
             "pruned_linear_count": len(pruned_linear_layers),
             "pruned_linear_layers": pruned_linear_layers,
         }
+# Migrate pruning to device_map loading for future multi-GPU support.

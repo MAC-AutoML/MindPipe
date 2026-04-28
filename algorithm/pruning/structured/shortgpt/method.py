@@ -102,3 +102,4 @@ class ShortGPTMethod(BasePruningMethod):
             "layer_importances": importances,
             "pseudo_pruning": True,
         }
+# Migrate pruning to device_map loading for future multi-GPU support.

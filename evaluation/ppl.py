@@ -91,3 +91,4 @@ def evaluate_perplexity(
         "elapsed_seconds": elapsed_seconds,
         "tokens_per_second": total_tokens / max(elapsed_seconds, 1e-6),
     }
+# Migrate pruning to device_map loading for future multi-GPU support.
