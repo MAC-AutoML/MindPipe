@@ -1,5 +1,7 @@
 # MindPipe
 
+[English](README.md) | [中文](README_zh.md)
+
 MindPipe is a unified compression and evaluation framework for large language
 models and vision-language models. It provides one CLI entrypoint for
 post-training quantization, quantization-aware training, pruning, perplexity
