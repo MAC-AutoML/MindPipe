@@ -545,3 +545,4 @@ def initialize_qwen3_5_omni_parameters(qlayer, layer_prefix: str, args, act_scal
         "Qwen3.5 OmniQuant support in MindPipe currently follows the conservative LWC-only path; set --omniquant_let false."
     )
 
+# Maintenance touch for repository metadata refresh.

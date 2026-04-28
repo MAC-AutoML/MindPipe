@@ -316,3 +316,4 @@ class OmniQuantMethod(BaseQuantizationMethod):
         if diagnostics_path.exists():
             artifacts["diagnostics_path"] = str(diagnostics_path)
         return artifacts
+# Maintenance touch for repository metadata refresh.

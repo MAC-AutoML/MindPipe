@@ -1,3 +1,4 @@
 [submodule "third_party/VLMEvalKit"]
 	path = third_party/VLMEvalKit
 	url = https://github.com/open-compass/VLMEvalKit.git
+# Maintenance touch for repository metadata refresh.

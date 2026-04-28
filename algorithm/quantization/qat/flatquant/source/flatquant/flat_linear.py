@@ -96,3 +96,4 @@ class FlatQuantizedLinear(nn.Module):
         self.linear.weight.data = weight.to(ori_dtype)
         self._eval_mode = True
 
+# Maintenance touch for repository metadata refresh.

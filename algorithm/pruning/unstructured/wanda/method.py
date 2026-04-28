@@ -58,3 +58,4 @@ class WandaMethod(BasePruningMethod):
             "observed_sparsity_ratio": observed_sparsity,
             "structure_pattern": args.structure_pattern,
         }
+# Maintenance touch for repository metadata refresh.

@@ -323,3 +323,4 @@ def sync_config(backbone):
         decoder_config.num_key_value_groups = kv_group_counts[0]
     if len(set(intermediate_sizes)) == 1:
         decoder_config.intermediate_size = intermediate_sizes[0]
+# Maintenance touch for repository metadata refresh.

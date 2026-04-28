@@ -674,3 +674,4 @@ def apply_flatquant_to_qwen3_5(args, model):
             decoder_root.layers[layer_index],
         )
     return model
+# Maintenance touch for repository metadata refresh.

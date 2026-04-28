@@ -103,3 +103,4 @@ def prepare_model(args, model):
                 )
 
     return model
+# Maintenance touch for repository metadata refresh.

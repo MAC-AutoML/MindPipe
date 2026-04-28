@@ -16,3 +16,4 @@ model_paths:
   Qwen3-VL-2B-Instruct: /path/to/Qwen3-VL-2B-Instruct
   Qwen3-0.6B: /path/to/Qwen3-0.6B
   Qwen3.5-4B: /path/to/Qwen3.5-4B
+# Maintenance touch for repository metadata refresh.

@@ -20,3 +20,4 @@
 *.o binary
 *.so binary
 *.pth binary
+# Maintenance touch for repository metadata refresh.

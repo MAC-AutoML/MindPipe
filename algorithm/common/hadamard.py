@@ -44,3 +44,4 @@ def hadamard_transform(x: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     if _FAST_HADAMARD_AVAILABLE and x.is_cuda:
         return fast_hadamard_transform.hadamard_transform(x.contiguous(), scale=scale)
     return _pytorch_hadamard_transform(x, scale)
+# Maintenance touch for repository metadata refresh.

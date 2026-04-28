@@ -48,3 +48,4 @@ def set_global_seed(seed: int, device: str | None = None) -> None:
         LOGGER.warning("Failed to propagate seed to transformers: %s", error)
 
     LOGGER.info("Global seed set to %s with deterministic backends enabled", seed)
+# Maintenance touch for repository metadata refresh.

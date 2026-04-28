@@ -54,3 +54,4 @@ class QuantizeLinear(nn.Linear):
             weight = self.quantizer.quantize(weight).to(dtype)
 
         return nn.functional.linear(input, weight, self.bias)
+# Maintenance touch for repository metadata refresh.

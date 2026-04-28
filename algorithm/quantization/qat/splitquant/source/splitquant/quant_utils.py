@@ -283,3 +283,4 @@ def set_act_quantizer_state(model, enable=True):
         if isinstance(m, ActivationQuantizer):
             m.enable = enable
     return model
+# Maintenance touch for repository metadata refresh.

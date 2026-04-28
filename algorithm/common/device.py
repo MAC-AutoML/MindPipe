@@ -202,3 +202,4 @@ def distributed_backend(device: str | torch.device | None = None) -> str:
     if device_type == "cuda":
         return "nccl"
     return "gloo"
+# Maintenance touch for repository metadata refresh.

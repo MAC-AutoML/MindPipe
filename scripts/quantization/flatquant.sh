@@ -69,3 +69,4 @@ printf ' %q' env CUDA_VISIBLE_DEVICES="$GPU_ID" "${CMD[@]}"
 printf '\n'
 
 exec env CUDA_VISIBLE_DEVICES="$GPU_ID" "${CMD[@]}"
+# Maintenance touch for repository metadata refresh.

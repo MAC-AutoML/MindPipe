@@ -8,3 +8,4 @@ defaults:
   value_bits: 16
   smoothquant_alpha: 0.85
   smoothquant_save_act_scales: true
+# Maintenance touch for repository metadata refresh.
