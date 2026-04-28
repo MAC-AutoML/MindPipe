@@ -308,6 +308,36 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
     empty_cache(device)
 
 
+def _sync_decoder_config(layers, decoder_config):
+    """真剪枝后同步全局配置（仅在所有层维度一致时生效）。
+
+    注意：如果各层维度不一致，此函数不会更新 config，此时应使用
+    torch.save 保存模型而非 save_pretrained。
+    """
+    head_counts = []
+    kv_head_counts = []
+    kv_group_counts = []
+    intermediate_sizes = []
+    for layer in layers:
+        if supports_head_pruning(layer):
+            geo = get_attention_head_geometry(layer)
+            if geo is not None:
+                num_heads, num_kv_heads, num_kv_groups, _ = geo
+                head_counts.append(num_heads)
+                kv_head_counts.append(num_kv_heads)
+                kv_group_counts.append(num_kv_groups)
+        intermediate_sizes.append(int(layer.mlp.intermediate_size))
+
+    if head_counts and len(set(head_counts)) == 1:
+        decoder_config.num_attention_heads = head_counts[0]
+    if kv_head_counts and len(set(kv_head_counts)) == 1:
+        decoder_config.num_key_value_heads = kv_head_counts[0]
+    if kv_group_counts and hasattr(decoder_config, "num_key_value_groups") and len(set(kv_group_counts)) == 1:
+        decoder_config.num_key_value_groups = kv_group_counts[0]
+    if intermediate_sizes and len(set(intermediate_sizes)) == 1:
+        decoder_config.intermediate_size = intermediate_sizes[0]
+
+
 def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
     decoder_config = get_decoder_root(model).config
     use_cache = decoder_config.use_cache
@@ -364,5 +394,9 @@ def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
             with torch.no_grad():
                 outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
         inps, outs = outs, inps
+
+    # 真剪枝后同步全局配置，确保 save_pretrained 能正确保存
+    if not args.unstr:
+        _sync_decoder_config(layers, decoder_config)
 
     decoder_config.use_cache = use_cache
