@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN_DEFAULT="$(command -v python || true)"
 if [[ -z "$PYTHON_BIN_DEFAULT" && -n "${CONDA_PREFIX:-}" ]]; then
   PYTHON_BIN_DEFAULT="$CONDA_PREFIX/bin/python"
 fi
 PYTHON_BIN="${PYTHON_BIN:-${PYTHON_BIN_DEFAULT:-python}}"
 # shellcheck source=./_npu_device_utils.sh
-source "$REPO_ROOT/scripts/quantization/_npu_device_utils.sh"
+source "$REPO_ROOT/scripts/_npu_device_utils.sh"
 
 # Shared experiment defaults
 OUTPUT_ROOT_DEFAULT="$REPO_ROOT/my_results/workflow/npu"
 DATA_PATH_DEFAULT="$REPO_ROOT/data"
 SEQUENCE_LENGTH_DEFAULT=512
 DTYPE="${DTYPE:-float16}"
+DEVICE_MAP="${DEVICE_MAP:-auto}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 SEED="${SEED:-42}"
 DATA_PATH="${DATA_PATH:-$DATA_PATH_DEFAULT}"
@@ -62,6 +63,21 @@ FLAP_METRICS="${FLAP_METRICS:-WIFV}"
 FLAP_REMOVE_HEADS="${FLAP_REMOVE_HEADS:-8}"
 PSEUDO_PRUNING="${PSEUDO_PRUNING:-true}"
 
+
+pick_first_existing_path() {
+  local fallback_path="$1"
+  shift
+  local candidate
+  for candidate in "$fallback_path" "$@"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s' "$fallback_path"
+}
+
+
 # Experiment matrix
 MODELS=(
   "/home/ma-user/work/modelzoo/Qwen/Qwen2.5-7B-Instruct"
@@ -69,6 +85,14 @@ MODELS=(
   "/home/ma-user/work/modelzoo/Meta/Meta-Llama-3.1-8B-Instruct"
   "/home/ma-user/work/modelzoo/Qwen/Qwen2.5-VL-7B-Instruct"
   "/home/ma-user/work/modelzoo/openbmb/MiniCPM-V"
+  "$(pick_first_existing_path \
+    "/home/ma-user/work/modelzoo/Qwen/Qwen3-VL-2B-Instruct" \
+    "/home/ma-user/work/modelzoo/Qwen/Qwen3-VL-2B")"
+  "$(pick_first_existing_path \
+    "/home/ma-user/work/modelzoo/Qwen/Qwen3-0.6B")"
+  "$(pick_first_existing_path \
+    "/home/ma-user/work/modelzoo/Qwen/Qwen3.5-4B" \
+    "/home/ma-user/work/modelzoo/Qwen/Qwen3_5-4B")"
 )
 FLATQUANT_CONFIGS=(
   "4 16 16 4 4 w4a16"
@@ -597,6 +621,7 @@ run_experiment() {
     "$PYTHON_BIN" "$REPO_ROOT/main.py"
     --model_path "$model_path"
     --device "$runtime_device"
+    --device_map "$DEVICE_MAP"
     --dtype "$DTYPE"
     --log_level "$LOG_LEVEL"
     --attn_implementation "$ATTN_IMPLEMENTATION"

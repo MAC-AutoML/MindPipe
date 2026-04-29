@@ -3,7 +3,7 @@ export HF_DATASETS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Shared experiment defaults con
 OUTPUT_ROOT_DEFAULT="$REPO_ROOT/task_results/quantization"
@@ -15,6 +15,7 @@ BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_EVAL_CHUNKS="${MAX_EVAL_CHUNKS:-64}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 DTYPE="${DTYPE:-float16}"
+DEVICE_MAP="${DEVICE_MAP:-auto}"
 SEED="${SEED:-42}"
 
 # Shared evaluation defaults
@@ -61,18 +62,57 @@ WANDA_CALIBRATION_DATASET="${WANDA_CALIBRATION_DATASET:-c4}"
 WANDA_CALIBRATION_SAMPLES="${WANDA_CALIBRATION_SAMPLES:-128}"
 WANDA_STRUCTURE_PATTERN="${WANDA_STRUCTURE_PATTERN:-unstructured}"
 
+
+pick_first_existing_path() {
+  local fallback_path="$1"
+  shift
+  local candidate
+  for candidate in "$fallback_path" "$@"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s' "$fallback_path"
+}
+
+
 # Experiment matrix
 MODELS=(
-  "/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct"
-  "/mnt/82_store/LLM-weights/Llama-2-7b-hf"
-  "/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct"
-  "/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
-  "/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
+  #"/mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct"
+  #"/mnt/82_store/LLM-weights/Llama-2-7b-hf"
+  #"/mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct"
+  #"/mnt/82_store/LLM-weights/Qwen2.5-VL-7B-Instruct"
+  #"/mnt/82_store/LLM-weights/openbmb/MiniCPM-V"
+  "$(pick_first_existing_path \
+    "/mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct" \
+    "/mnt/82_store/LLM-weights/Qwen3-VL-2B" \
+    "/mnt/82_store/LLM-weights/Qwen/Qwen3-VL-2B-Instruct" \
+    "/mnt/82_store/LLM-weights/Qwen/Qwen3-VL-2B" \
+    "/mnt/82_store/zy/model/Qwen3-VL-2B-Instruct" \
+    "/mnt/82_store/zy/model/Qwen3-VL-2B" \
+    "/mnt/82_store/huggingface/datasets/Qwen/Qwen3-VL-2B-Instruct" \
+    "/mnt/82_store/huggingface/datasets/Qwen/Qwen3-VL-2B")"
+  "$(pick_first_existing_path \
+    "/mnt/42_store/wxx/modelzoo/Qwen/Qwen3-0.6B" \
+    "/mnt/82_store/LLM-weights/Qwen3-0.6B" \
+    "/mnt/82_store/LLM-weights/Qwen/Qwen3-0.6B" \
+    "/mnt/82_store/zy/model/Qwen3-0.6B" \
+    "/mnt/82_store/huggingface/datasets/Qwen/Qwen3-0.6B")"
+  "$(pick_first_existing_path \
+    "/mnt/82_store/LLM-weights/Qwen3.5-4B" \
+    "/mnt/82_store/LLM-weights/Qwen/Qwen3.5-4B" \
+    "/mnt/82_store/LLM-weights/Qwen3_5-4B" \
+    "/mnt/82_store/LLM-weights/Qwen/Qwen3_5-4B" \
+    "/mnt/82_store/zy/model/Qwen3.5-4B" \
+    "/mnt/82_store/zy/model/Qwen3_5-4B" \
+    "/mnt/82_store/huggingface/datasets/Qwen/Qwen3.5-4B" \
+    "/mnt/82_store/huggingface/datasets/Qwen/Qwen3_5-4B")"
 )
 FLATQUANT_CONFIGS=(
-  "4 16 16 4 4 w4a16"
-  "4 4 16 4 4 w4a4"
-  "8 8 16 4 4 w8a8"
+  "4 16 16 16 16 w4a16"
+  "4 4 16 16 16 w4a4"
+  "8 8 16 16 16 w8a8"
 )
 
 FLAP_SPARSITIES=(0.2)
@@ -85,8 +125,8 @@ ENABLE_SPARSEGPT="${ENABLE_SPARSEGPT:-true}"
 ENABLE_WANDA="${ENABLE_WANDA:-true}"
 
 FLAP_GPUS="${FLAP_GPUS:-2}"
-SPARSEGPT_GPUS="${SPARSEGPT_GPUS:-3,7}"
-WANDA_GPUS="${WANDA_GPUS:-6,7}"
+SPARSEGPT_GPUS="${SPARSEGPT_GPUS:-3,5}"
+WANDA_GPUS="${WANDA_GPUS:-3,7}"
 
 # Execution control
 FORCE_RERUN="${FORCE_RERUN:-false}"
@@ -350,6 +390,7 @@ run_experiment() {
     --execution_order quantization_then_pruning
     --model_path "$model_path"
     --device "$runtime_device"
+    --device_map "$DEVICE_MAP"
     --dtype "$DTYPE"
     --attn_implementation "$ATTN_IMPLEMENTATION"
     --data_path "$DATA_PATH"
