@@ -6,6 +6,7 @@ import torch.nn as nn
 import logging
 from algorithm.common.device import empty_cache
 from algorithm.common.device import synchronize
+from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import move_tensors_to_device
 from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
 
@@ -22,6 +23,18 @@ def _build_calibration_forward_kwargs(model, sample):
     if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
         return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
     return {}
+
+
+def _resolve_calibration_input_device(model):
+    try:
+        backbone = get_text_backbone(model)
+        embed_tokens = backbone.embed_tokens
+        if embed_tokens is not None:
+            for tensor in tuple(embed_tokens.parameters()) + tuple(embed_tokens.buffers()):
+                return tensor.device
+    except Exception:
+        pass
+    return next(model.parameters()).device
 
 
 def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs):
@@ -263,8 +276,8 @@ def gptq_fwrd(model, dataloader, dev, args):
     # device_map 模式下不手动移动 front modules 和 layer[0]，由 dispatch_model 管理
 
     dtype = next(iter(model.parameters())).dtype
-    # device_map 模式下，输入数据放到 layer[0] 所在设备
     layer0_device = next(layers[0].parameters()).device
+    capture_device = _resolve_calibration_input_device(model)
     inps = torch.zeros(
         (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=layer0_device
     )
@@ -289,7 +302,7 @@ def gptq_fwrd(model, dataloader, dev, args):
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            sample = batch[0].to(layer0_device)
+            sample = batch[0].to(capture_device)
             model(sample, **_build_calibration_forward_kwargs(model, sample))
         except ValueError:
             pass
