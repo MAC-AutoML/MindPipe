@@ -244,12 +244,16 @@ class FlatQuantMethod(BaseQuantizationMethod):
                     f"FlatQuant does not support model_type={model_type!r} in the unified launcher yet."
                 )
 
+            original_layer_devices = [next(layer.parameters()).device for layer in flatquant_layers(model)]
             model = apply_wrapper(source_args, model)
             LOGGER.info("Applied FlatQuant wrappers to model")
 
-            # 将 wrapper 新建的参数移到每层实际设备（覆盖 resume/reload/cali 全路径）
-            for layer in flatquant_layers(model):
-                layer.to(next(layer.parameters()).device)
+            # 将 wrapper 新建的参数移回包裹前所在设备，避免默认初始化落到 CPU。
+            restored_layer_devices = []
+            for layer, original_device in zip(flatquant_layers(model), original_layer_devices):
+                layer.to(original_device)
+                restored_layer_devices.append(next(layer.parameters()).device)
+            LOGGER.info("Restored FlatQuant layer devices after wrapping: %s", restored_layer_devices)
 
             if source_args.resume:
                 load_flat_parameters(source_args, model, path=args.flatquant_resume_from)
