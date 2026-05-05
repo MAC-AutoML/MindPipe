@@ -2,8 +2,9 @@ schema: mindpipe/config/v1
 
 defaults:
   device: cuda:0
+  device_map: auto
   data_path: /mnt/42_store/lcw/data2/Huawei/datasets
-  output_dir: /mnt/82_store/wxx/HWQuant/Mindpipe/results
+  output_dir: /mnt/82_store/wxx/HWQuant/Mindpipe/results/gpu
   hf_token: null
   vlm_eval_kit_root: /mnt/42_store/wxx/HWQuant/MindPipe/third_party/VLMEvalKit
 

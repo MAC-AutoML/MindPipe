@@ -16,6 +16,23 @@ def _forward_for_ppl(model, batch: torch.Tensor):
     return outputs.logits
 
 
+def _input_embedding_device(model, fallback_device):
+    if hasattr(model, "get_input_embeddings"):
+        embeddings = model.get_input_embeddings()
+        if embeddings is not None:
+            weight = getattr(embeddings, "weight", None)
+            if weight is not None:
+                return weight.device
+            try:
+                return next(embeddings.parameters()).device
+            except StopIteration:
+                pass
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return fallback_device
+
+
 @torch.inference_mode()
 def evaluate_perplexity(
     model,
@@ -52,8 +69,8 @@ def evaluate_perplexity(
     if not getattr(model, "hf_device_map", None):
         model.to(resolved_device)
 
-    # input_ids 放到 embedding 所在的设备
-    input_device = next(model.parameters()).device
+    # input_ids 必须和 input embedding 在同一设备上。
+    input_device = _input_embedding_device(model, resolved_device)
 
     total_nll = 0.0
     total_tokens = 0

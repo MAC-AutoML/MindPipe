@@ -2,6 +2,7 @@ schema: mindpipe/config/v1
 
 defaults:
   device: npu:0
+  device_map: auto
   data_path: /home/ma-user/work/data
   output_dir: ${REPO_ROOT}/my_results/quantization/npu
   hf_token: null
