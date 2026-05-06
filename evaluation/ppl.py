@@ -16,6 +16,33 @@ def _forward_for_ppl(model, batch: torch.Tensor):
     return outputs.logits
 
 
+def _first_tensor_device(module) -> torch.device | None:
+    for tensor in module.parameters(recurse=True):
+        if tensor.device.type != "meta":
+            return tensor.device
+    for tensor in module.buffers(recurse=True):
+        if tensor.device.type != "meta":
+            return tensor.device
+    return None
+
+
+def _resolve_input_device(model, fallback_device: torch.device) -> torch.device:
+    if not getattr(model, "hf_device_map", None):
+        return fallback_device
+
+    if hasattr(model, "get_input_embeddings"):
+        embeddings = model.get_input_embeddings()
+        if embeddings is not None:
+            device = _first_tensor_device(embeddings)
+            if device is not None and device.type != "cpu":
+                return device
+
+    device = _first_tensor_device(model)
+    if device is not None:
+        return device
+    return fallback_device
+
+
 @torch.inference_mode()
 def evaluate_perplexity(
     model,
@@ -46,8 +73,10 @@ def evaluate_perplexity(
     elif torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    model.to(resolved_device)
     model.eval()
+    if not getattr(model, "hf_device_map", None):
+        model.to(resolved_device)
+    input_device = _resolve_input_device(model, resolved_device)
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
 
@@ -60,13 +89,13 @@ def evaluate_perplexity(
         batch = token_ids[
             :,
             chunk_start * sequence_length : chunk_end * sequence_length,
-        ].to(resolved_device)
+        ].to(input_device)
         batch = batch.reshape(chunk_end - chunk_start, sequence_length)
         logits = _forward_for_ppl(model, batch)
         logits = torch.nan_to_num(logits.float(), nan=0.0, posinf=1e4, neginf=-1e4)
         logits = torch.clamp(logits, min=-1e4, max=1e4)
         shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = batch[:, 1:].contiguous()
+        shift_labels = batch[:, 1:].to(shift_logits.device).contiguous()
         valid_tokens = (sequence_length - 1) * (chunk_end - chunk_start)
         total_nll += float(
             loss_function(

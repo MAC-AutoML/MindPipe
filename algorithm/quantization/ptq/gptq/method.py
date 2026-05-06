@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ....common.device import empty_cache
 from ....common.device import resolve_device
@@ -23,6 +24,96 @@ from ...base import BaseQuantizationMethod
 
 
 logger = logging.getLogger(__name__)
+
+
+def _linear_from_weight_view(weight: torch.Tensor) -> nn.Linear:
+    linear = nn.Linear(weight.shape[1], weight.shape[0], bias=False, device="meta")
+    linear.weight = nn.Parameter(weight.detach(), requires_grad=False)
+    return linear
+
+
+def _first_tensor_device(module: nn.Module) -> torch.device | None:
+    for tensor in module.parameters(recurse=True):
+        if tensor.device.type != "meta":
+            return tensor.device
+    for tensor in module.buffers(recurse=True):
+        if tensor.device.type != "meta":
+            return tensor.device
+    return None
+
+
+def _move_tensor_tree(value: Any, device: torch.device) -> Any:
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, tuple):
+        return tuple(_move_tensor_tree(item, device) for item in value)
+    if isinstance(value, list):
+        return [_move_tensor_tree(item, device) for item in value]
+    if isinstance(value, dict):
+        return {key: _move_tensor_tree(item, device) for key, item in value.items()}
+    return value
+
+
+class _LinearizedPackedMoeExperts(nn.Module):
+    """Expose packed 3D MoE expert weights as per-expert Linear modules for GPTQ hooks."""
+
+    def __init__(self, packed_experts: nn.Module):
+        super().__init__()
+        object.__setattr__(self, "_original_experts", packed_experts)
+        gate_up = packed_experts.gate_up_proj
+        down = packed_experts.down_proj
+        self.num_experts = int(gate_up.shape[0])
+        self.hidden_dim = int(gate_up.shape[2])
+        self.intermediate_dim = int(down.shape[2])
+        self.act_fn = packed_experts.act_fn
+        self.gate_up_projs = nn.ModuleList(
+            [_linear_from_weight_view(gate_up[index]) for index in range(self.num_experts)]
+        )
+        self.down_projs = nn.ModuleList(
+            [_linear_from_weight_view(down[index]) for index in range(self.num_experts)]
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        final_hidden_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            expert_mask = F.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        for expert_idx_tensor in expert_hit:
+            expert_idx = int(expert_idx_tensor[0].item())
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            gate, up = self.gate_up_projs[expert_idx](current_state).chunk(2, dim=-1)
+            current_hidden_states = self.act_fn(gate) * up
+            current_hidden_states = self.down_projs[expert_idx](current_hidden_states)
+            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+        return final_hidden_states
+
+    @torch.no_grad()
+    def restore_packed_experts(self) -> nn.Module:
+        original = self._original_experts
+        for index in range(self.num_experts):
+            original.gate_up_proj.data[index].copy_(
+                self.gate_up_projs[index].weight.data.to(
+                    device=original.gate_up_proj.device,
+                    dtype=original.gate_up_proj.dtype,
+                )
+            )
+            original.down_proj.data[index].copy_(
+                self.down_projs[index].weight.data.to(
+                    device=original.down_proj.device,
+                    dtype=original.down_proj.dtype,
+                )
+            )
+        return original
 
 
 class GPTQMethod(BaseQuantizationMethod):
@@ -132,6 +223,50 @@ class GPTQMethod(BaseQuantizationMethod):
         )
         return gptq_state
 
+    @staticmethod
+    def _is_packed_moe_experts(module: nn.Module) -> bool:
+        gate_up = getattr(module, "gate_up_proj", None)
+        down = getattr(module, "down_proj", None)
+        return (
+            isinstance(gate_up, nn.Parameter)
+            and isinstance(down, nn.Parameter)
+            and gate_up.ndim == 3
+            and down.ndim == 3
+            and hasattr(module, "act_fn")
+        )
+
+    def _linearize_packed_moe_experts(self, module: nn.Module) -> int:
+        converted = 0
+        for child_name, child in list(module.named_children()):
+            if isinstance(child, _LinearizedPackedMoeExperts):
+                continue
+            if self._is_packed_moe_experts(child):
+                setattr(module, child_name, _LinearizedPackedMoeExperts(child))
+                converted += 1
+                continue
+            converted += self._linearize_packed_moe_experts(child)
+        return converted
+
+    def _restore_linearized_packed_moe_experts(self, module: nn.Module) -> int:
+        restored = 0
+        for child_name, child in list(module.named_children()):
+            if isinstance(child, _LinearizedPackedMoeExperts):
+                setattr(module, child_name, child.restore_packed_experts())
+                restored += 1
+                continue
+            restored += self._restore_linearized_packed_moe_experts(child)
+        return restored
+
+    @staticmethod
+    def _apply_rtn_fallback(gptq_state) -> None:
+        weight = gptq_state.layer.weight.data.float()
+        if not gptq_state.quantizer.ready():
+            gptq_state.quantizer.find_params(weight, weight=True)
+        quantized = gptq_state.quantizer.quantize(weight)
+        gptq_state.layer.weight.data = quantized.reshape(gptq_state.layer.weight.shape).to(
+            gptq_state.layer.weight.data.dtype
+        )
+
     def _finalize_group_quantization(
         self,
         *,
@@ -141,40 +276,48 @@ class GPTQMethod(BaseQuantizationMethod):
         args,
     ) -> None:
         for name, gptq_state in gptq_states.items():
-            # Stabilize Hessian before factorization. Multimodal branches are even more likely
-            # to produce NaN/Inf or slightly asymmetric statistics.
-            gptq_state.H = torch.nan_to_num(gptq_state.H, nan=0.0, posinf=0.0, neginf=0.0)
-            gptq_state.H = 0.5 * (gptq_state.H + gptq_state.H.T)
+            nsamples = int(getattr(gptq_state, "nsamples", 0))
+            used_rtn_fallback = False
+            if nsamples == 0:
+                self._apply_rtn_fallback(gptq_state)
+                used_rtn_fallback = True
+                quantized = True
+                last_error = None
+            else:
+                # Stabilize Hessian before factorization. Multimodal branches are even more likely
+                # to produce NaN/Inf or slightly asymmetric statistics.
+                gptq_state.H = torch.nan_to_num(gptq_state.H, nan=0.0, posinf=0.0, neginf=0.0)
+                gptq_state.H = 0.5 * (gptq_state.H + gptq_state.H.T)
 
-            damp_schedule = []
-            for damp in (args.damp_percent, 0.05, 0.1, 0.25, 0.5, 1.0):
-                if damp not in damp_schedule:
-                    damp_schedule.append(damp)
-            actorder_schedule = [args.use_activation_order]
-            if args.use_activation_order:
-                actorder_schedule.append(False)
+                damp_schedule = []
+                for damp in (args.damp_percent, 0.05, 0.1, 0.25, 0.5, 1.0):
+                    if damp not in damp_schedule:
+                        damp_schedule.append(damp)
+                actorder_schedule = [args.use_activation_order]
+                if args.use_activation_order:
+                    actorder_schedule.append(False)
 
-            last_error = None
-            quantized = False
-            for actorder in actorder_schedule:
-                for damp in damp_schedule:
-                    try:
-                        gptq_state.fasterquant(
-                            blocksize=self.quantization_block_size,
-                            percdamp=damp,
-                            groupsize=args.weight_group_size,
-                            actorder=actorder,
-                            static_groups=args.static_groups,
-                        )
-                        quantized = True
-                        last_error = None
+                last_error = None
+                quantized = False
+                for actorder in actorder_schedule:
+                    for damp in damp_schedule:
+                        try:
+                            gptq_state.fasterquant(
+                                blocksize=self.quantization_block_size,
+                                percdamp=damp,
+                                groupsize=args.weight_group_size,
+                                actorder=actorder,
+                                static_groups=args.static_groups,
+                            )
+                            quantized = True
+                            last_error = None
+                            break
+                        except RuntimeError as error:
+                            last_error = error
+                            if "not positive-definite" not in str(error):
+                                raise
+                    if quantized:
                         break
-                    except RuntimeError as error:
-                        last_error = error
-                        if "not positive-definite" not in str(error):
-                            raise
-                if quantized:
-                    break
 
             if not quantized and last_error is not None:
                 raise last_error
@@ -183,6 +326,8 @@ class GPTQMethod(BaseQuantizationMethod):
                 "bits": args.weight_bits,
                 "group_size": args.weight_group_size,
                 "symmetric": args.weight_symmetric,
+                "calibration_samples": nsamples,
+                "rtn_fallback": used_rtn_fallback,
             }
             gptq_state.free()
 
@@ -213,9 +358,32 @@ class GPTQMethod(BaseQuantizationMethod):
         )
         output_states = torch.zeros_like(input_states)
         quantizer_artifacts = {}
+        max_layers = getattr(args, "gptq_max_layers", None)
+        max_layers = None if max_layers is None else max(0, int(max_layers))
+        default_quant_device = resolve_device(args.device)
+        sharded_model = bool(getattr(model, "hf_device_map", None))
 
         for layer_index, block in enumerate(backbone.layers):
-            block = block.to(args.device)
+            if max_layers is not None and layer_index >= max_layers:
+                logger.info("Stopping GPTQ after %d decoder layer(s) due to --gptq_max_layers.", max_layers)
+                break
+            restore_device = _first_tensor_device(block) if sharded_model else torch.device("cpu")
+            if sharded_model and restore_device is not None and restore_device.type != "cpu":
+                quant_device = restore_device
+            else:
+                quant_device = default_quant_device
+            input_states = input_states.to(quant_device)
+            output_states = output_states.to(quant_device)
+            layer_kwargs = _move_tensor_tree(layer_kwargs, quant_device)
+            block = block.to(quant_device)
+            converted_experts = self._linearize_packed_moe_experts(block)
+            if converted_experts:
+                logger.info(
+                    "Linearized %d packed MoE expert module(s) in %s.layers.%d for GPTQ.",
+                    converted_experts,
+                    backbone.prefix,
+                    layer_index,
+                )
             linear_layers = find_linear_layers(block)
             layer_groups = build_decoder_layer_groups(block, set(linear_layers))
 
@@ -251,7 +419,7 @@ class GPTQMethod(BaseQuantizationMethod):
                     args=args,
                 )
                 del gptq_states
-                empty_cache(args.device)
+                empty_cache(quant_device)
 
             for sample_index in range(args.calibration_samples):
                 with torch.no_grad():
@@ -259,9 +427,18 @@ class GPTQMethod(BaseQuantizationMethod):
                         block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
                     )
 
-            backbone.layers[layer_index] = block.cpu()
+            restored_experts = self._restore_linearized_packed_moe_experts(block)
+            if restored_experts:
+                logger.info(
+                    "Restored %d quantized packed MoE expert module(s) in %s.layers.%d.",
+                    restored_experts,
+                    backbone.prefix,
+                    layer_index,
+                )
+            target_device = restore_device if restore_device is not None else torch.device("cpu")
+            backbone.layers[layer_index] = block.to(target_device)
             del block
-            empty_cache(args.device)
+            empty_cache(quant_device)
             input_states, output_states = output_states, input_states
 
         return {

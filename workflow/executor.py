@@ -81,7 +81,32 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
 
     dtype = config.common_args.get("dtype", "auto")
     attn_implementation = config.common_args.get("attn_implementation")
-    model, tokenizer_bundle = load_model_and_tokenizer(config.model_path,dtype=dtype,attn_implementation=attn_implementation,)
+    device_map = common_args.get("device_map")
+    uses_device_map = device_map is not None and str(device_map).strip().lower() not in {"", "none", "null", "false"}
+    device_map_text_gptq = (
+        len(config.stages) == 1
+        and config.stages[0].stage_type == "quantization"
+        and config.stages[0].algorithm_name == "gptq"
+        and common_args.get("gptq_vlm_dataset_name") is None
+        and common_args.get("mquant_dataset_name") is None
+    )
+    if uses_device_map and config.stages and not device_map_text_gptq:
+        raise ValueError(
+            "--device_map multi-device loading is currently supported for evaluation-only runs; "
+            "quantization and pruning stages still assume a single resident device except "
+            "GPTQ text-only quantization."
+        )
+
+    model, tokenizer_bundle = load_model_and_tokenizer(
+        config.model_path,
+        dtype=dtype,
+        attn_implementation=attn_implementation,
+        device_map=device_map,
+        max_memory=common_args.get("max_memory"),
+        offload_folder=common_args.get("offload_folder"),
+        offload_state_dict=common_args.get("offload_state_dict"),
+        no_split_module_classes=common_args.get("no_split_module_classes"),
+    )
     sequence_length = int(common_args["sequence_length"])
     model.seqlen = sequence_length
 

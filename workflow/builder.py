@@ -56,6 +56,39 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default="flash_attention_2",
         choices=["flash_attention_2", "sdpa", "eager"],
     )
+    parser.add_argument(
+        "--device_map",
+        default=None,
+        help=(
+            "Optional Hugging Face device_map for multi-device loading, e.g. "
+            "auto, balanced, balanced_low_0, sequential, or a JSON dict."
+        ),
+    )
+    parser.add_argument(
+        "--max_memory",
+        default=None,
+        help=(
+            "Optional max_memory for device_map loading. Accepts JSON or "
+            "comma-separated pairs such as '0:70GiB,1:70GiB,cpu:120GiB'."
+        ),
+    )
+    parser.add_argument(
+        "--offload_folder",
+        default=None,
+        help="Optional disk offload folder used by Hugging Face device_map loading.",
+    )
+    parser.add_argument(
+        "--offload_state_dict",
+        type=_bool_flag,
+        default=None,
+        help="Optional Hugging Face offload_state_dict flag for device_map loading.",
+    )
+    parser.add_argument(
+        "--no_split_module_classes",
+        nargs="+",
+        default=None,
+        help="Optional module class names that device_map should not split.",
+    )
     parser.add_argument("--log_level", default="INFO")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hf_token", default=None)
@@ -484,6 +517,12 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         type=_bool_flag,
         default=None,
         help="GPTQ only: whether to quantize the language decoder branch during multimodal calibration.",
+    )
+    parser.add_argument(
+        "--gptq_max_layers",
+        type=int,
+        default=None,
+        help="GPTQ text-only debug/smoke: quantize at most this many decoder layers.",
     )
     parser.add_argument(
         "--spinquant_vlm_dataset_name",
