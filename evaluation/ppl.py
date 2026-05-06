@@ -11,6 +11,29 @@ from algorithm.common.datasets import get_evaluation_tokens
 from algorithm.common.device import resolve_device
 
 
+def _has_device_map(model) -> bool:
+    for module in (model, getattr(model, "model", None), getattr(model, "language_model", None)):
+        if module is not None and getattr(module, "hf_device_map", None):
+            return True
+    return False
+
+
+def _first_parameter_device(model) -> torch.device | None:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return None
+
+
+def _is_on_resolved_device(model, resolved_device: torch.device) -> bool:
+    current_device = _first_parameter_device(model)
+    if current_device is None or current_device.type != resolved_device.type:
+        return False
+    if current_device.type == "cpu" or resolved_device.index is None:
+        return True
+    return current_device.index == resolved_device.index
+
+
 def _forward_for_ppl(model, batch: torch.Tensor):
     outputs = model(input_ids=batch, use_cache=False)
     return outputs.logits
@@ -66,10 +89,10 @@ def evaluate_perplexity(
     model.eval()
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
-    if not getattr(model, "hf_device_map", None):
+    if not _has_device_map(model) and not _is_on_resolved_device(model, resolved_device):
         model.to(resolved_device)
 
-    # input_ids 必须和 input embedding 在同一设备上。
+    # Keep input_ids on the same device as the input embedding.
     input_device = _input_embedding_device(model, resolved_device)
 
     total_nll = 0.0

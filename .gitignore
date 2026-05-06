@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 results/
+new_results/
 .env
 剪枝结果-飞书.xlsx
 # Adapt OmniQuant to Qwen2.5, Qwen2.5-VL, LLaMA-family, and MiniCPM models.

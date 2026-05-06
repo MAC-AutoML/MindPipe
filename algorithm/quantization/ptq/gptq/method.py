@@ -215,8 +215,12 @@ class GPTQMethod(BaseQuantizationMethod):
         )
         output_states = torch.zeros_like(input_states)
         quantizer_artifacts = {}
+        max_layers = getattr(args, "gptq_max_layers", None)
+        layers = backbone.layers
+        if max_layers is not None:
+            layers = layers[: int(max_layers)]
 
-        for layer_index, block in enumerate(backbone.layers):
+        for layer_index, block in enumerate(layers):
             target_device = get_layer_device(backbone, layer_index)
             input_states = input_states.to(target_device)
             output_states = output_states.to(target_device)

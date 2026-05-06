@@ -534,6 +534,12 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         help="GPTQ only: whether to quantize the language decoder branch during multimodal calibration.",
     )
     parser.add_argument(
+        "--gptq_max_layers",
+        type=int,
+        default=None,
+        help="Optional GPTQ text-backbone layer cap for smoke tests. Defaults to quantizing all layers.",
+    )
+    parser.add_argument(
         "--spinquant_vlm_dataset_name",
         default=None,
         help=(

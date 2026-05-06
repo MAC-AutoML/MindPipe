@@ -1,0 +1,26 @@
+schema: mindpipe/config/v1
+
+model:
+  name: Qwen3.6-27B
+  model_path: /mnt/82_store/LLM-weights/Qwen3.6-27B
+
+defaults:
+  device_map: auto
+  dtype: bfloat16
+  attn_implementation: sdpa
+  eval_vlm: false
+
+recipes:
+  w2a16:
+    weight_bits: 2
+  w3a16:
+    weight_bits: 3
+  w4a16:
+    weight_bits: 4
+  smoke1:
+    weight_bits: 4
+    calibration_samples: 1
+    sequence_length: 512
+    max_eval_chunks: 1
+    eval_zero_shot: false
+    gptq_max_layers: 1
