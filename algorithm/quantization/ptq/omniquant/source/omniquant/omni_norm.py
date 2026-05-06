@@ -27,3 +27,4 @@ class OmniLlamaRMSNorm(nn.Module):
             output = output + bias
         return output.to(input_dtype)
 
+# Adapt OmniQuant to LLaMA-family models with known remaining issues.

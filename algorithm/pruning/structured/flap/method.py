@@ -73,3 +73,4 @@ class FLAPMethod(BasePruningMethod):
             "flap_remove_heads": source_args.remove_heads,
             "pseudo_pruning": source_args.unstr,
         }
+# Migrate pruning to device_map loading for future multi-GPU support.

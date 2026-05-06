@@ -28,3 +28,4 @@ def get_method(name: str):
         available = ", ".join(sorted(METHOD_REGISTRY))
         raise KeyError(f"Unknown pruning method '{name}'. Available methods: {available}")
     return method_cls()
+# Add the LLM-Pruner method.

@@ -959,3 +959,4 @@ def add_qk_rotation_wrapper_to_linear_attn(module, *args, **kwargs):
     if "recurrent_gated_delta_rule" in wrappers:
         setattr(module, "linear_attn_recurrent_qk_rotation_wrapper", wrappers["recurrent_gated_delta_rule"])
     return primary_wrapper
+# Synchronize quantization device_map support for multi-GPU execution.

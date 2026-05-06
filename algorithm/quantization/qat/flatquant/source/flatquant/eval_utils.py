@@ -29,3 +29,4 @@ def ppl_eval(model, testenc):
     ppl = torch.exp(torch.stack(nlls).sum() / (len(nlls) * max_length))
     return ppl.item()
 
+# Refactor the project structure and clarify the evaluation entrypoint.

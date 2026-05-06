@@ -126,3 +126,4 @@ class Quantizer(nn.Module):
 
     def ready(self):
         return torch.all(self.scale != 0)
+# Remove legacy inference backend deployment leftovers for a cleaner structure.

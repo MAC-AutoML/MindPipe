@@ -281,3 +281,4 @@ def plot_flatness_all_layers(args, flatness_flatquant, flatness_hadamard,
         w_flatnesses = [xw_flatness["w"] for xw_flatness in xw_flatnesses]
         plot_flatness(args, name + ".x", x_flatnesses, flatness_names)
         plot_flatness(args, name + ".w", w_flatnesses, flatness_names)
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

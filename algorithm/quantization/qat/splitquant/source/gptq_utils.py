@@ -420,3 +420,4 @@ def rtn_fwrd(model, dev, args):
             
     cleanup_memory(verbose=True)
     return quantizers
+# Synchronize quantization device_map support for multi-GPU execution.

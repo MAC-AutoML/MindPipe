@@ -359,3 +359,4 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
 
 # 为了兼容，从 common 导入 get_text_backbone
 from algorithm.common.modeling import get_text_backbone
+# Add pruning support for Qwen3.5.

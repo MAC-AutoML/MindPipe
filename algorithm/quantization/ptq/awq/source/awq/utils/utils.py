@@ -49,3 +49,4 @@ def simple_dispatch_model(model, device_map):
     model.hf_device_map = device_map
 
     return model
+# Refactor the project structure and clarify the evaluation entrypoint.

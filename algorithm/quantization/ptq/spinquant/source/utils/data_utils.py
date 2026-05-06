@@ -101,3 +101,4 @@ class CustomJsonDataset(torch.utils.data.IterableDataset):
         }
         result["labels"] = result["input_ids"].copy()
         return result
+# Refactor the project structure and clarify the evaluation entrypoint.

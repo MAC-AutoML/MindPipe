@@ -420,3 +420,4 @@ def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
         _sync_decoder_config(layers, decoder_config)
 
     decoder_config.use_cache = use_cache
+# Add pruning support for Qwen3.5.

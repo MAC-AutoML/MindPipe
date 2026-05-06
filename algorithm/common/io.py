@@ -22,3 +22,4 @@ def write_json(path: str | Path, payload: dict) -> Path:
 def model_slug(model_path: str) -> str:
     return Path(model_path.rstrip("/")).name
 
+# Refactor the project structure and clarify the evaluation entrypoint.

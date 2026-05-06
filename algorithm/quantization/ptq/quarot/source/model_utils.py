@@ -259,3 +259,4 @@ def capture_layer_io(model_type, layer, layer_input):
         'input': captured_inputs,
         'output': captured_outputs
     }
+# Refactor the project structure and clarify the evaluation entrypoint.

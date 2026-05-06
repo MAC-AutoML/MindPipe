@@ -399,3 +399,4 @@ def apply_splitquant_to_llama_31(args, model):
         # mlp
         model.model.layers[layer].mlp = SplitQuantLlamaMLP(args, model.model.layers[layer].mlp)
     return model
+# Adapt SplitQuant to Qwen2.5, LLaMA-2, LLaMA-3, Qwen2.5-VL, and MiniCPM models.

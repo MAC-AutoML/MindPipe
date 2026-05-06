@@ -69,3 +69,4 @@ printf ' %q' env CUDA_VISIBLE_DEVICES="$GPU_ID" "${CMD[@]}"
 printf '\n'
 
 exec env CUDA_VISIBLE_DEVICES="$GPU_ID" "${CMD[@]}"
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

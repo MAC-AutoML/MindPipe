@@ -316,3 +316,4 @@ class OmniQuantMethod(BaseQuantizationMethod):
         if diagnostics_path.exists():
             artifacts["diagnostics_path"] = str(diagnostics_path)
         return artifacts
+# Synchronize quantization device_map support for multi-GPU execution.

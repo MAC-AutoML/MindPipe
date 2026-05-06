@@ -125,3 +125,4 @@ def evaluator(model, testenc, dev, args):
     model.config.use_cache = use_cache
     logging.info(f"\n WikiText2 PPL: {ppl.item():.3f}")
     return ppl.item()
+# Unify GPU and NPU runtime support.

@@ -9,6 +9,7 @@ import torch.nn as nn
 import transformers
 
 from algorithm.common.device import empty_cache
+from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import move_tensors_to_device
 from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
 
@@ -28,6 +29,18 @@ def _build_calibration_forward_kwargs(model, sample):
         # stay on the expected masking path before the first decoder block.
         return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
     return {}
+
+
+def _resolve_calibration_input_device(model):
+    try:
+        backbone = get_text_backbone(model)
+        embed_tokens = backbone.embed_tokens
+        if embed_tokens is not None:
+            for tensor in tuple(embed_tokens.parameters()) + tuple(embed_tokens.buffers()):
+                return tensor.device
+    except Exception:
+        pass
+    return next(model.parameters()).device
 
 
 def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs):
@@ -127,6 +140,13 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
 
     # catch the first layer input
     layer0_device = next(layers[0].parameters()).device
+    capture_device = _resolve_calibration_input_device(model)
+    logger.info(
+        "FlatQuant calibration device placement: capture_device=%s layer0_device=%s first_param_device=%s",
+        capture_device,
+        layer0_device,
+        next(model.parameters()).device,
+    )
     inps = torch.zeros(
         (args.nsamples, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=layer0_device
     )
@@ -154,7 +174,7 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
                 break
             try:
                 sample = batch[0]
-                sample = sample.to(layer0_device)
+                sample = sample.to(capture_device)
                 model(sample, use_cache=False, **_build_calibration_forward_kwargs(model, sample))
             except ValueError:
                 pass

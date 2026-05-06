@@ -95,3 +95,4 @@ def load_splitquant_matrices(args, model, path=None):
         layers[i].mlp.rep_matrix_only()
         layers[i].load_state_dict(splitquant_param, strict=False)
     return model
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

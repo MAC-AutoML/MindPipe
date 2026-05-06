@@ -32,3 +32,4 @@ class WrappedGPT:
     def free(self):
         self.scaler_row = None
         empty_cache(self.dev)
+# Unify GPU and NPU runtime support.

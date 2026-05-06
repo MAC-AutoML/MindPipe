@@ -92,3 +92,4 @@ def get_act_shifts(model, calibration_batches, device):
     for hook in hooks:
         hook.remove()
     return act_shifts
+# Synchronize quantization device_map support for multi-GPU execution.

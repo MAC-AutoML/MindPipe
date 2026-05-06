@@ -249,3 +249,4 @@ def set_act_quantizer_state(model, enable=True):
             m.enable = enable
     return model
 
+# Refactor the project structure and clarify the evaluation entrypoint.

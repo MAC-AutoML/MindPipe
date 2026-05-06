@@ -95,3 +95,4 @@ def load_flat_matrices(args, model, path=None):
         layers[i].mlp.rep_matrix_only()
         layers[i].load_state_dict(flat_param, strict=False)
     return model
+# Fix model loading compatibility with newer Transformers versions.

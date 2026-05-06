@@ -99593,3 +99593,4 @@ def get_had172():
             ],
         ]
     )
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

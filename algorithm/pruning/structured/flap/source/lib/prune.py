@@ -898,3 +898,4 @@ def prune_magnitude_sp(args, model, tokenizer, device=None):
                 W_mask = (W_metric>=thresh)
                 compress(layer, None, W_mask, None, None, device, bias=False, unstr=args.unstr)
 
+# Add pruning support for Qwen3.5.

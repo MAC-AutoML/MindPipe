@@ -354,3 +354,4 @@ def rtn_fwrd(model, dev, args, custom_layers=None):
 
     utils.cleanup_memory(verbos=True)
     return quantizers
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

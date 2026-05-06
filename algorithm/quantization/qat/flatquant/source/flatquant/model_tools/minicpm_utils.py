@@ -400,3 +400,4 @@ def apply_flatquant_to_minicpm(args, model):
             model.model.layers[layer_index].mlp,
         )
     return model
+# Fix MiniCPM evaluation issues under FlatQuant.

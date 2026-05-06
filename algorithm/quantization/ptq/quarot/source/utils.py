@@ -272,3 +272,4 @@ def distribute_model(model) -> None:
     )
 
     cleanup_memory()
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

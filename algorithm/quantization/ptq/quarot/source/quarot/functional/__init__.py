@@ -3,3 +3,4 @@ from .hadamard import (
     matmul_hadU_cuda, 
     random_hadamard_matrix, 
     apply_exact_had_to_linear)
+# Refactor the project structure and clarify the evaluation entrypoint.
