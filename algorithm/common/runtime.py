@@ -19,3 +19,4 @@ def prepend_python_path(path: str | Path):
         except ValueError:
             pass
 
+# Refactor the project structure and clarify the evaluation entrypoint.

@@ -6,6 +6,9 @@ KV head, plus that KV head itself. Importance is therefore aggregated over:
   - o_proj input columns of the group's query heads
   - k_proj output rows of the group's KV head
   - v_proj output rows of the group's KV head
+
+对于 Qwen3.5 等混合架构模型，linear_attention 层没有标准 head 概念，
+attention 重要性返回全零张量（不做 attention 剪枝）。
 """
 
 from __future__ import annotations
@@ -13,37 +16,18 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-
-def _get_attention_projections(layer):
-    """Return (q_proj, k_proj, v_proj, o_proj) from a decoder layer."""
-    attn = layer.self_attn
-    return attn.q_proj, attn.k_proj, attn.v_proj, attn.o_proj
-
-
-def _get_mlp_projections(layer):
-    """Return (up_proj, gate_proj, down_proj) from a decoder layer."""
-    mlp = layer.mlp
-    return mlp.up_proj, mlp.gate_proj, mlp.down_proj
+from algorithm.common.modeling import (
+    get_attn_projections,
+    get_head_geometry,
+    get_mlp_projections,
+    get_q_stride,
+    supports_head_pruning,
+)
 
 
-def _get_head_geometry(layer):
-    """Return (num_heads, num_kv_heads, head_dim) with config fallback.
-
-    Mirrors FLAP's get_attention_head_geometry: Qwen2Attention stores these
-    on ``config`` rather than as direct attributes.
-    """
-    attn = layer.self_attn
-    config = getattr(attn, "config", None)
-    num_heads = int(getattr(attn, "num_heads", getattr(config, "num_attention_heads")))
-    num_kv_heads = int(getattr(attn, "num_key_value_heads", getattr(config, "num_key_value_heads", num_heads)))
-    hidden_size = int(getattr(attn, "hidden_size", getattr(config, "hidden_size")))
-    head_dim = int(getattr(attn, "head_dim", hidden_size // num_heads))
-    return num_heads, num_kv_heads, head_dim
-
-
-def _aggregate_by_head(per_channel_imp: torch.Tensor, num_heads: int, head_dim: int) -> torch.Tensor:
-    """Reshape [num_heads*head_dim] → [num_heads, head_dim] → sum → [num_heads]."""
-    return per_channel_imp.reshape(num_heads, head_dim).sum(dim=1)
+def _aggregate_by_head(per_channel_imp: torch.Tensor, num_heads: int, stride: int) -> torch.Tensor:
+    """Reshape [num_heads*stride] → [num_heads, stride] → sum → [num_heads]。"""
+    return per_channel_imp.reshape(num_heads, stride).sum(dim=1)
 
 
 def _reduce_q_heads_to_kv_groups(q_head_imp: torch.Tensor, num_kv_heads: int) -> torch.Tensor:
@@ -59,15 +43,26 @@ class MagnitudeImportance:
 
     @torch.no_grad()
     def compute_attention_importance(self, layer) -> torch.Tensor:
-        """Return importance score per KV group: shape [num_kv_heads]."""
-        q_proj, k_proj, v_proj, o_proj = _get_attention_projections(layer)
-        num_heads, num_kv_heads, head_dim = _get_head_geometry(layer)
+        """Return importance score per KV group: shape [num_kv_heads].
 
+        linear_attention 层返回全零张量。
+        """
+        if not supports_head_pruning(layer):
+            return torch.tensor([])
+
+        projs = get_attn_projections(layer)
+        q_proj, k_proj, v_proj, o_proj = projs
+        geo = get_head_geometry(layer)
+        num_heads, num_kv_heads, num_kv_groups, head_dim = geo
+        q_stride = get_q_stride(layer)  # head_dim 或 head_dim*2（Qwen3.5 query+gate）
+
+        # q_proj: 每个 head 占 q_stride 行（标准模型=head_dim，Qwen3.5=head_dim*2）
         q_head_imp = _aggregate_by_head(
             q_proj.weight.data.abs().pow(self.p).sum(dim=1),
             num_heads,
-            head_dim,
+            q_stride,
         )
+        # o_proj: 列方向聚合，每个 head 占 head_dim 列
         o_head_imp = _aggregate_by_head(
             o_proj.weight.data.abs().pow(self.p).sum(dim=0),
             num_heads,
@@ -91,7 +86,7 @@ class MagnitudeImportance:
     @torch.no_grad()
     def compute_mlp_importance(self, layer) -> torch.Tensor:
         """Return importance score per intermediate neuron: shape [intermediate_size]."""
-        up_proj, gate_proj, down_proj = _get_mlp_projections(layer)
+        up_proj, gate_proj, down_proj = get_mlp_projections(layer)
 
         # up_proj [intermediate_size, hidden_size]: output channel (row) importance
         up_imp = up_proj.weight.data.abs().pow(self.p).sum(dim=1)   # [intermediate_size]
@@ -131,13 +126,22 @@ class TaylorImportance:
 
     @torch.no_grad()
     def compute_attention_importance(self, layer) -> torch.Tensor:
-        """Return Taylor importance per KV group: shape [num_kv_heads]."""
-        q_proj, k_proj, v_proj, o_proj = _get_attention_projections(layer)
-        num_heads, num_kv_heads, head_dim = _get_head_geometry(layer)
+        """Return Taylor importance per KV group: shape [num_kv_heads].
+
+        linear_attention 层返回全零张量。
+        """
+        if not supports_head_pruning(layer):
+            return torch.tensor([])
+
+        projs = get_attn_projections(layer)
+        q_proj, k_proj, v_proj, o_proj = projs
+        geo = get_head_geometry(layer)
+        num_heads, num_kv_heads, num_kv_groups, head_dim = geo
+        q_stride = get_q_stride(layer)
 
         q_head_imp = _aggregate_by_head(
             self._compute_salience(q_proj).abs().sum(dim=1),
-            num_heads, head_dim,
+            num_heads, q_stride,
         )
         o_head_imp = _aggregate_by_head(
             self._compute_salience(o_proj).abs().sum(dim=0),
@@ -159,7 +163,7 @@ class TaylorImportance:
     @torch.no_grad()
     def compute_mlp_importance(self, layer) -> torch.Tensor:
         """Return Taylor importance per intermediate neuron: shape [intermediate_size]."""
-        up_proj, gate_proj, down_proj = _get_mlp_projections(layer)
+        up_proj, gate_proj, down_proj = get_mlp_projections(layer)
 
         # up_proj: row-wise (output channel)
         up_imp = self._compute_salience(up_proj).abs().sum(dim=1)    # [intermediate_size]
@@ -169,3 +173,4 @@ class TaylorImportance:
         down_imp = self._compute_salience(down_proj).abs().sum(dim=0)  # [intermediate_size]
 
         return up_imp + gate_imp + down_imp  # [intermediate_size]
+# Add pruning support for Qwen3.5.

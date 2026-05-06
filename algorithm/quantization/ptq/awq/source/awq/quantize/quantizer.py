@@ -124,8 +124,7 @@ def pseudo_quantize_model_weight(
             qwen3_5_quantize_linear_attn=qwen3_5_quantize_linear_attn,
         )
         for n, m in named_linears.items():
-            m.to(runtime_device)
+            # device_map 模式下不手动移动模块，直接在当前设备上量化
             m.weight.data = pseudo_quantize_tensor(
                 m.weight.data, n_bit=w_bit, **q_config
             )
-            m.cpu()

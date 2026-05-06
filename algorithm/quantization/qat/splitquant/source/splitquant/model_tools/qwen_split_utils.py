@@ -584,3 +584,4 @@ def apply_splitquant_to_qwen(args, model):
             decoder_root.layers[layer_index].mlp,
         )
     return model
+# Adapt SplitQuant to Qwen2.5, LLaMA-2, LLaMA-3, Qwen2.5-VL, and MiniCPM models.

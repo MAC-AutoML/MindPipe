@@ -10,6 +10,8 @@ from .ptq.quarot.method import QuaRotMethod
 from .ptq.smoothquant.method import SmoothQuantMethod
 from .ptq.spinquant.method import SpinQuantMethod
 from .qat.flatquant.method import FlatQuantMethod
+from .qat.qalora.method import QALoRAMethod
+from .qat.qlora.method import QLoRAMethod
 from .qat.splitquant.method import SplitQuantMethod
 
 
@@ -19,6 +21,8 @@ METHOD_REGISTRY = {
     "gptq": GPTQMethod,
     "omniquant": OmniQuantMethod,
     "mquant": MQuantMethod,
+    "qalora": QALoRAMethod,
+    "qlora": QLoRAMethod,
     "quarot": QuaRotMethod,
     "smoothquant": SmoothQuantMethod,
     "splitquant": SplitQuantMethod,

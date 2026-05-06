@@ -128,14 +128,13 @@ class SmoothQuantMethod(BaseQuantizationMethod):
                 act_scales = torch.load(act_scales_path, map_location="cpu")
                 LOGGER.info("Loaded SmoothQuant activation scales from %s", act_scales_path)
             else:
-                model.to(runtime_device)
+                # device_map 模式下不手动移动模型，由 dispatch_model 管理
                 act_scales = get_act_scales(model, calibration_batches, runtime_device)
                 LOGGER.info(
                     "Collected SmoothQuant activation scales from %s calibration samples",
                     args.calibration_samples,
                 )
-                model.to("cpu")
-                empty_cache(runtime_device)
+                # device_map 模式下不手动移动到 cpu
                 if args.smoothquant_save_act_scales:
                     act_scales_path = generated_act_scales_path
                     torch.save(act_scales, act_scales_path)

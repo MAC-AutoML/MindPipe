@@ -2,6 +2,7 @@ schema: mindpipe/config/v1
 
 defaults:
   device: npu:0
+  device_map: auto
   data_path: /home/ma-user/work/data
   output_dir: ${REPO_ROOT}/my_results/quantization/npu
   hf_token: null
@@ -16,3 +17,4 @@ model_paths:
   Qwen3-VL-2B-Instruct: /home/ma-user/work/modelzoo/Qwen/Qwen3-VL-2B-Instruct
   Qwen3-0.6B: /home/ma-user/work/modelzoo/Qwen/Qwen3-0.6B
   Qwen3.5-4B: /home/ma-user/work/modelzoo/Qwen/Qwen3.5-4B
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

@@ -29,3 +29,4 @@ def ppl_eval(model, testenc):
     ppl = torch.exp(torch.stack(nlls).sum() / (len(nlls) * max_length))
     return ppl.item()
 
+# Adapt SplitQuant to Qwen2.5, LLaMA-2, LLaMA-3, Qwen2.5-VL, and MiniCPM models.

@@ -59,3 +59,4 @@ def rtn_fwrd(model, dev, args):
 
     utils.cleanup_memory(verbos=True)
     return quantizers
+# Unify GPU and NPU runtime support.

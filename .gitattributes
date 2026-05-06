@@ -20,3 +20,4 @@
 *.o binary
 *.so binary
 *.pth binary
+# Refactor v2.

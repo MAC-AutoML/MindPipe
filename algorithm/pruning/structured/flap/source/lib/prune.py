@@ -1,7 +1,15 @@
-import torch 
-import torch.nn as nn 
+import torch
+import torch.nn as nn
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
+from algorithm.common.modeling import (
+    get_attn_output_proj,
+    get_attn_projections as _get_attn_projections,
+    get_head_geometry as _get_head_geometry,
+    get_mlp_projections as _get_mlp_projections,
+    get_q_stride,
+    supports_head_pruning,
+)
 from .layerwrapper import BiasGPT
 import math
 from tqdm import tqdm
@@ -54,25 +62,42 @@ def find_layers(module, layers=[nn.Linear], name=''):
 
 
 def get_attention_projections(layer):
+    """获取注意力投影层，linear_attention 层返回 None。"""
+    result = _get_attn_projections(layer)
+    if result is None:
+        return None
+    q, k, v, o = result
     return (
-        resolve_linear_module(layer.self_attn.q_proj),
-        resolve_linear_module(layer.self_attn.k_proj),
-        resolve_linear_module(layer.self_attn.v_proj),
-        resolve_linear_module(layer.self_attn.o_proj),
+        resolve_linear_module(q),
+        resolve_linear_module(k),
+        resolve_linear_module(v),
+        resolve_linear_module(o),
     )
 
 
 def get_mlp_projections(layer):
+    """获取 MLP 投影层。"""
+    up, gate, down = _get_mlp_projections(layer)
     return (
-        resolve_linear_module(layer.mlp.up_proj),
-        resolve_linear_module(layer.mlp.gate_proj),
-        resolve_linear_module(layer.mlp.down_proj),
+        resolve_linear_module(up),
+        resolve_linear_module(gate),
+        resolve_linear_module(down),
     )
 
 
 def get_projection_subset(layer):
-    o_proj = resolve_linear_module(layer.self_attn.o_proj)
+    """获取 FLAP 剪枝目标投影子集。
+
+    full_attention 层返回 attn_output + mlp.down_proj，
+    linear_attention 层仅返回 mlp.down_proj（不剪 attention）。
+    """
     down_proj = resolve_linear_module(layer.mlp.down_proj)
+    if not supports_head_pruning(layer):
+        # linear_attention 层：只剪 MLP
+        if down_proj is None:
+            raise KeyError("Failed to resolve mlp.down_proj")
+        return {"mlp.down_proj": down_proj}
+    o_proj = resolve_linear_module(layer.self_attn.o_proj)
     if o_proj is None or down_proj is None:
         available = ", ".join(sorted(find_layers(layer).keys()))
         raise KeyError(
@@ -80,7 +105,7 @@ def get_projection_subset(layer):
             f"available_layers=[{available}]"
         )
     return {
-        "self_attn.o_proj": o_proj,
+        "attn_output": o_proj,
         "mlp.down_proj": down_proj,
     }
 
@@ -102,10 +127,10 @@ def get_decoder_layers(model):
 def check_sparsity(model):
     """
     Check the sparsity of the weights in different layers of the model.
-    
+
     Args:
         model (nn.Module): The model to check.
-        
+
     Returns:
         float: Ratio of the count of non-zero weights to total parameters in the model.
     """
@@ -116,8 +141,8 @@ def check_sparsity(model):
     layers = get_decoder_layers(model)
     intermediate_size = decoder_config.intermediate_size
     hidden_size = decoder_config.hidden_size
-    
-    count = 0 
+
+    count = 0
     total_params = 0
     for i in range(len(layers)):
         layer = layers[i]
@@ -138,22 +163,22 @@ def check_sparsity(model):
             if subset[name].bias is not None:
                 count += subset[name].bias.data.numel()
                 sub_count += subset[name].bias.data.numel()
-            
+
         print(f"layer {i} sparsity {float(sub_count)/sub_params:.6f}")
 
     decoder_config.use_cache = use_cache
-    return float(count)/total_params 
+    return float(count)/total_params
 
 
 def prepare_calibration_input(model, dataloader, device):
     """
-    Prepare inputs for model calibration. 
-    
+    Prepare inputs for model calibration.
+
     Args:
         model (nn.Module): The model to prepare inputs for.
         dataloader (DataLoader): DataLoader object to fetch input data.
-        device (torch.device): Device on which the model is loaded. 
-        
+        device (torch.device): Device on which the model is loaded.
+
     Returns:
         inps (torch.Tensor): Input tensor for calibration.
         outs (torch.Tensor): Output tensor for calibration.
@@ -164,12 +189,12 @@ def prepare_calibration_input(model, dataloader, device):
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
 
-    if "model.embed_tokens" in getattr(model, 'hf_device_map', {}):
-        device = model.hf_device_map["model.embed_tokens"]
+    # device_map 模式下直接从模型参数获取设备
+    capture_device = next(model.parameters()).device
 
     dtype = next(iter(model.parameters())).dtype
     sample_count = len(dataloader)
-    inps = torch.zeros((sample_count, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=device)
+    inps = torch.zeros((sample_count, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=capture_device)
     inps.requires_grad = False
     cache = {'i': 0, 'layer_kwargs': {}}
 
@@ -189,24 +214,14 @@ def prepare_calibration_input(model, dataloader, device):
             cache['i'] += 1
             cache['layer_kwargs'] = dict(kwargs)
             raise ValueError
-        
+
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
-            model(batch[0].to(device), use_cache=False)
+            model(batch[0].to(capture_device), use_cache=False)
         except ValueError:
-            pass 
+            pass
     layers[0] = layers[0].module
-
-    # 将所有层和 embedding 移回 CPU，释放显存（后续逐层搬入 GPU 处理）
-    for li in range(len(layers)):
-        layers[li] = layers[li].cpu()
-    decoder_root = get_decoder_root(model)
-    if hasattr(decoder_root, "embed_tokens"):
-        decoder_root.embed_tokens = decoder_root.embed_tokens.cpu()
-    if hasattr(decoder_root, "rotary_emb"):
-        decoder_root.rotary_emb = decoder_root.rotary_emb.cpu()
-    empty_cache(device)
 
     outs = torch.zeros_like(inps)
     decoder_config.use_cache = use_cache
@@ -230,39 +245,56 @@ def move_layer_kwargs(layer_kwargs, device):
 
 
 def get_attention_head_geometry(layer):
-    attn = layer.self_attn
-    config = getattr(attn, "config", None)
-    num_heads = int(getattr(attn, "num_heads", getattr(config, "num_attention_heads")))
-    num_kv_heads = int(getattr(attn, "num_key_value_heads", getattr(config, "num_key_value_heads", num_heads)))
-    hidden_size = int(getattr(attn, "hidden_size", getattr(config, "hidden_size")))
-    head_dim = int(getattr(attn, "head_dim", hidden_size // num_heads))
-    num_kv_groups = num_heads // num_kv_heads
-    return num_heads, num_kv_heads, num_kv_groups, head_dim
+    """获取 head 几何信息，linear_attention 层返回 None。"""
+    return _get_head_geometry(layer)
 
 
 def aggregate_attention_metric(layer, metric):
-    num_heads, num_kv_heads, num_kv_groups, head_dim = get_attention_head_geometry(layer)
-    head_metric = metric.reshape(num_heads, head_dim).sum(dim=1)
-    return head_metric
+    """将逐通道 metric 聚合为逐 head metric。linear_attention 层不聚合。"""
+    geo = get_attention_head_geometry(layer)
+    if geo is None:
+        return metric
+    num_heads, num_kv_heads, num_kv_groups, head_dim = geo
+    return metric.reshape(num_heads, head_dim).sum(dim=1)
 
 
 def expand_attention_masks(layer, attn_mask, device):
+    """将 per-head mask 展开为 per-channel mask。
+
+    返回 (q_row_mask, kv_mask, o_col_mask)：
+    - q_row_mask: q_proj 的行掩码（考虑 query+gate 绑定的 q_stride）
+    - kv_mask: k_proj/v_proj 的行掩码
+    - o_col_mask: o_proj 的列掩码（标准 head_dim 步长）
+    """
     num_heads, num_kv_heads, num_kv_groups, head_dim = get_attention_head_geometry(layer)
+    q_stride = get_q_stride(layer)
+
     if attn_mask.numel() != num_heads:
         raise ValueError(
             f"Expected per-query-head FLAP mask with {num_heads} elements, got {attn_mask.numel()}."
         )
-    q_mask = attn_mask.repeat_interleave(head_dim)
+    # q_proj 行掩码：每个 head 占 q_stride 行（标准模型=head_dim，Qwen3.5=head_dim*2）
+    q_row_mask = attn_mask.repeat_interleave(q_stride)
+
+    # KV 掩码：每个 kv_head 占 head_dim 行
     if num_kv_heads == num_heads:
-        kv_mask = q_mask
+        kv_mask = attn_mask.repeat_interleave(head_dim)
     else:
         kv_head_mask = attn_mask.reshape(num_kv_heads, num_kv_groups).any(dim=1)
         kv_mask = kv_head_mask.repeat_interleave(head_dim)
-    return q_mask.to(device), kv_mask.to(device)
+
+    # o_proj 列掩码：每个 head 占 head_dim 列
+    o_col_mask = attn_mask.repeat_interleave(head_dim)
+
+    return q_row_mask.to(device), kv_mask.to(device), o_col_mask.to(device)
 
 
 def get_attention_compression_weight(layer):
-    _, _, num_kv_groups, head_dim = get_attention_head_geometry(layer)
+    """获取 attention 压缩权重（用于 AL-AM 阈值搜索）。"""
+    geo = get_attention_head_geometry(layer)
+    if geo is None:
+        return 1.0
+    _, _, num_kv_groups, head_dim = geo
     return head_dim * (2.0 + 2.0 / num_kv_groups) / 3.0
 
 
@@ -277,15 +309,25 @@ def get_layer_weight_count(layer):
 
 
 def estimate_attention_zero_count(layer, head_keep_mask):
-    num_heads, num_kv_heads, num_kv_groups, head_dim = get_attention_head_geometry(layer)
+    """估算 attention 部分被剪枝后变为零的权重数。linear_attention 层返回 0。"""
+    if not supports_head_pruning(layer):
+        return 0
+    geo = get_attention_head_geometry(layer)
+    if geo is None:
+        return 0
+    num_heads, num_kv_heads, num_kv_groups, head_dim = geo
     if head_keep_mask.numel() != num_heads:
         raise ValueError(f"Expected {num_heads} attention heads, got {head_keep_mask.numel()}.")
-    q_proj, k_proj, v_proj, o_proj = get_attention_projections(layer)
+    projs = get_attention_projections(layer)
+    if projs is None:
+        return 0
+    q_proj, k_proj, v_proj, o_proj = projs
+    q_stride = get_q_stride(layer)
     removed_query_heads = int((~head_keep_mask).sum().item())
-    removed_query_rows = removed_query_heads * head_dim
+    removed_query_rows = removed_query_heads * q_stride
     zero_count = 0
     zero_count += removed_query_rows * q_proj.weight.shape[1]
-    zero_count += removed_query_rows * o_proj.weight.shape[0]
+    zero_count += removed_query_heads * head_dim * o_proj.weight.shape[0]
 
     kv_keep_mask = head_keep_mask.reshape(num_kv_heads, num_kv_groups).any(dim=1)
     removed_kv_rows = int((~kv_keep_mask).sum().item()) * head_dim
@@ -309,12 +351,25 @@ def estimate_unstructured_sparsity(layers, attn_masks, mlp_masks):
     total_count = 0
     for layer, attn_mask, mlp_mask in zip(layers, attn_masks, mlp_masks):
         total_count += get_layer_weight_count(layer)
-        zero_count += estimate_attention_zero_count(layer, attn_mask)
+        if attn_mask is not None:
+            zero_count += estimate_attention_zero_count(layer, attn_mask)
         zero_count += estimate_mlp_zero_count(layer, mlp_mask)
     return zero_count / max(total_count, 1)
 
 
-def find_threshold_for_target_unstructured_sparsity(layers, attn_metric, mlp_metric, target_ratio):
+def _build_full_attn_masks(attn_metric_heads, threshold, layer_has_attn, n_layers):
+    """根据阈值构建 full-size 的 attn_mask 列表，linear_attention 层填 None。"""
+    attn_mask_full = attn_metric_heads > threshold
+    result = [None] * n_layers
+    full_idx = 0
+    for i in range(n_layers):
+        if layer_has_attn[i]:
+            result[i] = attn_mask_full[full_idx]
+            full_idx += 1
+    return result
+
+
+def find_threshold_for_target_unstructured_sparsity(layers, attn_metric, mlp_metric, target_ratio, layer_has_attn=None):
     candidates = torch.sort(torch.cat([attn_metric.reshape(-1), mlp_metric.reshape(-1)])).values
     low, high = 0, candidates.numel() - 1
     best_threshold = candidates[0]
@@ -326,7 +381,14 @@ def find_threshold_for_target_unstructured_sparsity(layers, attn_metric, mlp_met
         threshold = candidates[mid]
         attn_mask = attn_metric > threshold
         mlp_mask = mlp_metric > threshold
-        estimated_ratio = estimate_unstructured_sparsity(layers, attn_mask, mlp_mask)
+
+        if layer_has_attn is not None:
+            # 混合架构：构建 full-size mask，linear_attention 层为 None
+            full_attn_masks = _build_full_attn_masks(attn_metric, threshold, layer_has_attn, len(layers))
+            estimated_ratio = estimate_unstructured_sparsity(layers, full_attn_masks, mlp_mask)
+        else:
+            estimated_ratio = estimate_unstructured_sparsity(layers, attn_mask, mlp_mask)
+
         diff = abs(estimated_ratio - target_ratio)
         if diff < best_diff:
             best_diff = diff
@@ -343,7 +405,7 @@ def find_threshold_for_target_unstructured_sparsity(layers, attn_metric, mlp_met
 def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bias=True, unstr=False):
     """
     Compress a model layer by masking or pruning based on the given masks.
-    
+
     Args:
         layer (nn.Module): The model layer to compress.
         attn_mask (torch.Tensor): The mask to apply to the attention weights.
@@ -353,26 +415,33 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
         device (torch.device): Device on which the model is loaded.
         bias (bool, optional): Whether to consider bias while compressing. Defaults to True.
         unstr (bool, optional): If True, only mask without real pruning. Defaults to False.
-        
+
     Returns:
         None: This function modifies the layer in-place and doesn't return anything.
     """
-    q_proj, k_proj, v_proj, o_proj = get_attention_projections(layer)
     up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+
+    # linear_attention 层没有标准 head 结构，跳过 attention 剪枝
+    can_prune_attn = supports_head_pruning(layer) and attn_mask is not None
+
+    if can_prune_attn:
+        projs = get_attention_projections(layer)
+        q_proj, k_proj, v_proj, o_proj = projs
 
     if unstr:  # Only mask, do not really prune
         # Attention Weight Masking
-        if attn_mask is not None:
-            q_mask, kv_mask = expand_attention_masks(layer, attn_mask, device)
+        if can_prune_attn:
+            q_row_mask, kv_mask, o_col_mask = expand_attention_masks(layer, attn_mask, device)
             # Apply the mask to the query, key and value projection weights
-            q_proj.weight.data *= q_mask.unsqueeze(-1)
+            q_proj.weight.data *= q_row_mask.unsqueeze(-1)
             k_proj.weight.data *= kv_mask.unsqueeze(-1)
             v_proj.weight.data *= kv_mask.unsqueeze(-1)
-            
+
             output_weight = o_proj.weight.data
             if bias:
                 # Add the additional bias to compensate for the loss
-                output_bias = compute_output_bias(attn_mean_inp, q_mask, output_weight)
+                # 注意：用 o_col_mask（与 o_proj 输入维度一致），不用 q_row_mask
+                output_bias = compute_output_bias(attn_mean_inp, o_col_mask, output_weight)
                 if o_proj.bias is None:
                     o_proj.bias = nn.Parameter(
                         torch.zeros(output_weight.shape[0], device=device, dtype=output_weight.dtype)
@@ -380,7 +449,7 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             # In GQA, masking q_proj alone does not zero the pruned head output because
             # the head can still read shared K/V states. Zero the corresponding o_proj
             # input columns to suppress the removed query-head contribution explicitly.
-            o_proj.weight.data *= q_mask.unsqueeze(0)
+            o_proj.weight.data *= o_col_mask.unsqueeze(0)
             # Note: the weight data is masked, but the weight tensor shape remains unchanged
             if bias:
                 o_proj.bias.data = output_bias
@@ -390,7 +459,7 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             # Apply the mask to the up and gate projection weights
             up_proj.weight.data *= mlp_mask.unsqueeze(-1).to(device)
             gate_proj.weight.data *= mlp_mask.unsqueeze(-1).to(device)
-            
+
             output_weight = down_proj.weight.data
             if bias:
                 # Add the additional bias to compensate for the loss
@@ -399,7 +468,7 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
                     down_proj.bias = nn.Parameter(
                         torch.zeros(output_weight.shape[0], device=device, dtype=output_weight.dtype)
                     )
-                
+
             # Mirror attention pseudo-pruning: zero the inactive down_proj input columns
             # so observed weight sparsity matches the effective removed MLP channels.
             down_proj.weight.data *= mlp_mask.unsqueeze(0).to(device)
@@ -407,50 +476,61 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             # Note: the weight data is masked, but the weight tensor shape remains unchanged
             if bias:
                 down_proj.bias.data = output_bias
-    
+
     else:
         # Real Pruning
         # Attention Weight Pruning
-        if attn_mask is not None:
-            head_dim = get_attention_head_geometry(layer)[3]
+        if can_prune_attn:
+            num_heads, num_kv_heads, num_kv_groups, head_dim = get_attention_head_geometry(layer)
             retain_heads = int(torch.count_nonzero(attn_mask).item())
-            q_mask, kv_mask = expand_attention_masks(layer, attn_mask, device)
-            q_indices = torch.where(q_mask)[0]
+            q_row_mask, kv_mask, o_col_mask = expand_attention_masks(layer, attn_mask, device)
+            q_indices = torch.where(q_row_mask)[0]
             kv_indices = torch.where(kv_mask)[0]
-            
+            o_indices = torch.where(o_col_mask)[0]
+
             # Prune the query, key and value projection weights
             # We reduce the size of the weights based on the attention mask
             q_proj.weight.data = q_proj.weight.data[q_indices]
             k_proj.weight.data = k_proj.weight.data[kv_indices]
             v_proj.weight.data = v_proj.weight.data[kv_indices]
-            
+
             # Update output dimensions of q, k, v projections based on remaining heads
             q_proj.out_features = q_indices.numel()
             k_proj.out_features = kv_indices.numel()
             v_proj.out_features = kv_indices.numel()
-            
+
             output_weight = o_proj.weight.data
-            
+
             if bias:
                 # Add the additional bias to compensate for the loss
-                output_bias = compute_output_bias(attn_mean_inp, q_mask.to(device), output_weight)
-                
+                # 注意：用 o_col_mask（与 o_proj 输入维度一致），不用 q_row_mask
+                output_bias = compute_output_bias(attn_mean_inp, o_col_mask.to(device), output_weight)
+
             # Prune the output projection weight
-            output_weight = o_proj.weight.data[:, q_indices]
-            # Update layer configurations for the new output shape after pruning
+            output_weight = o_proj.weight.data[:, o_indices]
+            # 更新 attention 属性（包括 GQA 相关属性）
+            new_num_kv_heads = kv_indices.numel() // head_dim
             layer.self_attn.num_heads = retain_heads
             layer.self_attn.hidden_size = retain_heads * head_dim
-            
+            for attr, val in [
+                ("num_attention_heads", retain_heads),
+                ("num_key_value_heads", new_num_kv_heads),
+                ("num_key_value_groups", num_kv_groups),
+            ]:
+                try:
+                    setattr(layer.self_attn, attr, val)
+                except AttributeError:
+                    pass
+
             if bias:
                 # Re-initialize the Linear layer with new shape and bias
-                o_proj.in_features = q_indices.numel()
-                # layer.self_attn.o_proj = torch.nn.Linear(in_features=output_weight.shape[1], out_features=output_weight.shape[0], bias=True).to(device)
+                o_proj.in_features = o_indices.numel()
                 if o_proj.bias is None:
                     o_proj.bias = nn.Parameter(
                         torch.zeros(output_weight.shape[0], device=device, dtype=output_weight.dtype)
                     )
                 o_proj.bias.data = output_bias
-                
+
             # Assign the pruned weights
             o_proj.weight.data = output_weight
 
@@ -460,37 +540,118 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             # Prune the up and gate projection weights
             up_proj.weight.data = up_proj.weight.data[mlp_indices]
             gate_proj.weight.data = gate_proj.weight.data[mlp_indices]
-            
+
             # Update output dimensions of up and gate projections based on the mlp mask
             up_proj.out_features = mlp_indices.numel()
             gate_proj.out_features = mlp_indices.numel()
-            
+
             output_weight = down_proj.weight.data
             layer.mlp.intermediate_size = mlp_indices.numel()
             if bias:
                 # Add the additional bias to compensate for the loss
                 output_bias = compute_output_bias(mlp_mean_inp, mlp_mask.to(device), output_weight)
-              
+
             # Prune the down projection weight
             output_weight = down_proj.weight.data[:, mlp_indices]
-            
+
             if bias:
                 # Re-initialize the Linear layer with new shape and bias
                 down_proj.in_features = mlp_indices.numel()
-                # layer.mlp.down_proj = torch.nn.Linear(in_features=output_weight.shape[1], out_features=output_weight.shape[0], bias=True).to(device)
                 if down_proj.bias is None:
                     down_proj.bias = nn.Parameter(
                         torch.zeros(output_weight.shape[0], device=device, dtype=output_weight.dtype)
                     )
                 down_proj.bias.data = output_bias
-                
+
             # Assign the pruned weights
             down_proj.weight.data = output_weight
-        
+
     # Explicitly empty the CUDA cache to clean up some memory
     empty_cache(device)
-    
-    
+
+
+def _sync_decoder_config(layers, decoder_config):
+    """真剪枝后同步全局配置。
+
+    遍历所有层收集当前的 head 数、intermediate_size 等属性，
+    如果各层一致则直接更新全局 config。如果各层维度不一致
+    （FLAP 逐层自适应剪枝的典型情况），则将所有层裁剪到
+    最小公共维度，以确保 HF config 兼容。
+    """
+    import torch
+
+    head_counts = []
+    kv_head_counts = []
+    kv_group_counts = []
+    intermediate_sizes = []
+    for layer in layers:
+        if supports_head_pruning(layer):
+            geo = get_attention_head_geometry(layer)
+            if geo is not None:
+                num_heads, num_kv_heads, num_kv_groups, _ = geo
+                head_counts.append(num_heads)
+                kv_head_counts.append(num_kv_heads)
+                kv_group_counts.append(num_kv_groups)
+        intermediate_sizes.append(int(layer.mlp.intermediate_size))
+
+    if head_counts and len(set(head_counts)) == 1:
+        decoder_config.num_attention_heads = head_counts[0]
+    if kv_head_counts and len(set(kv_head_counts)) == 1:
+        decoder_config.num_key_value_heads = kv_head_counts[0]
+    if kv_group_counts and hasattr(decoder_config, "num_key_value_groups") and len(set(kv_group_counts)) == 1:
+        decoder_config.num_key_value_groups = kv_group_counts[0]
+
+    if intermediate_sizes and len(set(intermediate_sizes)) == 1:
+        # 所有层维度一致，直接更新
+        decoder_config.intermediate_size = intermediate_sizes[0]
+    elif intermediate_sizes:
+        # 异构维度：对齐到最小公共维度，确保 HF config 兼容
+        min_inter = min(intermediate_sizes)
+        _align_mlp_dimensions(layers, min_inter)
+        decoder_config.intermediate_size = min_inter
+
+
+def _align_mlp_dimensions(layers, target_size):
+    """将所有层的 MLP 维度裁剪到目标大小（最小公共维度）。
+
+    对于 intermediate_size > target_size 的层，裁掉多余的神经元。
+    保留前 target_size 个神经元（与 FLAP 的 compress 中按 mlp_mask
+    选择的神经元一致：mask 中靠前的神经元被保留）。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    trimmed = 0
+    for layer in layers:
+        cur = int(layer.mlp.intermediate_size)
+        if cur <= target_size:
+            continue
+        gate_proj = layer.mlp.gate_proj
+        up_proj = layer.mlp.up_proj
+        down_proj = layer.mlp.down_proj
+
+        # 裁剪 gate_proj 和 up_proj 的输出维度（行）
+        gate_proj.weight.data = gate_proj.weight.data[:target_size]
+        up_proj.weight.data = up_proj.weight.data[:target_size]
+        gate_proj.out_features = target_size
+        up_proj.out_features = target_size
+
+        # 裁剪 down_proj 的输入维度（列）
+        down_proj.weight.data = down_proj.weight.data[:, :target_size]
+        down_proj.in_features = target_size
+
+        # 裁剪 bias（如果有）
+        if gate_proj.bias is not None:
+            gate_proj.bias.data = gate_proj.bias.data[:target_size]
+        if up_proj.bias is not None:
+            up_proj.bias.data = up_proj.bias.data[:target_size]
+
+        layer.mlp.intermediate_size = target_size
+        trimmed += 1
+    if trimmed > 0:
+        logger.info("FLAP: aligned %d/%d layers to min intermediate_size=%d",
+                     trimmed, len(layers), target_size)
+
+
 def cal_remove_neuron(args, model):
     decoder_config = get_decoder_root(model).config
     intermediate_size = decoder_config.intermediate_size
@@ -530,24 +691,25 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
     attn_metric_list, mlp_metric_list = [], []
     attn_baseline_inp_list, mlp_baseline_inp_list = [], []
     attn_mask, mlp_mask = [], []
-        
+
+    # 记录哪些层有 attn_output（用于后续索引对齐）
+    layer_has_attn = []
+
     # Split into sub-problems, separate statistics for each module
     for i in tqdm(range(len(layers)), desc="Processing layers"):
         layer = layers[i]
         subset = get_projection_subset(layer)
+        has_attn = "attn_output" in subset
+        layer_has_attn.append(has_attn)
 
-        # 确定目标设备，将当前层和输入数据搬到 GPU
-        if f"model.layers.{i}" in getattr(model, 'hf_device_map', {}):
-            target_dev = model.hf_device_map[f"model.layers.{i}"]
-        else:
-            target_dev = device
-        layer = layer.to(target_dev)
+        # 获取当前层所在设备，只搬输入数据
+        target_dev = next(layer.parameters()).device
         inps, outs = inps.to(target_dev), outs.to(target_dev)
         layer_kwargs = move_layer_kwargs(layer_kwargs, target_dev)
 
         wrapped_layers = {}
         for name in subset:
-                wrapped_layers[name] = BiasGPT(subset[name], args.metrics)            
+                wrapped_layers[name] = BiasGPT(subset[name], args.metrics)
 
         def add_batch(name):
             def tmp(_, inp, out):
@@ -564,7 +726,7 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
             h.remove()
 
         for name in subset:
-            if name == 'self_attn.o_proj':
+            if name == 'attn_output':
                 raw_attn_metric = metrics[args.metrics](wrapped_layers, subset, name) ** 2
                 if args.structure == "UL-UM":
                     W_metric = aggregate_attention_metric(layer, raw_attn_metric)
@@ -596,39 +758,44 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
             wrapped_layers[name].free()
 
         inps, outs = outs, inps # Use the original output as input to the next layer
-        empty_cache(next(iter(subset.values())).weight.device if subset else device)
-        # 将当前层移回 CPU，释放显存
-        layers[i] = layer.cpu()
-        del layer
-        empty_cache(device)
 
     standarlization = lambda x: (x - torch.mean(x, axis=1, keepdim=True)) / torch.std(x, axis=1, keepdim=True)
 
     if args.structure in ["AL-MM", "AL-AM"]:
-        attn_metric = torch.stack(attn_metric_list)
-        attn_metric = standarlization(attn_metric)
-        attn_head_dim = get_attention_head_geometry(layers[0])[3]
-        attn_metric = attn_metric.reshape(len(layers), -1, attn_head_dim).mean(dim=2)
-        
+        if not attn_metric_list:
+            raise ValueError("没有可剪枝的 attention 层（所有层都是 linear_attention）")
+
+        # 只对 full_attention 层做 head 级聚合
+        full_attn_indices = [i for i, h in enumerate(layer_has_attn) if h]
+        attn_metric_full = torch.stack(attn_metric_list)  # [n_full_attn, columns]
+        attn_metric_full = standarlization(attn_metric_full)
+
+        # 从第一个 full_attention 层获取 head_dim
+        first_full_attn = layers[full_attn_indices[0]]
+        attn_head_dim = get_attention_head_geometry(first_full_attn)[3]
+        attn_metric_heads = attn_metric_full.reshape(len(full_attn_indices), -1, attn_head_dim).mean(dim=2)
+
         mlp_metric = torch.stack(mlp_metric_list)
         mlp_metric = standarlization(mlp_metric)
-        
+
         if args.structure == "AL-MM":
-            sorted_attn = torch.sort(attn_metric.view(-1), descending=True)[0]
+            sorted_attn = torch.sort(attn_metric_heads.view(-1), descending=True)[0]
             attn_thres = sorted_attn[-int(args.remove_heads)]
-            attn_mask = (attn_metric > attn_thres)  # 1 means retain
-            
+            attn_mask_full = (attn_metric_heads > attn_thres)
+
             sorted_mlp = torch.sort(mlp_metric.view(-1), descending=True)[0]
             mlp_thres = sorted_mlp[-cal_remove_neuron(args, model)]
-            mlp_mask = (mlp_metric > mlp_thres)
+            mlp_mask_all = (mlp_metric > mlp_thres)
         else:
-            prune_metric = torch.cat([attn_metric.view(-1), mlp_metric.view(-1)])
+            # AL-AM
+            prune_metric = torch.cat([attn_metric_heads.view(-1), mlp_metric.view(-1)])
             if args.unstr:
                 threshold, estimated_ratio = find_threshold_for_target_unstructured_sparsity(
                     layers,
-                    attn_metric,
+                    attn_metric_heads,
                     mlp_metric,
                     args.pruning_ratio,
+                    layer_has_attn=layer_has_attn,
                 )
                 print(
                     f"AL-AM exact sparsity targeting: requested={args.pruning_ratio:.4f}, "
@@ -638,13 +805,13 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
                 sorted_prune, indices = torch.sort(prune_metric, descending=True)
                 compression_weight = torch.ones_like(sorted_prune, dtype=torch.float32)
                 attn_weights = []
-                for layer_index in range(len(layers)):
-                    layer_weight = get_attention_compression_weight(layers[layer_index])
+                for layer_index in range(len(full_attn_indices)):
+                    layer_weight = get_attention_compression_weight(layers[full_attn_indices[layer_index]])
                     attn_weights.append(
-                        torch.full_like(attn_metric[layer_index], fill_value=layer_weight, dtype=torch.float32)
+                        torch.full_like(attn_metric_heads[layer_index], fill_value=layer_weight, dtype=torch.float32)
                     )
                 attn_weights = torch.stack(attn_weights).view(-1).to(sorted_prune.device)
-                attn_positions = indices < attn_metric.numel()
+                attn_positions = indices < attn_metric_heads.numel()
                 compression_weight[attn_positions] = attn_weights[indices[attn_positions]]
                 threshold = sorted_prune[
                     torch.argmin(
@@ -654,33 +821,55 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
                         )
                     )
                 ]
-            attn_mask = (attn_metric > threshold)
-            mlp_mask = (mlp_metric > threshold)
-    else:
-        attn_mask = torch.stack(attn_mask) 
-        mlp_mask = torch.stack(mlp_mask)
-    
-    for idx in range(len(layers)):
-        # 确定目标设备，将当前层搬到 GPU 进行 compress
-        if f"model.layers.{idx}" in getattr(model, 'hf_device_map', {}):
-            target_dev = model.hf_device_map[f"model.layers.{idx}"]
-        else:
-            target_dev = device
-        layers[idx] = layers[idx].to(target_dev)
+            attn_mask_full = (attn_metric_heads > threshold)
+            mlp_mask_all = (mlp_metric > threshold)
 
-        compress(layers[idx], attn_mask[idx], None, attn_baseline_inp_list[idx], None, target_dev, unstr=args.unstr)
+        # 将 attn_mask 对齐到所有层：linear_attention 层为 None
+        attn_mask = [None] * len(layers)
+        full_idx = 0
+        for i in range(len(layers)):
+            if layer_has_attn[i]:
+                attn_mask[i] = attn_mask_full[full_idx]
+                full_idx += 1
+
+        mlp_mask = mlp_mask_all
+    else:
+        # UL-UM / UL-MM 模式：补齐 linear_attention 层的 attn_mask 为 None
+        if any(not h for h in layer_has_attn):
+            aligned_attn_mask = []
+            attn_idx = 0
+            for i in range(len(layers)):
+                if layer_has_attn[i]:
+                    aligned_attn_mask.append(attn_mask[attn_idx])
+                    attn_idx += 1
+                else:
+                    aligned_attn_mask.append(None)
+            attn_mask = aligned_attn_mask
+        else:
+            attn_mask = torch.stack(attn_mask)
+        mlp_mask = torch.stack(mlp_mask)
+
+    # 应用剪枝：attn_baseline_inp_list 只有 full_attention 层的条目
+    attn_inp_idx = 0
+    for idx in range(len(layers)):
+        target_dev = next(layers[idx].parameters()).device
+
+        if layer_has_attn[idx]:
+            compress(layers[idx], attn_mask[idx], None, attn_baseline_inp_list[attn_inp_idx], None, target_dev, unstr=args.unstr)
+            attn_inp_idx += 1
         compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], target_dev, unstr=args.unstr)
 
-        # 将当前层移回 CPU，释放显存
-        layers[idx] = layers[idx].cpu()
-        empty_cache(target_dev)
-                
+    # 真剪枝后同步全局配置，确保 save_pretrained 能正确保存
+    if not args.unstr:
+        _sync_decoder_config(layers, decoder_config)
+
     decoder_config.use_cache = use_cache
-    empty_cache(device)
+
+
 def prune_magnitude_sp(args, model, tokenizer, device=None):
     """
     Magnitude Pruning on structured pruning.
-    
+
     Args:
         args (object): Command line arguments parsed via argparse.
         model (nn.Module): PyTorch model to prune.
@@ -688,7 +877,7 @@ def prune_magnitude_sp(args, model, tokenizer, device=None):
         device (torch.device, optional): Device to move tensors to. Defaults to CUDA device 0.
     """
     device = resolve_device(device)
-    layers = get_decoder_layers(model) 
+    layers = get_decoder_layers(model)
 
     for i in range(len(layers)):
         layer = layers[i]
@@ -698,7 +887,7 @@ def prune_magnitude_sp(args, model, tokenizer, device=None):
             print(f"pruning layer {i} name {name}")
             W_metric = torch.norm(subset[name].weight.data, dim=0)
 
-            if name == 'self_attn.o_proj':
+            if name == 'attn_output':
                 head_dim = get_attention_head_geometry(layer)[3]
                 W_metric = W_metric.reshape(-1, head_dim).sum(dim=1) # importance score of each head
                 thresh = torch.sort(W_metric)[0][int(args.pruning_ratio*layer.self_attn.num_heads)]
@@ -708,4 +897,5 @@ def prune_magnitude_sp(args, model, tokenizer, device=None):
                 thresh = torch.sort(W_metric)[0][int(W_metric.numel()*args.pruning_ratio)]
                 W_mask = (W_metric>=thresh)
                 compress(layer, None, W_mask, None, None, device, bias=False, unstr=args.unstr)
-            
+
+# Add pruning support for Qwen3.5.

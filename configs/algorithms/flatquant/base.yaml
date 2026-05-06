@@ -4,7 +4,7 @@ defaults:
   quantization: flatquant
   attn_implementation: sdpa
   flatquant_epochs: 15
-  flatquant_calibration_batch_size: 32
+  flatquant_calibration_batch_size: 4
   flatquant_lr: 5.0e-3
   query_bits: 16
   key_bits: 4
@@ -17,3 +17,4 @@ defaults:
   flatquant_lac: true
   flatquant_direct_inv: true
   flatquant_deactive_amp: true
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

@@ -47,7 +47,6 @@ class FLAPMethod(BasePruningMethod):
         )
 
         model.seqlen = args.sequence_length
-        model.to(args.device)
         model.eval()
 
         calibration_batches, _ = get_calibration_and_evaluation_data(
@@ -74,3 +73,4 @@ class FLAPMethod(BasePruningMethod):
             "flap_remove_heads": source_args.remove_heads,
             "pseudo_pruning": source_args.unstr,
         }
+# Migrate pruning to device_map loading for future multi-GPU support.

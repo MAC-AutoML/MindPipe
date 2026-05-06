@@ -27,8 +27,11 @@ def compute_layer_importances(
     """
     model.eval()
 
+    # 获取模型所在设备
+    input_device = next(model.parameters()).device
+
     # Determine the number of layers via the first batch
-    first_input = calibration_batches[0][0].to(device)
+    first_input = calibration_batches[0][0].to(input_device)
     dummy_out = model(first_input, output_hidden_states=True, use_cache=False)
     n_layers = len(dummy_out.hidden_states) - 1  # hidden_states[0] is embedding
     del dummy_out
@@ -36,7 +39,7 @@ def compute_layer_importances(
     importances = [0.0] * n_layers
 
     for input_ids, _labels in tqdm(calibration_batches, desc="ShortGPT computing layer importances"):
-        chunk = input_ids.to(device)
+        chunk = input_ids.to(input_device)
 
         outputs = model(chunk, output_hidden_states=True, use_cache=False)
         hidden_states = outputs.hidden_states
@@ -50,3 +53,4 @@ def compute_layer_importances(
         del outputs, hidden_states
 
     return importances
+# Migrate pruning to device_map loading for future multi-GPU support.

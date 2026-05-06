@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import List
 
 from algorithm.common.device import empty_cache
+from algorithm.common.modeling import move_tensors_to_device
 from transformers.models.bloom.modeling_bloom import BloomForCausalLM
 from transformers.models.opt.modeling_opt import OPTForCausalLM
 from transformers.models.llama.modeling_llama import LlamaForCausalLM
@@ -219,8 +220,7 @@ def run_awq(
     inps = []
     layer_kwargs = {}
 
-    layers[0] = layers[0].to(runtime_device)
-    move_embed(model, runtime_device)
+    # device_map 模式下由 dispatch_model 管理设备放置，不手动移动权重
 
     # get input and kwargs to layer 0
     # with_kwargs is only supported in PyTorch 2.0
@@ -252,8 +252,7 @@ def run_awq(
     layers[0] = layers[0].module  # restore
     inps = inps[0]
 
-    layers[0] = layers[0].cpu()
-    move_embed(model, "cpu")
+    # device_map 模式下不手动移动到 cpu
 
     gc.collect()
     empty_cache(runtime_device)
@@ -266,7 +265,7 @@ def run_awq(
     # solve layer by layer
     for i in tqdm.tqdm(range(len(layers)), desc="Running AWQ..."):
         layer = layers[i]
-        layer = layer.to(runtime_device)
+        # device_map 模式下不手动移动层，由 dispatch_model 管理
         named_linears = get_named_linears(
             layer,
             model=model,
@@ -288,6 +287,9 @@ def run_awq(
                 )
             )
         inps = inps.to(next(layer.parameters()).device)  # in case multi-gpu
+        # 将 layer_kwargs 中的张量也移到当前层设备
+        layer_device = next(layer.parameters()).device
+        layer_kwargs = move_tensors_to_device(layer_kwargs, layer_device)
         # get output as next layer's input
         inps = forward_in_chunks(model, layer, inps, layer_kwargs)
         for h in handles:
@@ -339,7 +341,7 @@ def run_awq(
                 clip_list, get_op_name(model, layer) + "."
             )
 
-        layer = layer.cpu()
+        # device_map 模式下不手动移动到 cpu
         # Haotian: check activation replacement
         del input_feat
         gc.collect()

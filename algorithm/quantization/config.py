@@ -11,3 +11,4 @@ def normalize_args(args):
     if args.kv_group_size is None:
         args.kv_group_size = args.group_size
     return args
+# Refactor the project structure and clarify the evaluation entrypoint.

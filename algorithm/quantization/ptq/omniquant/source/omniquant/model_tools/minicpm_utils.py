@@ -260,3 +260,4 @@ def initialize_omni_parameters(qlayer, layer_prefix: str, args, act_scales, act_
         shift_init = shift if use_shift else torch.zeros_like(shift)
         qlayer.register_parameter(f"{target_name}_smooth_shift", nn.Parameter(shift_init))
         qlayer.register_parameter(f"{target_name}_smooth_scale", nn.Parameter(scale))
+# Adapt OmniQuant to Qwen2.5, Qwen2.5-VL, LLaMA-family, and MiniCPM models.

@@ -246,7 +246,7 @@ class OmniQuantMethod(BaseQuantizationMethod):
                     act_scales = torch.load(act_scales_path, map_location="cpu")
                     LOGGER.info("Loaded OmniQuant activation scales from %s", act_scales_path)
                 else:
-                    model.to(runtime_device)
+                    # device_map 模式下不手动移动模型
                     act_scales = get_act_scales(model, calibration_batches, runtime_device)
                     LOGGER.info(
                         "Collected OmniQuant activation scales from %s calibration samples",
@@ -263,7 +263,7 @@ class OmniQuantMethod(BaseQuantizationMethod):
                         act_shifts = torch.load(act_shifts_path, map_location="cpu")
                         LOGGER.info("Loaded OmniQuant activation shifts from %s", act_shifts_path)
                     else:
-                        model.to(runtime_device)
+                        # device_map 模式下不手动移动模型
                         act_shifts = get_act_shifts(model, calibration_batches, runtime_device)
                         LOGGER.info(
                             "Collected OmniQuant activation shifts from %s calibration samples",
@@ -274,8 +274,7 @@ class OmniQuantMethod(BaseQuantizationMethod):
                             torch.save(act_shifts, act_shifts_path)
                             LOGGER.info("Saved OmniQuant activation shifts to %s", act_shifts_path)
 
-                model.to("cpu")
-                empty_cache(runtime_device)
+                # device_map 模式下不手动移动到 cpu
 
             quantizer_artifacts = cali_omni_quant(
                 source_args,
@@ -317,3 +316,4 @@ class OmniQuantMethod(BaseQuantizationMethod):
         if diagnostics_path.exists():
             artifacts["diagnostics_path"] = str(diagnostics_path)
         return artifacts
+# Synchronize quantization device_map support for multi-GPU execution.

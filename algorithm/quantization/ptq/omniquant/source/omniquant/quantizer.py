@@ -155,3 +155,4 @@ class UniformAffineQuantizer(nn.Module):
         del self.scale
         del self.round_zero_point
 
+# Adapt OmniQuant to LLaMA-family models with known remaining issues.

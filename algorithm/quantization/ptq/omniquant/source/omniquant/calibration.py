@@ -50,7 +50,8 @@ def get_act_scales(model, calibration_batches, device):
             hooks.append(module.register_forward_hook(functools.partial(stat_input_hook, name=qualified_name)))
 
     for token_ids, _labels in calibration_batches:
-        run_omniquant_calibration_forward(model, token_ids.to(device))
+        # device_map 模式下输入数据放到模型所在设备
+        run_omniquant_calibration_forward(model, token_ids.to(next(model.parameters()).device))
 
     for hook in hooks:
         hook.remove()
@@ -85,8 +86,10 @@ def get_act_shifts(model, calibration_batches, device):
             hooks.append(module.register_forward_hook(functools.partial(stat_input_hook, name=qualified_name)))
 
     for token_ids, _labels in calibration_batches:
-        run_omniquant_calibration_forward(model, token_ids.to(device))
+        # device_map 模式下输入数据放到模型所在设备
+        run_omniquant_calibration_forward(model, token_ids.to(next(model.parameters()).device))
 
     for hook in hooks:
         hook.remove()
     return act_shifts
+# Synchronize quantization device_map support for multi-GPU execution.

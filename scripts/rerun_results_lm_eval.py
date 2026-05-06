@@ -857,3 +857,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

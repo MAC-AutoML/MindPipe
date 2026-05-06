@@ -170,3 +170,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+# Refactor the project structure and clarify the evaluation entrypoint.

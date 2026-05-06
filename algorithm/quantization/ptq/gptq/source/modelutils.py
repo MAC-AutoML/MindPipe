@@ -11,3 +11,4 @@ def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):
             child, layers=layers, name=name + '.' + name1 if name != '' else name1
         ))
     return res
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

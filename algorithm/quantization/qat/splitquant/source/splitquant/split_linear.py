@@ -121,3 +121,4 @@ class SplitQuantizedLinear(nn.Module):
         
         self.linear.weight.data = weight.to(ori_dtype)
         self._eval_mode = True
+# Adapt SplitQuant to Qwen2.5, LLaMA-2, LLaMA-3, Qwen2.5-VL, and MiniCPM models.

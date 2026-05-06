@@ -424,3 +424,4 @@ def apply_flatquant_to_qwen3(args, model):
             decoder_root.layers[layer_index].mlp,
         )
     return model
+# Adapt FlatQuant to new models and address SplitQuant degradation on Qwen3.5.

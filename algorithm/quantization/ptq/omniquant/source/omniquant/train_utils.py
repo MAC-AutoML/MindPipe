@@ -11,6 +11,7 @@ from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import unwrap_layer_output
+from algorithm.common.modeling import move_tensors_to_device
 from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
 
 from omniquant.calibration import run_omniquant_calibration_forward
@@ -91,18 +92,19 @@ def _capture_first_block_inputs(model, backbone, calibration_batches, device):
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
     blocks = backbone.layers
-    backbone.move_front_modules(device)
-    blocks[0] = blocks[0].to(device)
+    # device_map 模式下不手动移动 front modules 和 blocks[0]
 
     dtype = next(iter(model.parameters())).dtype
     sample_count = len(calibration_batches)
     sequence_length = calibration_batches[0][0].shape[1]
+    # device_map 模式下输入放到 blocks[0] 所在设备
+    block0_device = next(blocks[0].parameters()).device
     inputs = torch.zeros(
         sample_count,
         sequence_length,
         backbone.hidden_size,
         dtype=dtype,
-        device=device,
+        device=block0_device,
     )
     cached_kwargs: dict[str, object] = {}
     input_index = 0
@@ -129,13 +131,12 @@ def _capture_first_block_inputs(model, backbone, calibration_batches, device):
     blocks[0] = Catcher(blocks[0])
     for token_ids, _labels in calibration_batches:
         try:
-            run_omniquant_calibration_forward(model, token_ids.to(device))
+            run_omniquant_calibration_forward(model, token_ids.to(block0_device))
         except ValueError:
             pass
 
     blocks[0] = blocks[0].module
-    blocks[0] = blocks[0].cpu()
-    backbone.move_front_modules("cpu")
+    # device_map 模式下不手动移动到 cpu
     empty_cache(device)
     decoder_config.use_cache = use_cache
     return inputs, dict(cached_kwargs)
@@ -374,8 +375,15 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                     "layer_kwargs": _value_summary("layer_kwargs", active_layer_kwargs),
                 },
             )
-        layer = layer.to(device)
-        qlayer = quant_decoder_layer_cls(layer, args).to(device)
+        # device_map 模式下不手动移动 layer，在当前设备上操作
+        # 将输入数据移到当前层设备
+        layer_device = next(layer.parameters()).device
+        fp_inps = fp_inps.to(layer_device)
+        quant_inps = quant_inps.to(layer_device)
+        active_layer_kwargs = move_tensors_to_device(active_layer_kwargs, layer_device)
+        qlayer = quant_decoder_layer_cls(layer, args)
+        # 将 wrapper 及其新建的可学习参数移到当前层设备
+        qlayer = qlayer.to(layer_device)
         if args.deactive_amp:
             qlayer = qlayer.float()
         qlayer.eval()
@@ -617,8 +625,9 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                 "activation_symmetric": False,
             }
 
-        backbone.layers[layer_index] = qlayer.to(dtype=model_dtype).cpu()
+        backbone.layers[layer_index] = qlayer.to(dtype=model_dtype)
         del layer
         empty_cache(device)
 
     return quantized_linear_artifacts
+# Synchronize quantization device_map support for multi-GPU execution.

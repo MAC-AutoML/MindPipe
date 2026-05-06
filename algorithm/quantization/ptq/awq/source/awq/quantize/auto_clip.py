@@ -122,12 +122,11 @@ def auto_clip_block(module, w_bit, q_config, input_feat, device=None, model=None
             continue
         if not _should_clip_linear(name, module, clip_targets):
             continue
-        named_linears[name].to(runtime_device)
+        # device_map 模式下不手动移动模块，直接在当前设备上计算
         max_val = auto_clip_layer(
             named_linears[name].weight, input_feat[name], n_bit=w_bit, q_config=q_config
         )
         clip_list.append((name, max_val))
-        named_linears[name].cpu()
     return clip_list
 
 
@@ -135,13 +134,11 @@ def auto_clip_block(module, w_bit, q_config, input_feat, device=None, model=None
 def apply_clip(module, clip_list, device=None):
     from ..utils.module import get_op_by_name
 
-    runtime_device = resolve_device(device)
     for name, max_val in clip_list:
         layer = get_op_by_name(module, name)
-        layer.to(runtime_device)
+        # device_map 模式下不手动移动模块，max_val 对齐到权重设备
         max_val = max_val.to(layer.weight.device).to(layer.weight.dtype)
         org_shape = layer.weight.shape
         layer.weight.data = layer.weight.data.reshape(*max_val.shape[:2], -1)
         layer.weight.data = torch.clamp(layer.weight.data, -max_val, max_val)
         layer.weight.data = layer.weight.data.reshape(org_shape)
-        layer.cpu()

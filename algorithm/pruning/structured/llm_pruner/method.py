@@ -41,7 +41,6 @@ class LLMPrunerMethod(BasePruningMethod):
         )
 
         model.seqlen = args.sequence_length
-        model.to(args.device)
         model.eval()
         _, linear_weight_count_before = _linear_weight_stats(model)
 
@@ -86,3 +85,4 @@ class LLMPrunerMethod(BasePruningMethod):
             "taylor_mode": source_args.taylor,
             "pseudo_pruning": source_args.unstr,
         }
+# Migrate pruning to device_map loading for future multi-GPU support.

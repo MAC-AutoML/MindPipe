@@ -48,3 +48,4 @@ def add_wrapper_after_function_call_in_method(
     new_method = copy_func_with_new_globals(original_method, globals=method_globals)
     setattr(module, method_name, new_method.__get__(module))
     return wrapper
+# Refactor the project structure and clarify the evaluation entrypoint.

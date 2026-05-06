@@ -1,115 +1,138 @@
 # MindPipe
 
-大语言模型压缩算法统一评测框架。集成 5 种量化算法和 4 种剪枝算法，提供统一的 CLI 入口、评测链路和 GPU/NPU 双后端支持。
+[English](README.md) | [中文](README_zh.md)
 
-## 目录结构
+MindPipe is a unified compression and evaluation framework for large language
+models and vision-language models. It provides one CLI entrypoint for
+post-training quantization, quantization-aware training, pruning, perplexity
+evaluation, zero-shot evaluation, and VLMEvalKit-based multimodal evaluation.
+
+The framework is designed for reproducible research across GPU and NPU
+backends, with shared model loading, dataset handling, device management, and
+result serialization.
+
+## Highlights
+
+- Unified `main.py` entrypoint for quantization, pruning, compression pipelines,
+  and evaluation-only runs.
+- 11 quantization methods registered in-tree, including PTQ and QAT-style
+  methods.
+- 7 pruning methods registered in-tree, covering unstructured, semi-structured,
+  and structured pruning.
+- Text and vision-language model support through a shared model adapter layer.
+- GPU and NPU device abstraction for cache management, synchronization, seeds,
+  and dtype policy.
+- Per-run artifacts and metrics written as JSON for downstream aggregation.
+- Reproducibility scripts for common text and multimodal benchmark suites.
+
+## Repository Layout
 
 ```text
 MindPipe/
-├── main.py                   # 唯一 CLI 入口
+├── main.py                         # Unified CLI entrypoint
 ├── algorithm/
-│   ├── common/               # 公共基础设施
-│   │   ├── device.py         # GPU/NPU 设备抽象（resolve_device, empty_cache, synchronize...）
-│   │   ├── hadamard.py       # Hadamard 变换 dispatch（CUDA kernel / PyTorch butterfly fallback）
-│   │   ├── modeling.py       # 模型加载、文本主干提取、block 输入捕获
-│   │   ├── datasets.py       # 校准数据集和评测数据集加载
-│   │   ├── reproducibility.py # 全局种子设定
-│   │   ├── io.py             # 路径和 JSON 工具
-│   │   ├── runtime.py        # sys.path 注入
-│   │   └── logging.py        # 日志配置
+│   ├── common/                     # Shared model, data, device, IO utilities
 │   ├── quantization/
-│   │   ├── base.py           # BaseQuantizationMethod + NPU fail-fast
-│   │   ├── registry.py       # 量化算法注册表
-│   │   ├── config.py         # 参数归一化
-│   │   ├── ptq/
-│   │   │   ├── awq/          # AWQ（method.py + source/）
-│   │   │   ├── gptq/         # GPTQ
-│   │   │   ├── quarot/       # QuaRot
-│   │   │   └── spinquant/    # SpinQuant
-│   │   └── qat/
-│   │       └── flatquant/    # FlatQuant
+│   │   ├── ptq/                    # AWQ, GPTQ, MQuant, OmniQuant, QuaRot, SmoothQuant, SpinQuant
+│   │   └── qat/                    # FlatQuant, QLoRA, QA-LoRA, SplitQuant
 │   └── pruning/
-│       ├── base.py           # BasePruningMethod + NPU fail-fast
-│       ├── registry.py       # 剪枝算法注册表
-│       ├── structured/
-│       │   ├── flap/         # FLAP
-│       │   ├── shortgpt/    # ShortGPT
-│       │   └── wanda_sp/     # Wanda-SP
-│       └── unstructured/
-│           ├── wanda/        # Wanda
-│           └── sparsegpt/    # SparseGPT
-├── workflow/
-│   ├── schema.py             # WorkflowStage, WorkflowConfig 数据结构
-│   ├── builder.py            # CLI 参数解析 → WorkflowConfig
-│   └── executor.py           # 多阶段编排执行
-├── evaluation/
-│   ├── ppl.py                # PPL 评测（wikitext2, c4）
-│   ├── lm_eval.py            # Zero-shot 评测（lm-eval-harness）
-│   ├── vlm_eval.py           # 多模态评测（VLMEvalKit）
-│   └── runner.py             # 评测路由（自动根据参数选择评测类型）
-└── scripts/                  # 批量运行、结果汇总等辅助脚本
+│       ├── structured/             # FLAP, LLM-Pruner, ShortGPT, Wanda-SP
+│       └── unstructured/           # ALPS, SparseGPT, Wanda
+├── workflow/                       # CLI config builder and stage executor
+├── evaluation/                     # PPL, lm-eval-harness, and VLMEvalKit runners
+├── configs/                        # Shared and algorithm-specific configs
+├── scripts/                        # Batch and reproducibility scripts
+└── third_party/                    # Optional external evaluation tools
 ```
 
-## 支持的算法
+## Supported Algorithms
 
-### 量化（PTQ / QAT）
+### Quantization
 
-| 算法 | 类型 | 权重 | 激活 | KV Cache | NPU 就绪 |
-|------|------|------|------|----------|---------|
-| AWQ | PTQ | W4 | - | - | 是 |
-| GPTQ | PTQ | W4 | - | - | 是 |
-| QuaRot | PTQ | W4 | A4 | K16 V16 | 否（Hadamard 需验证） |
-| SpinQuant | PTQ | W4 | A4 | K4 V4 | 否（Hadamard 需验证） |
-| FlatQuant | QAT | W4 | A4 | K4 V4 | 是 |
+| Method | Family | Main Coverage | NPU Status |
+| --- | --- | --- | --- |
+| `awq` | PTQ | Weight-only quantization with activation-aware scaling | Ready |
+| `gptq` | PTQ | Weight-only GPTQ quantization | Ready |
+| `mquant` | PTQ | Multimodal GPTQ/AWQ-style quantization for language and visual branches | Not ready |
+| `omniquant` | PTQ | Learnable weight and activation transformation | Ready |
+| `quarot` | PTQ | Rotation-based W/A/KV quantization | Not ready |
+| `smoothquant` | PTQ | Activation smoothing for W/A quantization | Ready |
+| `spinquant` | PTQ | Rotation-based W/A/KV quantization with SpinQuant-style hooks | Not ready |
+| `flatquant` | QAT | FlatQuant-style trainable transformations | Ready |
+| `qlora` | QAT | QLoRA and low-bit fake-quant adapter training | Ready, with experimental NPU fake-quant fallback |
+| `qalora` | QAT | Basic QA-LoRA group-pooled adapter training | CUDA only |
+| `splitquant` | QAT | SplitQuant-style trainable transformations | Ready |
 
-### 剪枝
+### Pruning
 
-| 算法 | 结构 | NPU 就绪 | 推荐校准数据集 |
-|------|------|---------|--------------|
-| Wanda | 非结构化 | 是 | c4 |
-| SparseGPT | 非结构化 | 是 | c4 |
-| Wanda-SP | 结构化 | 是 | c4 |
-| FLAP | 结构化 | 是 | wikitext2 |
-| ShortGPT | 结构化（层剪枝） | 是 | pg19 |
-| ALPS | 非结构化 | 是 | c4 |
+| Method | Type | Default Calibration Dataset | NPU Status |
+| --- | --- | --- | --- |
+| `alps` | Unstructured and n:m semi-structured | `c4` | Ready |
+| `flap` | Structured | `wikitext2` | Ready |
+| `llm_pruner` | Structured | `c4` | Ready |
+| `shortgpt` | Layer pruning | `pg19` | Ready |
+| `sparsegpt` | Unstructured and n:m semi-structured | `c4` | Ready |
+| `wanda` | Unstructured and n:m semi-structured | `c4` | Ready |
+| `wanda_sp` | Structured | `c4` | Ready |
 
-所有剪枝方法均通过 `--calibration_dataset` 参数统一选择校准数据集（`wikitext2` / `c4` / `pileval` / `pg19`），推荐使用上表中的数据集以获得最佳效果。
+## Model Coverage
 
-### 各方法 Reference 校准参数
+MindPipe has been adapted across text-only and multimodal model families,
+including:
 
-| 方法 | 校准集 | nsamples | seqlen |
-|------|--------|----------|--------|
-| FLAP | wikitext2 | 2048 | 128 |
-| Wanda | c4 | 128 | 模型 max_position_embeddings |
-| Wanda-SP | c4 | 128 | 模型 max_position_embeddings |
-| SparseGPT | c4 | 128 | 模型 max_position_embeddings |
-| ShortGPT | pg19 | 全量验证集 | stride=256 |
-| ALPS | c4 | 128 | 2048 |
+- LLaMA-family text models, including LLaMA-2 and LLaMA-3 style checkpoints.
+- Qwen2.5 text models.
+- Qwen3 text models.
+- Qwen3.5 text/language-only paths.
+- Qwen2-VL, Qwen2.5-VL, and Qwen3-VL multimodal paths.
+- MiniCPM-V language and multimodal paths for selected quantization flows.
+- LLaVA and InternVL loader compatibility paths where supported by the local
+  Transformers environment.
 
-> **注意**：MindPipe 默认 `--calibration_samples 128`、`--sequence_length 2048`。FLAP 的 reference 用的是 nsamples=2048、seqlen=128，与默认值差异较大，跑 FLAP 实验时建议显式指定 `--calibration_samples 2048 --sequence_length 128`。
+Model support is algorithm-dependent. The most reliable way to check current
+support is to inspect each method under `algorithm/quantization/*/*/method.py`
+or `algorithm/pruning/*/*/method.py`, and the model-specific configs under
+`configs/algorithms/`.
 
-### 已验证模型
+## Adaptation Progress
 
-- Qwen2.5-7B-Instruct
-- Qwen2.5-VL-7B-Instruct
-- Qwen2.5-7B-Instruct（FlatQuant / NPU）
+### 2026-04-18
 
-## Qwen2.5-VL 说明
+- Completed GPU validation for AWQ W4A16 on Qwen3, Qwen3-VL, Qwen3.5,
+  Qwen2-VL, and LLaVA-1.5. Text-side PPL runs completed successfully with no
+  obvious anomalies.
+- Qwen2-VL and Qwen3-VL completed VLMEvalKit evaluation on the validated
+  multimodal datasets. AWQ W4A16 showed acceptable accuracy degradation compared
+  with FP16.
+- The evaluation framework did not yet support Qwen3.5 and LLaVA-1.5 multimodal
+  evaluation at that time, so only text-side validation was completed for those
+  models.
 
-不要再给 Qwen2.5-VL 的文本校准 / 搜索路径打手工 `dense_mask + language_model/backbone.root` 补丁。统一优先走官方 `model(input_ids=..., use_cache=False)`，不要绕过flashattn用eager。
+### 2026-04-19
 
-> 对 AWQ 来说，正确方向应该是：
->
-> - 先删掉共享层和 AWQ 里这类手工 dense_mask + language_model/backbone.root 补丁
-> - 然后如果 AWQ 仍然有 Qwen2.5-VL 问题，就只在 AWQ 本地修
-> - 修法优先级应该是：
->   - 第一选择：model(input_ids=..., use_cache=False)
->   - 如果 NPU 上这个仍有真实问题，再试 model(input_ids=..., attention_mask=torch.ones_like(input_ids), use_cache=False)
-> - 不应该再用 model.model.language_model(..., attention_mask={...}) 这种手工接管内部协议的方式
+- Completed NPU validation for AWQ W4A16 on Qwen3, Qwen3-VL, Qwen3.5, Qwen2-VL,
+  and LLaVA-1.5. Text-side PPL runs completed successfully with no obvious
+  anomalies.
 
-## 快速开始
+### 2026-04-20
 
-### 环境准备
+- Completed GPU adaptation and validation for MQuant on Qwen3-VL, Qwen2-VL, and
+  Qwen2.5-VL. Text-side PPL runs completed successfully with no obvious
+  anomalies.
+- Qwen3-VL, Qwen2-VL, and Qwen2.5-VL completed VLMEvalKit evaluation on the
+  validated multimodal datasets. The visual W8A8 plus language W4A8 setting
+  showed acceptable accuracy degradation compared with FP16.
+
+### 2026-04-21
+
+- Completed GPU adaptation and validation for QuaRot and SpinQuant on Qwen3,
+  Qwen3.5, Qwen3-VL, and Qwen2-VL. Text-side PPL runs completed successfully
+  with no obvious anomalies.
+- Qwen3-VL, Qwen2-VL, and Qwen2.5-VL completed VLMEvalKit evaluation on the
+  validated multimodal datasets. The W4A8 setting showed acceptable accuracy
+  degradation compared with FP16.
+
+## Installation
 
 ```bash
 conda activate mindpipe
@@ -117,261 +140,229 @@ git submodule update --init --recursive
 python -m pip install -r requirements.txt
 ```
 
-### 量化
+If VLMEvalKit evaluation is required, initialize the VLMEvalKit submodule or set
+`VLMEVALKIT_ROOT` to an existing checkout.
+
+## Device Loading Policy
+
+Quantization and pruning runs require `--device_map`. This applies to single-GPU
+runs as well as multi-GPU runs. The recommended pattern is:
 
 ```bash
-python main.py \
+CUDA_VISIBLE_DEVICES=0 python main.py \
   --quantization awq \
   --model_path /path/to/model \
-  --device cuda:0 \
+  --device_map auto \
   --dtype float16 \
+  --attn_implementation sdpa \
   --calibration_dataset pileval \
   --evaluation_dataset wikitext2 \
   --calibration_samples 128 \
   --sequence_length 2048 \
   --weight_bits 4 \
   --group_size 128 \
-  --output_dir ./results/quantization
+  --eval_ppl true \
+  --output_dir ./results/awq
 ```
 
-### 剪枝
+This policy keeps model placement under the Hugging Face Accelerate dispatch
+hooks. Avoid manually moving compressed models with `.to(device)` after loading
+with `device_map`.
+
+## Quick Start
+
+### Full-Precision Evaluation
 
 ```bash
-python main.py \
+CUDA_VISIBLE_DEVICES=0 python main.py \
+  --model_path /path/to/model \
+  --device_map auto \
+  --dtype float16 \
+  --attn_implementation sdpa \
+  --evaluation_dataset wikitext2 \
+  --sequence_length 2048 \
+  --batch_size 1 \
+  --max_eval_chunks 64 \
+  --eval_ppl true \
+  --eval_zero_shot true \
+  --zero_shot_tasks boolq piqa rte winogrande arc_easy arc_challenge openbookqa \
+  --zero_shot_num_fewshot 0 \
+  --zero_shot_batch_size 1 \
+  --output_dir ./results/fp_eval
+```
+
+### Quantization
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python main.py \
+  --quantization gptq \
+  --model_path /path/to/model \
+  --device_map auto \
+  --dtype float16 \
+  --attn_implementation sdpa \
+  --calibration_dataset pileval \
+  --evaluation_dataset wikitext2 \
+  --calibration_samples 128 \
+  --sequence_length 2048 \
+  --weight_bits 4 \
+  --activation_bits 16 \
+  --group_size 128 \
+  --weight_group_size 128 \
+  --eval_ppl true \
+  --output_dir ./results/gptq
+```
+
+### Pruning
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python main.py \
   --pruning wanda \
   --model_path /path/to/model \
-  --device cuda:0 \
+  --device_map auto \
   --dtype float16 \
+  --attn_implementation sdpa \
   --calibration_dataset c4 \
   --calibration_samples 128 \
   --sequence_length 2048 \
   --sparsity_ratio 0.5 \
-  --output_dir ./results/pruning
+  --eval_ppl true \
+  --output_dir ./results/wanda
 ```
 
-### 剪枝 + 量化
+### Pruning Followed by Quantization
 
 ```bash
-python main.py \
+CUDA_VISIBLE_DEVICES=0,1 python main.py \
   --pruning wanda_sp \
   --quantization gptq \
   --execution_order pruning_then_quantization \
   --model_path /path/to/model \
-  --device cuda:0 \
+  --device_map auto \
   --dtype float16 \
-  --weight_bits 4 \
+  --attn_implementation sdpa \
+  --calibration_dataset c4 \
+  --calibration_samples 128 \
+  --sequence_length 2048 \
   --sparsity_ratio 0.2 \
+  --weight_bits 4 \
+  --group_size 128 \
+  --eval_ppl true \
   --output_dir ./results/workflow
 ```
 
-### 仅评测
+## Multimodal Evaluation
+
+MindPipe integrates VLMEvalKit through `evaluation/vlm_eval.py`. A typical VLM
+evaluation command is:
 
 ```bash
-python main.py \
-  --model_path ./results/pruning/qwen2.5-7b/wanda/.../saved_model \
-  --device cuda:0 \
-  --eval_ppl true \
-  --eval_zero_shot true \
-  --output_dir ./results/evaluate
+CUDA_VISIBLE_DEVICES=0 python main.py \
+  --model_path /path/to/vlm \
+  --device_map auto \
+  --dtype float16 \
+  --attn_implementation sdpa \
+  --eval_ppl false \
+  --eval_zero_shot false \
+  --eval_vlm true \
+  --vlm_datasets OCRBench TextVQA_VAL ChartQA_TEST InfoVQA_VAL \
+  --vlm_mode all \
+  --vlm_api_nproc 1 \
+  --vlm_eval_kit_root /path/to/VLMEvalKit \
+  --output_dir ./results/vlm_eval
 ```
 
-## GPU / NPU 设备适配
+Use `--num_samples` for smoke tests and `--vlm_resume true` to reuse existing
+per-dataset artifacts when available.
 
-MindPipe 通过 `algorithm/common/device.py` 提供 GPU/NPU 统一抽象层，无需任何 monkey-patch：
+## Common Arguments
 
-- **`resolve_device(device)`** — 将字符串（`"cuda:0"`、`"npu:0"`、`"auto"`）解析为 `torch.device`
-- **`backend_module(device)`** — 返回 `torch.cuda` 或 `torch.npu`
-- **`empty_cache(device)`** / **`synchronize(device)`** — 自动选择后端
-- **`manual_seed_all(seed, device)`** — 自动选择后端
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--model_path` | Required | Local or Hugging Face model path |
+| `--device` | `auto` | Logical device used by runtime helpers |
+| `--device_map` | `None` | Required for pruning and quantization, recommended value: `auto` |
+| `--dtype` | `bfloat16` | `auto`, `float16`, or `bfloat16` |
+| `--attn_implementation` | `flash_attention_2` | `flash_attention_2`, `sdpa`, or `eager` |
+| `--calibration_dataset` | Method default | `wikitext2`, `c4`, `pileval`, `pg19`, or `bookcorpus` |
+| `--evaluation_dataset` | `wikitext2` | Dataset used for PPL evaluation |
+| `--calibration_samples` | `128` | Number of calibration samples |
+| `--sequence_length` | `2048` in many scripts | Sequence length for calibration and evaluation |
+| `--batch_size` | `1` | PPL batch size |
+| `--max_eval_chunks` | `64` | Optional cap for PPL chunks |
+| `--eval_ppl` | `false` | Enable perplexity evaluation |
+| `--eval_zero_shot` | `false` | Enable lm-eval-harness tasks |
+| `--eval_vlm` | `false` | Enable VLMEvalKit evaluation |
 
-使用方式：
+## Quantization Arguments
 
-```bash
-# GPU
-python main.py --quantization gptq --model_path /path/to/model --device cuda:0 ...
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--quantization` | `None` | One of the registered quantization methods |
+| `--weight_bits` | `4` | Weight quantization bit width |
+| `--activation_bits` | `16` | Activation quantization bit width |
+| `--query_bits` | `16` | Query activation bit width for supported methods |
+| `--key_bits` | `16` | Key cache bit width for supported methods |
+| `--value_bits` | `16` | Value cache bit width for supported methods |
+| `--group_size` | `128` | Default group size |
+| `--weight_group_size` | `None` | Overrides weight group size |
+| `--activation_group_size` | `None` | Overrides activation group size |
+| `--kv_group_size` | `None` | Overrides KV group size |
+| `--weight_method` | `gptq` | Weight method for methods that support GPTQ or RTN |
 
-# NPU（需安装 torch_npu）
-python main.py --quantization gptq --model_path /path/to/model --device npu:0 ...
+## Pruning Arguments
 
-# 自动检测
-python main.py --quantization gptq --model_path /path/to/model --device auto ...
-```
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--pruning` | `None` | One of the registered pruning methods |
+| `--sparsity_ratio` | `0.5` | Target sparsity ratio |
+| `--structure_pattern` | `unstructured` | `unstructured`, `2:4`, or `4:8` where supported |
+| `--block_size` | `128` | Block size for supported pruning methods |
+| `--damp_percent` | `0.01` | Hessian damping ratio for second-order methods |
 
-### NPU fail-fast
+## Reproducibility Scripts
 
-未在 NPU 上验证的算法（QuaRot、SpinQuant）设有 `npu_ready = False` 标记。在 NPU 上调用时会直接报错，避免静默出错：
+The `scripts/repro/` directory contains serial benchmark launchers for adapted
+model families and algorithm paths. Examples include:
 
-```
-RuntimeError: Algorithm 'quarot' is not yet NPU-ready. Please use --device cuda:0 to run.
-```
+- `scripts/repro/run_qlora_adapted_models_text_suite.sh`
+- `scripts/repro/run_qalora_adapted_models_text_suite.sh`
+- `scripts/repro/run_mquantpp_awq_vlm_serial_suite.sh`
+- `scripts/repro/run_qwen2_5_vl_gptq_vlm_suite.sh`
+- `scripts/repro/run_qwen3_vl_2b_gptq_suite.sh`
 
-### Hadamard 变换 dispatch
+Use `DRY_RUN=true` to print commands without executing them, and use
+`MODEL_FILTER=<model_key>` when the script supports model-level filtering.
 
-`algorithm/common/hadamard.py` 提供统一的 `hadamard_transform()` 函数：
+## Outputs
 
-- **CUDA** + `fast_hadamard_transform` 已安装 → 使用 CUDA kernel（快）
-- **其他情况** → 使用纯 PyTorch 蝴蝶算法 fallback（正确，慢 2-5x）
-
-各算法的 `method.py` 通过注入机制将 dispatch 函数替换到 source 模块中，source 代码本身无需修改。
-
-## 架构设计
-
-```
-CLI (main.py)  — 统一入口，无子命令
-  │  python main.py --pruning wanda ...
-  │  python main.py --quantization gptq ...
-  │  python main.py --pruning wanda --quantization gptq ...
-  │  python main.py --model_path <saved> --eval_ppl true ...
-  ▼
-workflow/builder.py → WorkflowConfig
-  │  根据 --pruning / --quantization 是否传入动态构建 stages
-  ▼
-workflow/executor.py
-  │  加载模型 → 逐阶段执行 → 评测 → 保存结果
-  ▼
-algorithm/*/method.py
-  │  各算法的统一入口（apply_pruning / apply_fake_quantization）
-  ▼
-evaluation/runner.py
-  │  PPL / Zero-shot / VLM 评测（通过 --eval_ppl / --eval_zero_shot / --eval_vlm 控制）
-  ▼
-results/<model>/<algorithm>/metrics.json
-```
-
-**设计原则**：
-
-1. **三层分离** — `algorithm/` 只管算法实现，`workflow/` 只管编排，`evaluation/` 只管评测
-2. **source/ 不动** — 第三方源码 vendored 进来，适配逻辑全在 `method.py` 包装层
-3. **device 从上层传入** — `args.device` 从 CLI 流入各层，不依赖全局 monkey-patch
-4. **缺失算子直接报错** — 不静默 fallback 到 CPU，确保问题可发现
-
-## 常用参数
-
-### 通用参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--device` | `auto` | `cuda:0` / `npu:0` / `auto` |
-| `--dtype` | `bfloat16` | `float16` / `bfloat16` |
-| `--sequence_length` | 512 | 序列长度 |
-| `--calibration_samples` | 128 | 校准样本数 |
-| `--seed` | 0 | 随机种子 |
-| `--evaluation_dataset` | `wikitext2` | 评测数据集（`wikitext2` / `c4`） |
-
-### 量化参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--quantization` | None | `awq` / `gptq` / `quarot` / `spinquant` / `flatquant` |
-| `--weight_bits` | 4 | 权重比特数 |
-| `--activation_bits` | 16 | 激活比特数 |
-| `--key_bits` / `--value_bits` | 16 | KV Cache 比特数 |
-| `--group_size` | 128 | 量化分组大小 |
-| `--weight_method` | `gptq` | 权重量化方法（`gptq` / `rtn`） |
-| `--weight_symmetric` | True | 权重对称量化 |
-
-### 剪枝参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--pruning` | None | `wanda` / `sparsegpt` / `wanda_sp` / `flap` / `shortgpt` / `alps` |
-| `--sparsity_ratio` | 0.5 | 稀疏率 |
-| `--structure_pattern` | `unstructured` | 剪枝结构模式；当前仅对 `wanda` / `sparsegpt` / `alps` 生效，用于指定 `n:m` 半结构化剪枝 |
-| `--damp_percent` | 0.01 | Hessian 阻尼系数 |
-
-> **校准数据集选择**：各算法均支持 `wikitext2` / `c4` / `pileval` / `pg19` 四种校准数据集。上表"推荐校准数据集"列为各算法原始论文使用的默认数据集，效果最好。ShortGPT 强烈推荐 `pg19`（长文本书籍，Block Influence 统计更稳定），使用其他数据集不会报错但可能影响精度。`--calibration_samples` 控制采样窗口数，ShortGPT 适当增大（如 256 或 512）可提升重要性排序的稳定性。
-
-### 组合参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--execution_order` | `pruning_then_quantization` | 两阶段执行顺序 |
-
-### 保存 / 评测参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--save_model` | False | 保存压缩后的模型 |
-| `--eval_ppl` | True | PPL 评测 |
-| `--eval_zero_shot` | False | Zero-shot 评测 |
-| `--eval_vlm` | False | 多模态评测 |
-
-## 评测
-
-评测与压缩是平级功能，通过参数控制：
-
-```bash
-# 压缩 + 评测（默认）
-python main.py --model_path /path/to/model --pruning wanda --sparsity_ratio 0.5
-
-# 仅压缩，跳过评测
-python main.py --model_path /path/to/model --pruning wanda --sparsity_ratio 0.5 --eval_ppl false
-
-# 仅评测已保存的模型（不传压缩方法）
-python main.py \
-  --model_path ./results/pruning/.../saved_model \
-  --eval_ppl true \
-  --eval_zero_shot true \
-  --output_dir ./results/evaluate
-
-# 评测原始未压缩模型
-python main.py \
-  --model_path /path/to/original/model \
-  --eval_ppl true \
-  --eval_zero_shot true \
-  --output_dir ./results/evaluate_baseline
-```
-
-> **TODO**:
-> 1. QuaRot / SpinQuant 等带 ActQuantWrapper 和 Hadamard 变换的量化方法暂不支持单独评测，
->    因为 `AutoModelForCausalLM.from_pretrained()` 无法恢复自定义 wrapper 结构。
->    后续需为各量化方法实现 `prepare_structure()` 接口，在加载时重建 wrapper 再灌入 state_dict。
-> 2. `--save_model` 时自动写入 `method_info.json` 记录压缩方法、参数等信息，
->    以便加载时自动识别并选择正确的加载逻辑（标准 HF 加载 vs 重建 wrapper）。
->    目前仅对伪剪枝 / AWQ / GPTQ 有效（标准结构，可直接 `from_pretrained`）。
->
->    方案：save 时自动写入元数据文件：
->
->    ```
->    saved_model/
->    ├── config.json
->    ├── model.safetensors
->    ├── method_info.json        ← 新增，记录压缩方法
->    └── ...
->    ```
->
->    `method_info.json` 内容示例：
->
->    ```json
->    {
->      "method": "quarot",
->      "stages": [
->        {"type": "quantization", "algorithm": "quarot", "weight_bits": 4, ...}
->      ]
->    }
->    ```
->
->    load 时：
->    - 读到 `method_info.json` → 按记录的方法重建 wrapper → 灌入 state_dict
->    - 没有 `method_info.json` → 当标准 HF 模型加载（剪枝 / AWQ / GPTQ 的情况）
->
->    这样用户不用手动指定，路径一传就自动识别。
-
-## 结果输出
-
-每次运行在 `output_dir` 下生成目录结构：
+Each run writes metrics and artifacts under the resolved output directory.
 
 ```text
 results/
-├── quantization/<model>/<algorithm>/<run_spec>/metrics.json
-├── pruning/<model>/<algorithm>/<run_spec>/metrics.json
-└── workflow/<model>/<order>/<algo1>__<algo2>/<run_spec>/metrics.json
+├── <model>/<algorithm>/<run_spec>/metrics.json
+├── <model>/<algorithm>/<run_spec>/artifacts.json
+└── <model>/<workflow>/<run_spec>/metrics.json
 ```
 
-`metrics.json` 包含 PPL 结果、算法配置、量化/剪枝层详情等完整信息。
+`metrics.json` stores evaluation results and run metadata. `artifacts.json`
+stores algorithm-specific details such as quantized layers, adapter paths,
+calibration settings, and generated checkpoint locations.
 
-## 当前已知限制
+## Known Limitations
 
-- **FlatQuant** 已支持 NPU 运行；若出现 PPL 偏高，优先排查训练/重参数化路径与数值稳定性
-- **QuaRot / SpinQuant** 的低比特 activation 配置尚未在 Qwen/Qwen2.5-VL 上做精细收敛
-- **SpinQuant** 默认使用 `identity-R2` fallback，learned rotation 训练链路尚未适配 Qwen
+- QuaRot and SpinQuant are not marked NPU-ready in the current registry.
+- MQuant is currently GPU-oriented and not marked NPU-ready.
+- QA-LoRA is a basic CUDA-only implementation and does not export an AutoGPTQ
+  packed checkpoint.
+- QLoRA uses bitsandbytes for CUDA W4 when available; W2/W3 and NPU paths use
+  the in-tree fake-quant fallback.
+- Support for saved-model reload after methods that insert custom runtime
+  wrappers is method-dependent.
+
+## Citation and Acknowledgements
+
+MindPipe vendors or adapts ideas and implementation components from several
+model compression projects, including AWQ, GPTQ, QuaRot, SpinQuant, FlatQuant,
+SmoothQuant, OmniQuant, SplitQuant, QLoRA, QA-LoRA, Wanda, SparseGPT, FLAP,
+ShortGPT, LLM-Pruner, and ALPS. Please cite the original method papers when
+using the corresponding algorithms.

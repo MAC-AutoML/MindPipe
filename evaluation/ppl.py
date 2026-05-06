@@ -11,36 +11,49 @@ from algorithm.common.datasets import get_evaluation_tokens
 from algorithm.common.device import resolve_device
 
 
+def _has_device_map(model) -> bool:
+    for module in (model, getattr(model, "model", None), getattr(model, "language_model", None)):
+        if module is not None and getattr(module, "hf_device_map", None):
+            return True
+    return False
+
+
+def _first_parameter_device(model) -> torch.device | None:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return None
+
+
+def _is_on_resolved_device(model, resolved_device: torch.device) -> bool:
+    current_device = _first_parameter_device(model)
+    if current_device is None or current_device.type != resolved_device.type:
+        return False
+    if current_device.type == "cpu" or resolved_device.index is None:
+        return True
+    return current_device.index == resolved_device.index
+
+
 def _forward_for_ppl(model, batch: torch.Tensor):
     outputs = model(input_ids=batch, use_cache=False)
     return outputs.logits
 
 
-def _first_tensor_device(module) -> torch.device | None:
-    for tensor in module.parameters(recurse=True):
-        if tensor.device.type != "meta":
-            return tensor.device
-    for tensor in module.buffers(recurse=True):
-        if tensor.device.type != "meta":
-            return tensor.device
-    return None
-
-
-def _resolve_input_device(model, fallback_device: torch.device) -> torch.device:
-    if not getattr(model, "hf_device_map", None):
-        return fallback_device
-
+def _input_embedding_device(model, fallback_device):
     if hasattr(model, "get_input_embeddings"):
         embeddings = model.get_input_embeddings()
         if embeddings is not None:
-            device = _first_tensor_device(embeddings)
-            if device is not None and device.type != "cpu":
-                return device
-
-    device = _first_tensor_device(model)
-    if device is not None:
-        return device
-    return fallback_device
+            weight = getattr(embeddings, "weight", None)
+            if weight is not None:
+                return weight.device
+            try:
+                return next(embeddings.parameters()).device
+            except StopIteration:
+                pass
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return fallback_device
 
 
 @torch.inference_mode()
@@ -74,11 +87,13 @@ def evaluate_perplexity(
         torch.cuda.empty_cache()
 
     model.eval()
-    if not getattr(model, "hf_device_map", None):
-        model.to(resolved_device)
-    input_device = _resolve_input_device(model, resolved_device)
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
+    if not _has_device_map(model) and not _is_on_resolved_device(model, resolved_device):
+        model.to(resolved_device)
+
+    # Keep input_ids on the same device as the input embedding.
+    input_device = _input_embedding_device(model, resolved_device)
 
     total_nll = 0.0
     total_tokens = 0
@@ -116,3 +131,4 @@ def evaluate_perplexity(
         "elapsed_seconds": elapsed_seconds,
         "tokens_per_second": total_tokens / max(elapsed_seconds, 1e-6),
     }
+# Migrate pruning to device_map loading for future multi-GPU support.

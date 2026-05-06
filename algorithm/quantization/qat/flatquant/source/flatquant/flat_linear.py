@@ -5,6 +5,10 @@ import torch.nn.functional as F
 from flatquant.quant_utils import WeightQuantizer, ActivationQuantizer
 from flatquant.flat_utils import kronecker_matmul
 
+
+_DELEGATED_LINEAR_ATTRS = {"weight", "bias", "in_features", "out_features"}
+
+
 class FlatQuantizedLinear(nn.Module):
     def __init__(self, args, linear: nn.Linear):
         super(FlatQuantizedLinear, self).__init__()
@@ -24,6 +28,27 @@ class FlatQuantizedLinear(nn.Module):
             self.sigmoid = nn.Sigmoid()
 
         self._eval_mode = False
+
+    def _get_wrapped_linear(self):
+        modules = self.__dict__.get("_modules")
+        if modules is None:
+            return None
+        return modules.get("linear")
+
+    def __getattr__(self, name):
+        if name in _DELEGATED_LINEAR_ATTRS:
+            linear = self._get_wrapped_linear()
+            if linear is not None:
+                return getattr(linear, name)
+        return super().__getattr__(name)
+
+    def __setattr__(self, name, value):
+        if name in _DELEGATED_LINEAR_ATTRS:
+            linear = self._get_wrapped_linear()
+            if linear is not None:
+                setattr(linear, name, int(value) if name in {"in_features", "out_features"} else value)
+                return
+        super().__setattr__(name, value)
 
     def apply_wclip(self, weight):
         wmin, wmax = weight.min(1, keepdim=True)[0], weight.max(1, keepdim=True)[0]
@@ -96,3 +121,4 @@ class FlatQuantizedLinear(nn.Module):
         self.linear.weight.data = weight.to(ori_dtype)
         self._eval_mode = True
 
+# Refactor the project structure and clarify the evaluation entrypoint.

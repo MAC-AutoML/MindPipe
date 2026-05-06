@@ -111,3 +111,4 @@ def build_batched_layer_kwargs(layer_kwargs: dict[str, Any], batch_size: int) ->
             continue
         repeated_kwargs[name] = value
     return repeated_kwargs
+# Adapt SplitQuant to Qwen2.5, LLaMA-2, LLaMA-3, Qwen2.5-VL, and MiniCPM models.

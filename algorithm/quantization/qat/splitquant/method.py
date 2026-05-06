@@ -216,6 +216,7 @@ class SplitQuantMethod(BaseQuantizationMethod):
             from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3
             from splitquant.model_tools.qwen_split_utils import apply_splitquant_to_qwen
             from splitquant.train_utils import cali_split_quant
+            from splitquant.backbone_utils import get_decoder_layers as splitquant_layers
 
             resolved_dev = resolve_device(args.device)
             ref_utils.DEV = resolved_dev
@@ -243,8 +244,13 @@ class SplitQuantMethod(BaseQuantizationMethod):
                     f"SplitQuant currently supports LLaMA-, MiniCPM-, and Qwen-style models only; got model_type={model_type!r}."
                 )
 
+            original_layer_devices = [next(layer.parameters()).device for layer in splitquant_layers(model)]
             model = apply_wrapper(source_args, model)
             LOGGER.info("Applied SplitQuant wrappers to model")
+
+            # 将 wrapper 新建的参数移到原始层所在设备（覆盖 resume/reload/cali 全路径）
+            for layer, layer_device in zip(splitquant_layers(model), original_layer_devices):
+                layer.to(layer_device)
 
             if source_args.resume:
                 load_splitquant_parameters(source_args, model, path=args.splitquant_resume_from)

@@ -618,10 +618,18 @@ def load_model_and_tokenizer(
     }
     resolved_device_map = _parse_device_map_arg(device_map)
     if resolved_device_map is not None:
-        model_kwargs["device_map"] = resolved_device_map
         resolved_max_memory = _parse_max_memory_arg(max_memory)
+        model_kwargs["device_map"] = resolved_device_map
         if resolved_max_memory is not None:
             model_kwargs["max_memory"] = resolved_max_memory
+        elif resolved_device_map == "auto" and torch.cuda.is_available():
+            # 禁止 CPU/disk offload：只允许 CUDA 设备，放不下就 OOM。
+            # 剪枝方法要求所有权重都在 GPU 上，offload 会导致 meta tensor / flash_attn CPU 报错。
+            gpu_mem = {}
+            for index in range(torch.cuda.device_count()):
+                total = torch.cuda.get_device_properties(index).total_memory
+                gpu_mem[index] = f"{max(total // (1024 ** 3) - 2, 1)}GiB"
+            model_kwargs["max_memory"] = gpu_mem
         if offload_folder is not None:
             model_kwargs["offload_folder"] = offload_folder
         if offload_state_dict is not None:
@@ -737,7 +745,11 @@ def get_text_backbone(model: nn.Module) -> TextBackbone:
     if hasattr(model, "model") and hasattr(model.model, "language_model"):
         language_model = model.model.language_model
         if hasattr(language_model, "layers"):
+            # Qwen2.5-VL 等模型的 language_model 直接有 .layers
             return TextBackbone(model=model, root=language_model, prefix="model.language_model")
+        if hasattr(language_model, "model") and hasattr(language_model.model, "layers"):
+            # LLaVA 等模型的 language_model 是 CausalLM 包装，layers 在其 .model 内
+            return TextBackbone(model=model, root=language_model.model, prefix="model.language_model.model")
     if hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
         return TextBackbone(model=model, root=model.language_model, prefix="language_model")
     if hasattr(model, "model") and hasattr(model.model, "layers"):
@@ -828,29 +840,99 @@ def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> l
     return [sorted(available_names)]
 
 
-def _first_tensor_device(module: nn.Module | None) -> torch.device | None:
-    if module is None:
-        return None
-    for tensor in module.parameters(recurse=True):
-        if tensor.device.type != "meta":
-            return tensor.device
-    for tensor in module.buffers(recurse=True):
-        if tensor.device.type != "meta":
-            return tensor.device
+# ── 混合注意力层抽象（Qwen3.5 等混合架构） ──
+
+
+def get_attn_output_proj(layer):
+    """获取注意力层的输出投影。
+
+    兼容标准 self_attn.o_proj 和 Qwen3.5 linear_attn.out_proj。
+    """
+    if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "o_proj"):
+        return layer.self_attn.o_proj
+    if hasattr(layer, "linear_attn") and hasattr(layer.linear_attn, "out_proj"):
+        return layer.linear_attn.out_proj
     return None
 
 
-def _resolve_sharded_capture_device(model: nn.Module, backbone: TextBackbone, fallback: torch.device) -> torch.device:
-    if not getattr(model, "hf_device_map", None):
-        return fallback
-    for attr_name in ("rotary_emb", "rotary_pos_emb"):
-        device = _first_tensor_device(getattr(backbone.root, attr_name, None))
-        if device is not None:
-            return device
-    device = _first_tensor_device(backbone.embed_tokens)
-    if device is not None:
-        return device
-    return fallback
+def supports_head_pruning(layer) -> bool:
+    """判断该层是否支持 attention head 结构化剪枝。
+
+    linear_attention 层（如 Qwen3.5 的 GatedDeltaNet）没有标准的 head 概念，
+    不适合做 head 级别的结构化剪枝，应仅剪 MLP。
+    """
+    return hasattr(layer, "self_attn") and hasattr(layer.self_attn, "q_proj")
+
+
+def get_head_geometry(layer):
+    """获取 attention head 的几何信息。
+
+    返回 (num_heads, num_kv_heads, num_kv_groups, head_dim)，
+    linear_attention 层返回 None。
+    """
+    if not supports_head_pruning(layer):
+        return None
+    attn = layer.self_attn
+    config = getattr(attn, "config", None)
+    num_heads = int(getattr(attn, "num_heads", getattr(config, "num_attention_heads")))
+    num_kv_heads = int(getattr(attn, "num_key_value_heads", getattr(config, "num_key_value_heads", num_heads)))
+    hidden_size = int(getattr(attn, "hidden_size", getattr(config, "hidden_size")))
+    head_dim = int(getattr(attn, "head_dim", getattr(config, "head_dim", hidden_size // num_heads)))
+    num_kv_groups = num_heads // num_kv_heads
+    return num_heads, num_kv_heads, num_kv_groups, head_dim
+
+
+def get_q_stride(layer) -> int | None:
+    """获取 q_proj 中每个 head 占的行数。
+
+    标准 attention 是 head_dim；
+    Qwen3.5 full-attn 是 head_dim * 2（query+gate 绑定）。
+    linear_attention 层返回 None。
+    """
+    geo = get_head_geometry(layer)
+    if geo is None:
+        return None
+    num_heads, _, _, head_dim = geo
+    q_proj = layer.self_attn.q_proj
+    expected_q_size = num_heads * head_dim
+    actual_q_size = q_proj.out_features
+    return head_dim * 2 if actual_q_size == expected_q_size * 2 else head_dim
+
+
+def get_attn_projections(layer):
+    """获取注意力层的所有投影层 (q_proj, k_proj, v_proj, o_proj)。
+
+    linear_attention 层返回 None。
+    """
+    if not supports_head_pruning(layer):
+        return None
+    attn = layer.self_attn
+    return attn.q_proj, attn.k_proj, attn.v_proj, attn.o_proj
+
+
+def get_mlp_projections(layer):
+    """获取 MLP 的三个投影层 (up_proj, gate_proj, down_proj)。"""
+    return layer.mlp.up_proj, layer.mlp.gate_proj, layer.mlp.down_proj
+
+
+# ── 多卡并行设备管理 helpers ──
+
+
+def move_tensors_to_device(data, device):
+    """将字典中的张量递归移动到指定设备。"""
+    if isinstance(data, dict):
+        return {k: move_tensors_to_device(v, device) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        moved = [move_tensors_to_device(v, device) for v in data]
+        return type(data)(moved)
+    if torch.is_tensor(data):
+        return data.to(device)
+    return data
+
+
+def get_layer_device(backbone: TextBackbone, layer_index: int) -> torch.device:
+    """获取指定层所在的设备。device_map 分片时直接从层参数获取。"""
+    return next(backbone.layers[layer_index].parameters()).device
 
 
 @torch.no_grad()
@@ -860,16 +942,13 @@ def capture_first_block_inputs(
     calibration_batches,
     device: str | torch.device,
 ):
-    device = resolve_device(device)
     decoder_config = backbone.decoder_config
     use_cache = decoder_config.use_cache
     decoder_config.use_cache = False
     blocks = backbone.layers
-    sharded_model = bool(getattr(model, "hf_device_map", None))
-    capture_device = _resolve_sharded_capture_device(model, backbone, device)
-    if not sharded_model:
-        backbone.move_front_modules(capture_device)
-        blocks[0] = blocks[0].to(capture_device)
+
+    # device_map 模式下，直接从模型参数获取 embedding 所在设备
+    capture_device = next(model.parameters()).device
 
     dtype = next(iter(model.parameters())).dtype
     sample_count = len(calibration_batches)
@@ -912,9 +991,5 @@ def capture_first_block_inputs(
             pass
 
     blocks[0] = blocks[0].module
-    if not sharded_model:
-        blocks[0] = blocks[0].cpu()
-        backbone.move_front_modules("cpu")
-    empty_cache(capture_device)
     decoder_config.use_cache = use_cache
     return inputs, dict(cached_kwargs)

@@ -133,16 +133,15 @@ def rotate_conv(layer, q_visual: torch.Tensor, embed_dims: int):
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     dtype = layer.weight.dtype
     weight_shape = layer.weight.data.shape
-    weight = layer.weight.data.to(device=utils.DEV, dtype=rotation_dtype).view(embed_dims, -1)
+    weight = layer.weight.data.to(dtype=rotation_dtype).view(embed_dims, -1)
     layer.weight.data = (
         torch.matmul(q_visual.T.to(weight.device, dtype=rotation_dtype), weight)
-        .to(device="cpu", dtype=dtype)
+        .to(dtype=dtype)
         .view(weight_shape)
     )
     if layer.bias is not None:
-        bias = layer.bias.data.to(device=utils.DEV, dtype=rotation_dtype)
+        bias = layer.bias.data.to(dtype=rotation_dtype)
         layer.bias.data = torch.matmul(bias, q_visual.to(bias.device, dtype=rotation_dtype)).to(
-            device="cpu",
             dtype=dtype,
         )
 
@@ -237,10 +236,10 @@ def rotate_embeddings(model, Q: torch.Tensor) -> None:
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     for W in model_utils.get_embeddings(model, model_type):
         dtype = W.weight.data.dtype
-        W_ = W.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
-        W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+        W_ = W.weight.data.to(dtype=rotation_dtype)
+        W.weight.data = torch.matmul(W_, Q.to(W_.device)).to(dtype=dtype)
 
-    
+
 def rotate_attention_inputs(layer, Q, model_type) -> None:
     # Rotate the token-mixer input weights.
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
@@ -256,8 +255,8 @@ def rotate_attention_inputs(layer, Q, model_type) -> None:
         ]
     for W in linears:
         dtype = W.weight.dtype
-        W_ = W.weight.to(device=utils.DEV, dtype=rotation_dtype)
-        W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+        W_ = W.weight.to(dtype=rotation_dtype)
+        W.weight.data = torch.matmul(W_, Q).to(dtype=dtype)
 
 def rotate_attention_output(layer, Q, model_type) -> None:
     # Rotate token-mixer output matrix.
@@ -266,11 +265,11 @@ def rotate_attention_output(layer, Q, model_type) -> None:
 
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
-    W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
+    W_ = W.weight.data.to(dtype=rotation_dtype)
+    W.weight.data = torch.matmul(Q.T, W_).to(dtype=dtype)
     if W.bias is not None:
-        b = W.bias.data.to(device=utils.DEV, dtype=rotation_dtype)
-        W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
+        b = W.bias.data.to(dtype=rotation_dtype)
+        W.bias.data = torch.matmul(Q.T, b).to(dtype=dtype)
 
 def rotate_mlp_input(layer, Q, model_type):
     # Rotate the MLP input weights.
@@ -283,8 +282,8 @@ def rotate_mlp_input(layer, Q, model_type):
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     for W in mlp_inputs:
         dtype = W.weight.dtype
-        W_ = W.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
-        W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+        W_ = W.weight.data.to(dtype=rotation_dtype)
+        W.weight.data = torch.matmul(W_, Q).to(dtype=dtype)
     
 def rotate_mlp_output(layer, Q, model_type):
     # Rotate the MLP output weights and bias.
@@ -296,15 +295,15 @@ def rotate_mlp_output(layer, Q, model_type):
         raise ValueError(f'Unknown model type {model_type}')
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
-    W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
+    W_ = W.weight.data.to(dtype=rotation_dtype)
+    W.weight.data = torch.matmul(Q.T, W_).to(dtype=dtype)
     try:
-        apply_exact_had_to_linear(W, had_dim=-1, output=False, device=utils.DEV) #apply exact (inverse) hadamard on the weights of mlp output
+        apply_exact_had_to_linear(W, had_dim=-1, output=False, device=W.weight.device) #apply exact (inverse) hadamard on the weights of mlp output
     except (AssertionError, ValueError):
         pass
     if W.bias is not None:
-        b = W.bias.data.to(device=utils.DEV, dtype=rotation_dtype)
-        W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
+        b = W.bias.data.to(dtype=rotation_dtype)
+        W.bias.data = torch.matmul(Q.T, b).to(dtype=dtype)
 
 def matmul_hadU_cuda_had(X, hadK, transpose=False):
     '''
@@ -334,7 +333,7 @@ def rotate_faster_down_proj(layer, model_type, hardK):
     
     dtype = W.weight.data.dtype
     W.weight.data = matmul_hadU_cuda_had(W.weight.data.float().to(utils.DEV), hardK)
-    W.weight.data = W.weight.data.to(device="cpu", dtype=dtype)
+    W.weight.data = W.weight.data.to(dtype=dtype)
 
 
 def rotate_head(model, Q: torch.Tensor) -> None:
@@ -351,8 +350,8 @@ def rotate_head(model, Q: torch.Tensor) -> None:
                 return
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     dtype = W.weight.data.dtype
-    W_ = W.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
-    W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+    W_ = W.weight.data.to(dtype=rotation_dtype)
+    W.weight.data = torch.matmul(W_, Q.to(W_.device)).to(dtype=dtype)
 
 
 def _get_qwen2_5_vl_visual_root(model):
@@ -364,9 +363,8 @@ def _rotate_qwen2_5_vl_visual_attention_inputs(layer, q_visual: torch.Tensor) ->
     qkv = layer.attn.qkv
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     dtype = qkv.weight.dtype
-    weight = qkv.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
+    weight = qkv.weight.data.to(dtype=rotation_dtype)
     qkv.weight.data = torch.matmul(weight, q_visual.to(weight.device, dtype=rotation_dtype)).to(
-        device="cpu",
         dtype=dtype,
     )
 
@@ -375,25 +373,23 @@ def _rotate_qwen2_5_vl_visual_attention_output(layer, q_visual: torch.Tensor) ->
     proj = layer.attn.proj
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     dtype = proj.weight.dtype
-    weight = proj.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
+    weight = proj.weight.data.to(dtype=rotation_dtype)
     proj.weight.data = torch.matmul(q_visual.T.to(weight.device, dtype=rotation_dtype), weight).to(
-        device="cpu",
         dtype=dtype,
     )
     if proj.bias is not None:
-        bias = proj.bias.data.to(device=utils.DEV, dtype=rotation_dtype)
+        bias = proj.bias.data.to(dtype=rotation_dtype)
         proj.bias.data = torch.matmul(
             q_visual.T.to(bias.device, dtype=rotation_dtype), bias
-        ).to(device="cpu", dtype=dtype)
+        ).to(dtype=dtype)
 
 
 def _rotate_qwen2_5_vl_visual_mlp_input(layer, q_visual: torch.Tensor) -> None:
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     for linear in (layer.mlp.gate_proj, layer.mlp.up_proj):
         dtype = linear.weight.dtype
-        weight = linear.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
+        weight = linear.weight.data.to(dtype=rotation_dtype)
         linear.weight.data = torch.matmul(weight, q_visual.to(weight.device, dtype=rotation_dtype)).to(
-            device="cpu",
             dtype=dtype,
         )
 
@@ -402,15 +398,15 @@ def _rotate_qwen2_5_vl_visual_mlp_output(layer, q_visual: torch.Tensor) -> None:
     out_layer = layer.mlp.down_proj
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     dtype = out_layer.weight.dtype
-    weight = out_layer.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
+    weight = out_layer.weight.data.to(dtype=rotation_dtype)
     out_layer.weight.data = torch.matmul(
         q_visual.T.to(weight.device, dtype=rotation_dtype), weight
-    ).to(device="cpu", dtype=dtype)
+    ).to(dtype=dtype)
     if out_layer.bias is not None:
-        bias = out_layer.bias.data.to(device=utils.DEV, dtype=rotation_dtype)
+        bias = out_layer.bias.data.to(dtype=rotation_dtype)
         out_layer.bias.data = torch.matmul(
             q_visual.T.to(bias.device, dtype=rotation_dtype), bias
-        ).to(device="cpu", dtype=dtype)
+        ).to(dtype=dtype)
 
 
 def _rotate_qwen2_5_vl_visual_ov_proj(layer) -> None:
@@ -420,13 +416,13 @@ def _rotate_qwen2_5_vl_visual_ov_proj(layer) -> None:
     head_dim = qkv.in_features // num_heads
     q_head = get_orthogonal_matrix(head_dim, "hadamard")
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
-    q_head = q_head.to(device=utils.DEV, dtype=rotation_dtype)
+    q_head = q_head.to(dtype=rotation_dtype)
 
     q_weight, k_weight, v_weight = qkv.weight.data.chunk(3, dim=0)
     qkv_dtype = qkv.weight.dtype
-    v_weight_t = v_weight.to(device=utils.DEV, dtype=rotation_dtype).T.reshape(-1, num_heads, head_dim)
+    v_weight_t = v_weight.to(dtype=rotation_dtype).T.reshape(-1, num_heads, head_dim)
     v_weight_rotated = (
-        torch.matmul(v_weight_t, q_head).reshape(-1, num_heads * head_dim).T.to(device="cpu", dtype=qkv_dtype)
+        torch.matmul(v_weight_t, q_head).reshape(-1, num_heads * head_dim).T.to(dtype=qkv_dtype)
     )
     qkv.weight.data = torch.cat([q_weight, k_weight, v_weight_rotated], dim=0).contiguous()
 
@@ -434,18 +430,18 @@ def _rotate_qwen2_5_vl_visual_ov_proj(layer) -> None:
         q_bias, k_bias, v_bias = qkv.bias.data.chunk(3, dim=0)
         v_bias_rotated = (
             torch.matmul(
-                v_bias.to(device=utils.DEV, dtype=rotation_dtype).reshape(num_heads, head_dim),
+                v_bias.to(dtype=rotation_dtype).reshape(num_heads, head_dim),
                 q_head,
             )
             .reshape(-1)
-            .to(device="cpu", dtype=qkv.bias.dtype)
+            .to(dtype=qkv.bias.dtype)
         )
         qkv.bias.data = torch.cat([q_bias, k_bias, v_bias_rotated], dim=0).contiguous()
 
     proj_dtype = proj.weight.dtype
-    proj_weight = proj.weight.data.to(device=utils.DEV, dtype=rotation_dtype).reshape(-1, num_heads, head_dim)
+    proj_weight = proj.weight.data.to(dtype=rotation_dtype).reshape(-1, num_heads, head_dim)
     proj.weight.data = (
-        torch.matmul(proj_weight, q_head).reshape(-1, num_heads * head_dim).to(device="cpu", dtype=proj_dtype)
+        torch.matmul(proj_weight, q_head).reshape(-1, num_heads * head_dim).to(dtype=proj_dtype)
     )
 
 
@@ -459,10 +455,10 @@ def _rotate_qwen2_5_vl_visual_merger_input(merger, q_visual: torch.Tensor) -> No
     dtype = first_linear.weight.dtype
     out_features, in_features = first_linear.weight.shape
     q_dim = q_visual.shape[0]
-    weight = first_linear.weight.data.to(device=utils.DEV, dtype=rotation_dtype).view(out_features, -1, q_dim)
+    weight = first_linear.weight.data.to(dtype=rotation_dtype).view(out_features, -1, q_dim)
     first_linear.weight.data = torch.matmul(
         weight, q_visual.to(weight.device, dtype=rotation_dtype)
-    ).to(device="cpu", dtype=dtype).view(out_features, in_features)
+    ).to(dtype=dtype).view(out_features, in_features)
 
 
 def rotate_qwen2_5_vl_visual_branch(model, rotate_mode: str) -> None:
@@ -523,11 +519,11 @@ def rotate_extra_modules(modules, Q: torch.Tensor) -> None:
     rotation_dtype = preferred_rotation_dtype(utils.DEV)
     for module in modules:
         dtype = module.weight.data.dtype
-        weight = module.weight.data.to(device=utils.DEV, dtype=rotation_dtype)
-        module.weight.data = torch.matmul(Q.T, weight).to(device="cpu", dtype=dtype)
+        weight = module.weight.data.to(dtype=rotation_dtype)
+        module.weight.data = torch.matmul(Q.to(weight.device).T, weight).to(dtype=dtype)
         if module.bias is not None:
-            bias = module.bias.data.to(device=utils.DEV, dtype=rotation_dtype)
-            module.bias.data = torch.matmul(Q.T, bias).to(device="cpu", dtype=dtype)
+            bias = module.bias.data.to(dtype=rotation_dtype)
+            module.bias.data = torch.matmul(Q.to(bias.device).T, bias).to(dtype=dtype)
 
 def rotate_ov_proj(layer, model_type, head_num, head_dim):
     if not hasattr(layer, "self_attn"):
@@ -540,8 +536,8 @@ def rotate_ov_proj(layer, model_type, head_num, head_dim):
     else:
         raise ValueError(f'Unknown model type {model_type}')
     
-    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, device=utils.DEV)
-    apply_exact_had_to_linear(o_proj, had_dim=-1, output=False, device=utils.DEV)
+    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, device=v_proj.weight.device)
+    apply_exact_had_to_linear(o_proj, had_dim=-1, output=False, device=o_proj.weight.device)
 
 
 @torch.inference_mode()
@@ -561,13 +557,16 @@ def rotate_model(model, args):
     if bool(getattr(args, "quarot_qwen2_5_vl_rotate_merger_output", True)):
         rotate_extra_modules(_get_extra_rotation_modules(model), Q)
     utils.cleanup_memory()
-    layers = model_utils.get_transformer_layers(model, 
+    layers = model_utils.get_transformer_layers(model,
                                                 model_type=model_type)
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
-        rotate_attention_inputs(layers[idx], Q, model_type)
-        rotate_attention_output(layers[idx], Q, model_type)
-        rotate_mlp_input(layers[idx], Q, model_type)
-        rotate_mlp_output(layers[idx], Q, model_type)
+        # device_map 模式下将 Q 移动到当前层所在设备
+        layer_device = next(layer.parameters()).device
+        Q_layer = Q.to(device=layer_device)
+        rotate_attention_inputs(layers[idx], Q_layer, model_type)
+        rotate_attention_output(layers[idx], Q_layer, model_type)
+        rotate_mlp_input(layers[idx], Q_layer, model_type)
+        rotate_mlp_output(layers[idx], Q_layer, model_type)
         rotate_ov_proj(layers[idx], model_type, num_heads, head_dim)
 
 
@@ -960,3 +959,4 @@ def add_qk_rotation_wrapper_to_linear_attn(module, *args, **kwargs):
     if "recurrent_gated_delta_rule" in wrappers:
         setattr(module, "linear_attn_recurrent_qk_rotation_wrapper", wrappers["recurrent_gated_delta_rule"])
     return primary_wrapper
+# Synchronize quantization device_map support for multi-GPU execution.

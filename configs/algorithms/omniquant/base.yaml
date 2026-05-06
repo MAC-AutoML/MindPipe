@@ -27,3 +27,4 @@ defaults:
   omniquant_disable_zero_point: false
   omniquant_save_act_stats: true
   omniquant_save_diagnostics: false
+# Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.

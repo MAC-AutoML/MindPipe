@@ -17,7 +17,9 @@ from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
 from ....common.modeling import find_linear_layers
+from ....common.modeling import get_layer_device
 from ....common.modeling import get_text_backbone
+from ....common.modeling import move_tensors_to_device
 from ....common.modeling import unwrap_layer_output
 from ....common.runtime import prepend_python_path
 from ...base import BaseQuantizationMethod
@@ -30,28 +32,6 @@ def _linear_from_weight_view(weight: torch.Tensor) -> nn.Linear:
     linear = nn.Linear(weight.shape[1], weight.shape[0], bias=False, device="meta")
     linear.weight = nn.Parameter(weight.detach(), requires_grad=False)
     return linear
-
-
-def _first_tensor_device(module: nn.Module) -> torch.device | None:
-    for tensor in module.parameters(recurse=True):
-        if tensor.device.type != "meta":
-            return tensor.device
-    for tensor in module.buffers(recurse=True):
-        if tensor.device.type != "meta":
-            return tensor.device
-    return None
-
-
-def _move_tensor_tree(value: Any, device: torch.device) -> Any:
-    if torch.is_tensor(value):
-        return value.to(device)
-    if isinstance(value, tuple):
-        return tuple(_move_tensor_tree(item, device) for item in value)
-    if isinstance(value, list):
-        return [_move_tensor_tree(item, device) for item in value]
-    if isinstance(value, dict):
-        return {key: _move_tensor_tree(item, device) for key, item in value.items()}
-    return value
 
 
 class _LinearizedPackedMoeExperts(nn.Module):
@@ -360,22 +340,16 @@ class GPTQMethod(BaseQuantizationMethod):
         quantizer_artifacts = {}
         max_layers = getattr(args, "gptq_max_layers", None)
         max_layers = None if max_layers is None else max(0, int(max_layers))
-        default_quant_device = resolve_device(args.device)
-        sharded_model = bool(getattr(model, "hf_device_map", None))
+        layers = backbone.layers
+        if max_layers is not None:
+            logger.info("Stopping GPTQ after %d decoder layer(s) due to --gptq_max_layers.", max_layers)
+            layers = layers[:max_layers]
 
-        for layer_index, block in enumerate(backbone.layers):
-            if max_layers is not None and layer_index >= max_layers:
-                logger.info("Stopping GPTQ after %d decoder layer(s) due to --gptq_max_layers.", max_layers)
-                break
-            restore_device = _first_tensor_device(block) if sharded_model else torch.device("cpu")
-            if sharded_model and restore_device is not None and restore_device.type != "cpu":
-                quant_device = restore_device
-            else:
-                quant_device = default_quant_device
-            input_states = input_states.to(quant_device)
-            output_states = output_states.to(quant_device)
-            layer_kwargs = _move_tensor_tree(layer_kwargs, quant_device)
-            block = block.to(quant_device)
+        for layer_index, block in enumerate(layers):
+            target_device = get_layer_device(backbone, layer_index)
+            input_states = input_states.to(target_device)
+            output_states = output_states.to(target_device)
+            layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
             converted_experts = self._linearize_packed_moe_experts(block)
             if converted_experts:
                 logger.info(
@@ -419,7 +393,7 @@ class GPTQMethod(BaseQuantizationMethod):
                     args=args,
                 )
                 del gptq_states
-                empty_cache(quant_device)
+                empty_cache(target_device)
 
             for sample_index in range(args.calibration_samples):
                 with torch.no_grad():
@@ -435,10 +409,7 @@ class GPTQMethod(BaseQuantizationMethod):
                     backbone.prefix,
                     layer_index,
                 )
-            target_device = restore_device if restore_device is not None else torch.device("cpu")
-            backbone.layers[layer_index] = block.to(target_device)
-            del block
-            empty_cache(quant_device)
+            empty_cache(target_device)
             input_states, output_states = output_states, input_states
 
         return {

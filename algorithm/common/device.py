@@ -202,3 +202,4 @@ def distributed_backend(device: str | torch.device | None = None) -> str:
     if device_type == "cuda":
         return "nccl"
     return "gloo"
+# Fix GPU/NPU adaptation bugs and use a unified device abstraction.

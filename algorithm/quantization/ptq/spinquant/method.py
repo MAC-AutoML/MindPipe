@@ -13,9 +13,11 @@ from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
+from ....common.modeling import get_layer_device
 from ....common.modeling import get_output_head
 from ....common.modeling import get_text_backbone
 from ....common.modeling import load_model_and_tokenizer
+from ....common.modeling import move_tensors_to_device
 from ....common.modeling import unwrap_layer_output
 from ....common.runtime import prepend_python_path
 
@@ -199,7 +201,7 @@ class SpinQuantMethod(BaseQuantizationMethod):
     def _apply_rtn_quantization(self, backbone, quant_utils, args) -> dict[str, object]:
         quantizer_artifacts: dict[str, object] = {}
         for layer_index, block in enumerate(backbone.layers):
-            block = block.to(args.device)
+            # device_map 模式下不手动移动 block，由 dispatch_model 管理
             qlayers = quant_utils.find_qlayers(block, layers=[quant_utils.ActQuantWrapper])
             for layer_name, qlayer in qlayers.items():
                 quantizer = quant_utils.WeightQuantizer()
@@ -219,9 +221,7 @@ class SpinQuantMethod(BaseQuantizationMethod):
                     "group_size": args.weight_group_size,
                     "symmetric": args.weight_symmetric,
                 }
-            backbone.layers[layer_index] = block.cpu()
-            del block
-            empty_cache(args.device)
+            # device_map 模式下不手动移动到 cpu
         return quantizer_artifacts
 
     def _apply_gptq_quantization(
@@ -244,7 +244,11 @@ class SpinQuantMethod(BaseQuantizationMethod):
         model_type = getattr(getattr(model, "config", None), "model_type", None)
 
         for layer_index, block in enumerate(backbone.layers):
-            block = block.to(args.device)
+            target_device = get_layer_device(backbone, layer_index)
+            input_states = input_states.to(target_device)
+            output_states = output_states.to(target_device)
+            layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
+            # device_map 模式下不手动移动 block，由 dispatch_model 管理
             qlayers = quant_utils.find_qlayers(block, layers=[quant_utils.ActQuantWrapper])
             layer_groups = build_decoder_layer_groups(block, set(qlayers))
 
@@ -370,9 +374,7 @@ class SpinQuantMethod(BaseQuantizationMethod):
                         neginf=0.0,
                     )
 
-            backbone.layers[layer_index] = block.cpu()
-            del block
-            empty_cache(args.device)
+            # device_map 模式下不手动移动到 cpu
             input_states, output_states = output_states, input_states
 
         return quantizer_artifacts
@@ -551,3 +553,4 @@ class SpinQuantMethod(BaseQuantizationMethod):
             "quantized_linear_count": len(quantizer_artifacts),
             "quantized_linear_layers": quantizer_artifacts,
         }
+# Synchronize quantization device_map support for multi-GPU execution.

@@ -18,3 +18,4 @@ def setup_logging(level: str = "INFO") -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
+# Refactor the project structure and clarify the evaluation entrypoint.

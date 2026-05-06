@@ -68,11 +68,11 @@ def parser_gen():
                         help='Number of calibration data samples for SplitQuant and GPTQ.')
     parser.add_argument('--cali_bsz', type=int, default=4,
                         help='Batch size for SplitQuant. Default is 4.')
-    parser.add_argument("--lr", type=float, default=1e-5, 
+    parser.add_argument("--lr", type=float, default=1e-5,
                         help='Learning rate for learnable transformation.')
-    parser.add_argument("--cali_trans", default=False, action="store_true", 
+    parser.add_argument("--cali_trans", default=False, action="store_true",
                         help="Enable calibration of transformations.")
-    parser.add_argument("--add_diag", default=False, action="store_true", 
+    parser.add_argument("--add_diag", default=False, action="store_true",
                         help="Add per-channel scaling.")
     parser.add_argument("--lwc", default=False, action="store_true", 
                         help="Use learnable weight clipping.")

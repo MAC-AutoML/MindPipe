@@ -216,6 +216,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
             from flatquant.model_tools.qwen3_utils import apply_flatquant_to_qwen3
             from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
             from flatquant.train_utils import cali_flat_quant
+            from flatquant.backbone_utils import get_decoder_layers as flatquant_layers
 
             resolved_dev = resolve_device(args.device)
             ref_utils.DEV = resolved_dev
@@ -243,8 +244,16 @@ class FlatQuantMethod(BaseQuantizationMethod):
                     f"FlatQuant does not support model_type={model_type!r} in the unified launcher yet."
                 )
 
+            original_layer_devices = [next(layer.parameters()).device for layer in flatquant_layers(model)]
             model = apply_wrapper(source_args, model)
             LOGGER.info("Applied FlatQuant wrappers to model")
+
+            # 将 wrapper 新建的参数移回包裹前所在设备，避免默认初始化落到 CPU。
+            restored_layer_devices = []
+            for layer, original_device in zip(flatquant_layers(model), original_layer_devices):
+                layer.to(original_device)
+                restored_layer_devices.append(next(layer.parameters()).device)
+            LOGGER.info("Restored FlatQuant layer devices after wrapping: %s", restored_layer_devices)
 
             if source_args.resume:
                 load_flat_parameters(source_args, model, path=args.flatquant_resume_from)

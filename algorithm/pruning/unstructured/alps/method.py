@@ -6,12 +6,13 @@ from pathlib import Path
 
 import torch
 
-from ....common.device import empty_cache
 from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import capture_first_block_inputs
 from ....common.modeling import find_linear_layers
+from ....common.modeling import get_layer_device
 from ....common.modeling import get_text_backbone
+from ....common.modeling import move_tensors_to_device
 from ....common.modeling import unwrap_layer_output
 from ....common.runtime import prepend_python_path
 from ...base import BasePruningMethod
@@ -76,8 +77,12 @@ class ALPSMethod(BasePruningMethod):
             from alps import ALPS_prune
 
             pruned_linear_layers = []
-            for layer_index, block in enumerate(backbone.layers):
-                block = block.to(args.device)
+            for layer_index in range(len(backbone.layers)):
+                block = backbone.layers[layer_index]
+                target_device = get_layer_device(backbone, layer_index)
+                input_states = input_states.to(target_device)
+                output_states = output_states.to(target_device)
+                layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
                 linear_layers = find_linear_layers(block)
 
                 # ALPS: collect statistics for ALL linear layers in one pass,
@@ -90,7 +95,7 @@ class ALPSMethod(BasePruningMethod):
                         linear,
                         nsamples=args.calibration_samples,
                         seqlen=args.sequence_length,
-                        dev=args.device,
+                        dev=target_device,
                     )
                     for name, linear in subset.items()
                 }
@@ -124,7 +129,6 @@ class ALPSMethod(BasePruningMethod):
                     alps_state.free()
                     pruned_linear_layers.append(f"{backbone.prefix}.layers.{layer_index}.{name}")
                 del alps_states
-                empty_cache(args.device)
 
                 for sample_index in range(args.calibration_samples):
                     with torch.no_grad():
@@ -132,9 +136,6 @@ class ALPSMethod(BasePruningMethod):
                             block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
                         )
 
-                backbone.layers[layer_index] = block.cpu()
-                del block
-                empty_cache(args.device)
                 input_states, output_states = output_states, input_states
 
         observed_sparsity = _check_sparsity(model)
@@ -146,3 +147,4 @@ class ALPSMethod(BasePruningMethod):
             "pruned_linear_count": len(pruned_linear_layers),
             "pruned_linear_layers": pruned_linear_layers,
         }
+# Migrate pruning to device_map loading for future multi-GPU support.
