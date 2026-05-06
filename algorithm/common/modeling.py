@@ -559,7 +559,19 @@ def load_model_and_tokenizer(
         "attn_implementation": attn_implementation,
     }
     if device_map is not None:
-        model_kwargs["device_map"] = device_map
+        # 禁止 CPU/disk offload：只允许 CUDA 设备，放不下就 OOM
+        # 剪枝方法要求所有权重都在 GPU 上，offload 会导致 meta tensor / flash_attn CPU 报错
+        if device_map == "auto" and torch.cuda.is_available():
+            n_gpus = torch.cuda.device_count()
+            gpu_mem = {}
+            for i in range(n_gpus):
+                total = torch.cuda.get_device_properties(i).total_memory
+                # 预留 2GB 给框架开销
+                gpu_mem[i] = f"{max(total // (1024 ** 3) - 2, 1)}GiB"
+            model_kwargs["device_map"] = device_map
+            model_kwargs["max_memory"] = gpu_mem
+        else:
+            model_kwargs["device_map"] = device_map
     is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures

@@ -571,13 +571,15 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
 
 
 def _sync_decoder_config(layers, decoder_config):
-    """真剪枝后同步全局配置（仅在所有层维度一致时生效）。
+    """真剪枝后同步全局配置。
 
     遍历所有层收集当前的 head 数、intermediate_size 等属性，
-    如果各层一致则更新全局 config。注意：如果各层维度不一致，
-    此函数不会更新 config，此时应使用 torch.save 保存模型而非
-    save_pretrained，因为 HF config 无法表达逐层异构维度。
+    如果各层一致则直接更新全局 config。如果各层维度不一致
+    （FLAP 逐层自适应剪枝的典型情况），则将所有层裁剪到
+    最小公共维度，以确保 HF config 兼容。
     """
+    import torch
+
     head_counts = []
     kv_head_counts = []
     kv_group_counts = []
@@ -598,8 +600,56 @@ def _sync_decoder_config(layers, decoder_config):
         decoder_config.num_key_value_heads = kv_head_counts[0]
     if kv_group_counts and hasattr(decoder_config, "num_key_value_groups") and len(set(kv_group_counts)) == 1:
         decoder_config.num_key_value_groups = kv_group_counts[0]
+
     if intermediate_sizes and len(set(intermediate_sizes)) == 1:
+        # 所有层维度一致，直接更新
         decoder_config.intermediate_size = intermediate_sizes[0]
+    elif intermediate_sizes:
+        # 异构维度：对齐到最小公共维度，确保 HF config 兼容
+        min_inter = min(intermediate_sizes)
+        _align_mlp_dimensions(layers, min_inter)
+        decoder_config.intermediate_size = min_inter
+
+
+def _align_mlp_dimensions(layers, target_size):
+    """将所有层的 MLP 维度裁剪到目标大小（最小公共维度）。
+
+    对于 intermediate_size > target_size 的层，裁掉多余的神经元。
+    保留前 target_size 个神经元（与 FLAP 的 compress 中按 mlp_mask
+    选择的神经元一致：mask 中靠前的神经元被保留）。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    trimmed = 0
+    for layer in layers:
+        cur = int(layer.mlp.intermediate_size)
+        if cur <= target_size:
+            continue
+        gate_proj = layer.mlp.gate_proj
+        up_proj = layer.mlp.up_proj
+        down_proj = layer.mlp.down_proj
+
+        # 裁剪 gate_proj 和 up_proj 的输出维度（行）
+        gate_proj.weight.data = gate_proj.weight.data[:target_size]
+        up_proj.weight.data = up_proj.weight.data[:target_size]
+        gate_proj.out_features = target_size
+        up_proj.out_features = target_size
+
+        # 裁剪 down_proj 的输入维度（列）
+        down_proj.weight.data = down_proj.weight.data[:, :target_size]
+        down_proj.in_features = target_size
+
+        # 裁剪 bias（如果有）
+        if gate_proj.bias is not None:
+            gate_proj.bias.data = gate_proj.bias.data[:target_size]
+        if up_proj.bias is not None:
+            up_proj.bias.data = up_proj.bias.data[:target_size]
+
+        layer.mlp.intermediate_size = target_size
+        trimmed += 1
+    if trimmed > 0:
+        logger.info("FLAP: aligned %d/%d layers to min intermediate_size=%d",
+                     trimmed, len(layers), target_size)
 
 
 def cal_remove_neuron(args, model):

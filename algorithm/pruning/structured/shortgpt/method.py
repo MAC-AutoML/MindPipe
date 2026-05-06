@@ -27,6 +27,34 @@ def _update_layer_indices(module: nn.Module, new_idx: int):
         _update_layer_indices(child, new_idx)
 
 
+def _sync_nested_config(config_obj, n_layers, kept_indices, kept_count):
+    """递归同步嵌套 config 中的 num_hidden_layers 和 layer_types。
+
+    某些模型（如 Qwen3.5）的 config 是嵌套结构，layer_types 在
+    model.config.text_config 中而非顶层。此函数遍历所有子 config
+    确保每一层级的字段都被正确更新。
+    """
+    updated = False
+    if hasattr(config_obj, 'num_hidden_layers'):
+        config_obj.num_hidden_layers = kept_count
+        updated = True
+    if hasattr(config_obj, 'layer_types') and isinstance(config_obj.layer_types, list):
+        if len(config_obj.layer_types) == n_layers:
+            config_obj.layer_types = [config_obj.layer_types[i] for i in kept_indices]
+            updated = True
+    if updated:
+        logger.info("ShortGPT: synced config %s: num_hidden_layers=%d, layer_types=%d",
+                     type(config_obj).__name__, kept_count,
+                     len(config_obj.layer_types) if hasattr(config_obj, 'layer_types') else 0)
+    # 递归处理子 config
+    for attr_name in dir(config_obj):
+        if attr_name.startswith('_'):
+            continue
+        sub = getattr(config_obj, attr_name, None)
+        if sub is not None and hasattr(sub, 'layer_types'):
+            _sync_nested_config(sub, n_layers, kept_indices, kept_count)
+
+
 class ShortGPTMethod(BasePruningMethod):
     name = "shortgpt"
     npu_ready = True
@@ -89,6 +117,20 @@ class ShortGPTMethod(BasePruningMethod):
 
             # 更新模型配置
             backbone.decoder_config.num_hidden_layers = len(kept_layers)
+
+            # 同步 layer_types（Qwen2.5/Qwen3 等 config 要求长度 == num_hidden_layers）
+            old_layer_types = getattr(backbone.decoder_config, "layer_types", None)
+            if isinstance(old_layer_types, list) and len(old_layer_types) == n_layers:
+                backbone.decoder_config.layer_types = [old_layer_types[i] for i in kept_indices]
+
+            # 同步 max_window_layers（不能大于剩余层数）
+            max_window = getattr(backbone.decoder_config, "max_window_layers", None)
+            if isinstance(max_window, int) and max_window > len(kept_layers):
+                backbone.decoder_config.max_window_layers = len(kept_layers)
+
+            # 对嵌套 config 模型（如 Qwen3.5），递归同步所有层级的 layer_types
+            if hasattr(model, 'config'):
+                _sync_nested_config(model.config, n_layers, kept_indices, len(kept_layers))
 
             # 递归更新层内所有 layer_idx 属性（RoPE 等位置编码依赖此值）
             for new_idx, layer in enumerate(backbone.layers):

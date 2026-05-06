@@ -169,16 +169,27 @@ def get_attention_head_geometry(layer):
 
 
 def aggregate_attention_metric(layer, metric):
-    """将逐通道 metric 聚合为逐 head metric。linear_attention 层不聚合。"""
+    """将逐通道 metric 聚合为逐 KV group metric，保持 GQA 结构合法。
+
+    每个 KV group 包含 num_kv_groups 个 Q heads，聚合时把同一组内所有 Q head 的
+    importance 求和，得到 (num_kv_heads,) 的 metric。linear_attention 层不聚合。
+    """
     geo = get_attention_head_geometry(layer)
     if geo is None:
         return metric
-    num_heads, _, _, head_dim = geo
-    return metric.reshape(num_heads, head_dim).sum(dim=1)
+    num_heads, num_kv_heads, num_kv_groups, head_dim = geo
+    # 先按 Q head 聚合: (num_heads, head_dim) -> (num_heads,)
+    per_head = metric.reshape(num_heads, head_dim).sum(dim=1)
+    # 再按 KV group 聚合: (num_kv_heads, num_kv_groups) -> (num_kv_heads,)
+    per_head_grouped = per_head.reshape(num_kv_heads, num_kv_groups)
+    return per_head_grouped.sum(dim=1)
 
 
 def expand_attention_masks(layer, attn_mask, device):
-    """将 per-head mask 展开为 per-channel mask。
+    """将 per-KV-group mask 展开为 per-channel mask。
+
+    attn_mask 是 (num_kv_heads,) 的 bool tensor，每个元素代表一个 KV group 的保留/删除。
+    一个 KV group 对应 num_kv_groups 个 Q heads，展开时整组一起保留/删除。
 
     返回 (q_row_mask, kv_mask, o_col_mask)：
     - q_row_mask: q_proj 的行掩码（考虑 query+gate 绑定的 q_stride）
@@ -188,19 +199,18 @@ def expand_attention_masks(layer, attn_mask, device):
     num_heads, num_kv_heads, num_kv_groups, head_dim = get_attention_head_geometry(layer)
     q_stride = get_q_stride(layer)
 
-    if attn_mask.numel() != num_heads:
+    if attn_mask.numel() != num_kv_heads:
         raise ValueError(
-            f"Expected {num_heads} attention heads in structured Wanda mask, got {attn_mask.numel()}."
+            f"Expected {num_kv_heads} KV groups in structured Wanda mask, got {attn_mask.numel()}."
         )
+    # 从 KV group mask 展开 Q head mask: (num_kv_heads,) -> (num_kv_heads, num_kv_groups) -> (num_heads,)
+    q_head_mask = attn_mask.unsqueeze(1).expand(-1, num_kv_groups).reshape(num_heads)
     # q_proj 行掩码
-    q_row_mask = attn_mask.repeat_interleave(q_stride)
-    if num_kv_heads == num_heads:
-        kv_mask = attn_mask.repeat_interleave(head_dim)
-    else:
-        kv_head_mask = attn_mask.reshape(num_kv_heads, num_kv_groups).any(dim=1)
-        kv_mask = kv_head_mask.repeat_interleave(head_dim)
+    q_row_mask = q_head_mask.repeat_interleave(q_stride)
+    # k/v_proj 行掩码
+    kv_mask = attn_mask.repeat_interleave(head_dim)
     # o_proj 列掩码
-    o_col_mask = attn_mask.repeat_interleave(head_dim)
+    o_col_mask = q_head_mask.repeat_interleave(head_dim)
     return q_row_mask.to(device), kv_mask.to(device), o_col_mask.to(device)
 
 
@@ -254,7 +264,9 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
     else:
         if can_prune_attn:
             num_heads, num_kv_heads, num_kv_groups, head_dim = get_attention_head_geometry(layer)
-            retain_heads = torch.count_nonzero(attn_mask)
+            # attn_mask 是 per-KV-group 的，计算保留的 Q head 数
+            retain_kv = torch.count_nonzero(attn_mask)
+            retain_heads = retain_kv * num_kv_groups
             q_row_mask, kv_mask, o_col_mask = expand_attention_masks(layer, attn_mask, device)
             q_indices = torch.where(q_row_mask)[0]
             kv_indices = torch.where(kv_mask)[0]
@@ -262,6 +274,13 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             q_proj.weight.data = q_proj.weight.data[q_indices]
             k_proj.weight.data = k_proj.weight.data[kv_indices]
             v_proj.weight.data = v_proj.weight.data[kv_indices]
+            # 同步切 q/k/v 的 bias
+            if q_proj.bias is not None:
+                q_proj.bias.data = q_proj.bias.data[q_indices]
+            if k_proj.bias is not None:
+                k_proj.bias.data = k_proj.bias.data[kv_indices]
+            if v_proj.bias is not None:
+                v_proj.bias.data = v_proj.bias.data[kv_indices]
             q_proj.out_features = q_indices.numel()
             k_proj.out_features = kv_indices.numel()
             v_proj.out_features = kv_indices.numel()
@@ -271,6 +290,7 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
                 output_bias = compute_output_bias(attn_mean_inp, o_col_mask.to(device), output_weight)
             output_weight = o_proj.weight.data[:, o_indices]
             # 更新 attention 属性（包括 GQA 相关属性）
+            # 按 KV group 剪后，num_kv_groups（每组 Q heads 数）不变
             new_num_kv_heads = kv_indices.numel() // head_dim
             layer.self_attn.num_heads = retain_heads
             layer.self_attn.hidden_size = retain_heads * head_dim
