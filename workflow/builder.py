@@ -51,6 +51,31 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model_path", required=True)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--device_map", default=None, help="device_map 传给 from_pretrained，如 'auto' 实现多卡分片")
+    parser.add_argument(
+        "--max_memory",
+        default=None,
+        help=(
+            "Optional max_memory for device_map loading. Accepts JSON or "
+            "comma-separated pairs such as '0:70GiB,1:70GiB,cpu:120GiB'."
+        ),
+    )
+    parser.add_argument(
+        "--offload_folder",
+        default=None,
+        help="Optional disk offload folder used by Hugging Face device_map loading.",
+    )
+    parser.add_argument(
+        "--offload_state_dict",
+        type=_bool_flag,
+        default=None,
+        help="Optional Hugging Face offload_state_dict flag for device_map loading.",
+    )
+    parser.add_argument(
+        "--no_split_module_classes",
+        nargs="+",
+        default=None,
+        help="Optional module class names that device_map should not split.",
+    )
     parser.add_argument("--dtype", default="bfloat16", choices=["auto", "float16", "bfloat16"])
     parser.add_argument(
         "--attn_implementation",

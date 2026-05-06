@@ -78,6 +78,60 @@ def _load_config_with_fallback(model_path: str, trust_remote_code: bool = True):
         return Qwen3VLConfig.from_dict(config_dict)
 
 
+def _parse_device_map_arg(device_map: Any):
+    if device_map is None:
+        return None
+    if isinstance(device_map, dict):
+        return device_map
+    text = str(device_map).strip()
+    if not text or text.lower() in {"none", "null", "false"}:
+        return None
+    if text.startswith("{"):
+        return json.loads(text)
+    return text
+
+
+def _parse_max_memory_arg(max_memory: Any):
+    if max_memory is None:
+        return None
+    if isinstance(max_memory, dict):
+        return max_memory
+    text = str(max_memory).strip()
+    if not text or text.lower() in {"none", "null", "false"}:
+        return None
+    if text.startswith("{"):
+        return json.loads(text)
+
+    parsed = {}
+    for item in text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            key, value = item.split(":", 1)
+        elif "=" in item:
+            key, value = item.split("=", 1)
+        else:
+            raise ValueError(
+                "max_memory must be JSON or comma-separated key:value pairs, "
+                f"got item {item!r}."
+            )
+        key = key.strip()
+        parsed[int(key) if key.isdigit() else key] = value.strip()
+    return parsed or None
+
+
+def _parse_no_split_module_classes_arg(no_split_module_classes: Any):
+    if no_split_module_classes is None:
+        return None
+    if isinstance(no_split_module_classes, str):
+        values = no_split_module_classes.replace(",", " ").split()
+    else:
+        values = list(no_split_module_classes)
+    values = [str(value).strip() for value in values if str(value).strip()]
+    return values or None
+
+
 @dataclass
 class TokenizerBundle:
     tokenizer: Any
@@ -543,7 +597,11 @@ def load_model_and_tokenizer(
     model_path: str,
     dtype: str = "auto",
     attn_implementation: str | None = None,
-    device_map: str | dict | None = None,
+    device_map: Any = None,
+    max_memory: Any = None,
+    offload_folder: str | None = None,
+    offload_state_dict: bool | None = None,
+    no_split_module_classes: Any = None,
 ):
     _ensure_transformers_remote_code_compat()
     config = _load_config_with_fallback(model_path, trust_remote_code=True)
@@ -558,20 +616,27 @@ def load_model_and_tokenizer(
         "low_cpu_mem_usage": True,
         "attn_implementation": attn_implementation,
     }
-    if device_map is not None:
-        # 禁止 CPU/disk offload：只允许 CUDA 设备，放不下就 OOM
-        # 剪枝方法要求所有权重都在 GPU 上，offload 会导致 meta tensor / flash_attn CPU 报错
-        if device_map == "auto" and torch.cuda.is_available():
-            n_gpus = torch.cuda.device_count()
+    resolved_device_map = _parse_device_map_arg(device_map)
+    if resolved_device_map is not None:
+        resolved_max_memory = _parse_max_memory_arg(max_memory)
+        model_kwargs["device_map"] = resolved_device_map
+        if resolved_max_memory is not None:
+            model_kwargs["max_memory"] = resolved_max_memory
+        elif resolved_device_map == "auto" and torch.cuda.is_available():
+            # 禁止 CPU/disk offload：只允许 CUDA 设备，放不下就 OOM。
+            # 剪枝方法要求所有权重都在 GPU 上，offload 会导致 meta tensor / flash_attn CPU 报错。
             gpu_mem = {}
-            for i in range(n_gpus):
-                total = torch.cuda.get_device_properties(i).total_memory
-                # 预留 2GB 给框架开销
-                gpu_mem[i] = f"{max(total // (1024 ** 3) - 2, 1)}GiB"
-            model_kwargs["device_map"] = device_map
+            for index in range(torch.cuda.device_count()):
+                total = torch.cuda.get_device_properties(index).total_memory
+                gpu_mem[index] = f"{max(total // (1024 ** 3) - 2, 1)}GiB"
             model_kwargs["max_memory"] = gpu_mem
-        else:
-            model_kwargs["device_map"] = device_map
+        if offload_folder is not None:
+            model_kwargs["offload_folder"] = offload_folder
+        if offload_state_dict is not None:
+            model_kwargs["offload_state_dict"] = offload_state_dict
+        resolved_no_split = _parse_no_split_module_classes_arg(no_split_module_classes)
+        if resolved_no_split is not None:
+            model_kwargs["no_split_module_classes"] = resolved_no_split
     is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
@@ -731,39 +796,47 @@ def find_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Line
 
 
 def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> list[list[str]]:
+    groups: list[list[str]] = []
+    grouped_names: set[str] = set()
+
+    def add_group(names: list[str]) -> None:
+        present = [name for name in names if name in available_names and name not in grouped_names]
+        if present:
+            groups.append(present)
+            grouped_names.update(present)
+
     if hasattr(layer, "self_attn") and hasattr(layer, "mlp"):
-        groups = [
-            ["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj"],
-            ["self_attn.o_proj"],
-            ["mlp.up_proj", "mlp.gate_proj"],
-            ["mlp.down_proj"],
-        ]
-        compact_groups = []
-        for group in groups:
-            present = [name for name in group if name in available_names]
-            if present:
-                compact_groups.append(present)
-        if compact_groups:
-            return compact_groups
+        add_group(["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj"])
+        add_group(["self_attn.o_proj"])
+        add_group(["mlp.up_proj", "mlp.gate_proj"])
+        add_group(["mlp.down_proj"])
     if hasattr(layer, "linear_attn") and hasattr(layer, "mlp"):
-        groups = [
+        add_group(
             [
                 "linear_attn.in_proj_qkv",
                 "linear_attn.in_proj_z",
                 "linear_attn.in_proj_b",
                 "linear_attn.in_proj_a",
-            ],
-            ["linear_attn.out_proj"],
-            ["mlp.up_proj", "mlp.gate_proj"],
-            ["mlp.down_proj"],
-        ]
-        compact_groups = []
-        for group in groups:
-            present = [name for name in group if name in available_names]
-            if present:
-                compact_groups.append(present)
-        if compact_groups:
-            return compact_groups
+            ]
+        )
+        add_group(["linear_attn.out_proj"])
+        add_group(["mlp.up_proj", "mlp.gate_proj"])
+        add_group(["mlp.down_proj"])
+
+    # Qwen3.5/3.6 MoE keeps the shared expert as ordinary Linear modules under
+    # `mlp.shared_expert`, while routed experts may be linearized by GPTQ into
+    # per-expert ModuleLists under `mlp.experts`.
+    add_group(["mlp.shared_expert.gate_proj", "mlp.shared_expert.up_proj"])
+    add_group(["mlp.shared_expert.down_proj"])
+    add_group(["mlp.shared_expert_gate"])
+
+    routed_gate_up = sorted(name for name in available_names if name.startswith("mlp.experts.gate_up_projs."))
+    routed_down = sorted(name for name in available_names if name.startswith("mlp.experts.down_projs."))
+    add_group(routed_gate_up)
+    add_group(routed_down)
+
+    if groups:
+        return groups
     return [sorted(available_names)]
 
 

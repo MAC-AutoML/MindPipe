@@ -89,7 +89,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
 
     dtype = config.common_args.get("dtype", "auto")
     attn_implementation = config.common_args.get("attn_implementation")
-    device_map = config.common_args.get("device_map")
+    device_map = common_args.get("device_map")
 
     # 剪枝和量化都要求 device_map，因为内部已移除所有权重 .to(device)
     if config.stages and device_map is None:
@@ -98,7 +98,16 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
             "例如: CUDA_VISIBLE_DEVICES=0,1 python main.py --device_map auto ..."
         )
 
-    model, tokenizer_bundle = load_model_and_tokenizer(config.model_path,dtype=dtype,attn_implementation=attn_implementation,device_map=device_map,)
+    model, tokenizer_bundle = load_model_and_tokenizer(
+        config.model_path,
+        dtype=dtype,
+        attn_implementation=attn_implementation,
+        device_map=device_map,
+        max_memory=common_args.get("max_memory"),
+        offload_folder=common_args.get("offload_folder"),
+        offload_state_dict=common_args.get("offload_state_dict"),
+        no_split_module_classes=common_args.get("no_split_module_classes"),
+    )
     sequence_length = int(common_args["sequence_length"])
     model.seqlen = sequence_length
 

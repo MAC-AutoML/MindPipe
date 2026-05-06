@@ -110,7 +110,7 @@ def evaluate_perplexity(
         logits = torch.nan_to_num(logits.float(), nan=0.0, posinf=1e4, neginf=-1e4)
         logits = torch.clamp(logits, min=-1e4, max=1e4)
         shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = batch[:, 1:].contiguous()
+        shift_labels = batch[:, 1:].to(shift_logits.device).contiguous()
         valid_tokens = (sequence_length - 1) * (chunk_end - chunk_start)
         total_nll += float(
             loss_function(
