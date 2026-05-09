@@ -97,6 +97,31 @@ class MagnitudeImportance:
 
         return up_imp + gate_imp + down_imp  # [intermediate_size]
 
+    @torch.no_grad()
+    def compute_expert_importance(self, layer) -> torch.Tensor:
+        """Return importance score per expert per neuron: shape [num_experts, inter_size].
+
+        对 MoE expert 的 raw Parameter 计算 magnitude 重要性，
+        逻辑与 compute_mlp_importance 等价：gate + up + down 三部分求和。
+        """
+        from algorithm.common.modeling import is_moe_layer
+        if not is_moe_layer(layer):
+            return torch.tensor([])
+        experts = layer.mlp.experts
+        num_experts = experts.gate_up_proj.shape[0]
+        expert_inter_size = experts.down_proj.shape[-1]
+        gate_up = experts.gate_up_proj.data   # (num_experts, 2*inter, hidden)
+        down = experts.down_proj.data          # (num_experts, hidden, inter)
+
+        # gate 部分: 每个神经元 j 的行 importance
+        gate_imp = gate_up[:, :expert_inter_size, :].abs().pow(self.p).sum(dim=2)   # (E, inter)
+        # up 部分
+        up_imp = gate_up[:, expert_inter_size:, :].abs().pow(self.p).sum(dim=2)     # (E, inter)
+        # down 部分: 列 importance
+        down_imp = down.abs().pow(self.p).sum(dim=1)                                 # (E, inter)
+
+        return gate_imp + up_imp + down_imp  # (num_experts, inter_size)
+
 
 class TaylorImportance:
     """Taylor-expansion based importance: |W * grad| aggregated per KV group."""
@@ -173,4 +198,44 @@ class TaylorImportance:
         down_imp = self._compute_salience(down_proj).abs().sum(dim=0)  # [intermediate_size]
 
         return up_imp + gate_imp + down_imp  # [intermediate_size]
+
+    @torch.no_grad()
+    def compute_expert_importance(self, layer) -> torch.Tensor:
+        """Return Taylor importance per expert per neuron: shape [num_experts, inter_size].
+
+        对 MoE expert 的 raw Parameter 计算 |W * grad| 重要性。
+        _accumulate_taylor_gradients 已经对所有参数（包括 raw Parameter）
+        累积了梯度，直接使用即可。
+        """
+        from algorithm.common.modeling import is_moe_layer
+        if not is_moe_layer(layer):
+            return torch.tensor([])
+        experts = layer.mlp.experts
+        num_experts = experts.gate_up_proj.shape[0]
+        expert_inter_size = experts.down_proj.shape[-1]
+        gate_up = experts.gate_up_proj.data
+        down = experts.down_proj.data
+        gate_up_grad = experts.gate_up_proj.grad
+        down_grad = experts.down_proj.grad
+
+        # gate 部分 salience
+        gate_w = gate_up[:, :expert_inter_size, :]
+        up_w = gate_up[:, expert_inter_size:, :]
+        if gate_up_grad is not None:
+            gate_g = gate_up_grad.to(device=gate_w.device, dtype=gate_w.dtype)[:, :expert_inter_size, :]
+            up_g = gate_up_grad.to(device=up_w.device, dtype=up_w.dtype)[:, expert_inter_size:, :]
+            gate_sal = (gate_w * gate_g).abs().sum(dim=2)
+            up_sal = (up_w * up_g).abs().sum(dim=2)
+        else:
+            gate_sal = torch.zeros(num_experts, expert_inter_size, device=gate_w.device)
+            up_sal = torch.zeros(num_experts, expert_inter_size, device=up_w.device)
+
+        # down 部分 salience
+        if down_grad is not None:
+            down_g = down_grad.to(device=down.device, dtype=down.dtype)
+            down_sal = (down * down_g).abs().sum(dim=1)
+        else:
+            down_sal = torch.zeros(num_experts, expert_inter_size, device=down.device)
+
+        return gate_sal + up_sal + down_sal  # (num_experts, inter_size)
 # Add pruning support for Qwen3.5.

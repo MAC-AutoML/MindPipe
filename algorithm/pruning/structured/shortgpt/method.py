@@ -10,6 +10,7 @@ import torch.nn as nn
 from ...base import BasePruningMethod
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import find_linear_layers
+from ....common.modeling import get_expert_parameters
 from ....common.modeling import get_text_backbone
 from ....common.runtime import prepend_python_path
 
@@ -161,12 +162,17 @@ class ShortGPTMethod(BasePruningMethod):
         zeroed_params = 0
         for layer_idx in layers_to_prune:
             block = backbone.layers[layer_idx]
+            # 标准 linear layer 置零
             for linear in find_linear_layers(block).values():
                 linear.weight.data.zero_()
                 zeroed_params += linear.weight.data.numel()
                 if linear.bias is not None:
                     linear.bias.data.zero_()
                     zeroed_params += linear.bias.data.numel()
+            # MoE expert 参数置零
+            for param in get_expert_parameters(block).values():
+                param.data.zero_()
+                zeroed_params += param.data.numel()
 
         logger.info("ShortGPT: zeroed %d parameters across %d layers",
                      zeroed_params, len(layers_to_prune))

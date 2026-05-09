@@ -1,8 +1,13 @@
 import torch
 import torch.nn as nn
+from algorithm.common.modeling import ExpertStatsCollector
 from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import get_layer_device
+from algorithm.common.modeling import is_moe_layer
+from algorithm.common.modeling import filter_moe_shared_expert
+from algorithm.common.modeling import make_expert_forward_with_stats
 from algorithm.common.modeling import move_tensors_to_device
+from algorithm.common.modeling import unstructured_prune_experts
 from .layerwrapper import WrappedGPT
 from .backend import resolve_runtime_device
 
@@ -145,6 +150,19 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
         outs = outs.to(target_device)
         layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
         subset = find_layers(layer)
+        # MoE 层：过滤掉 shared_expert 相关的 linear 层
+        subset = filter_moe_shared_expert(subset, layer)
+
+        # MoE 层：设置 expert 统计量收集
+        expert_collector = None
+        original_expert_forward = None
+        if is_moe_layer(layer):
+            experts = layer.mlp.experts
+            num_experts = experts.gate_up_proj.shape[0]
+            expert_inter_size = experts.down_proj.shape[-1]
+            expert_collector = ExpertStatsCollector(num_experts, expert_inter_size, 'WIFN', target_device)
+            original_expert_forward = type(experts).forward
+            type(experts).forward = make_expert_forward_with_stats(expert_collector)
 
         wrapped_layers = {}
         for name in subset:
@@ -158,11 +176,16 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
         handles = []
         for name in wrapped_layers:
             handles.append(subset[name].register_forward_hook(add_batch(name)))
-        for j in range(args.nsamples):
-            with torch.no_grad():
-                outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
-        for h in handles:
-            h.remove()
+        try:
+            for j in range(args.nsamples):
+                with torch.no_grad():
+                    outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
+        finally:
+            for h in handles:
+                h.remove()
+            # MoE 层：恢复原始 expert forward
+            if original_expert_forward is not None:
+                type(layer.mlp.experts).forward = original_expert_forward
 
         for name in subset:
             print(f"pruning layer {i} name {name}")
@@ -203,6 +226,11 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
                     W_mask.scatter_(1, indices, True)
 
             subset[name].weight.data[W_mask] = 0  ## 将权重置零
+
+        # MoE 层：对 expert 参数做非结构化剪枝
+        if expert_collector is not None:
+            unstructured_prune_experts(layer, expert_collector, args.sparsity_ratio)
+            expert_collector.free()
 
         for j in range(args.nsamples):
             with torch.no_grad():
