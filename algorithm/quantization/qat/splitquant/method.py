@@ -239,6 +239,10 @@ class SplitQuantMethod(BaseQuantizationMethod):
                 from splitquant.model_tools.qwen3_5_split_utils import apply_splitquant_to_qwen3_5
 
                 apply_wrapper = apply_splitquant_to_qwen3_5
+            elif model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}:
+                from splitquant.model_tools.qwen3_5_split_utils import apply_splitquant_to_qwen3_5_moe
+
+                apply_wrapper = apply_splitquant_to_qwen3_5_moe
             else:
                 raise NotImplementedError(
                     f"SplitQuant currently supports LLaMA-, MiniCPM-, and Qwen-style models only; got model_type={model_type!r}."

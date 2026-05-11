@@ -7,6 +7,8 @@ from splitquant.split_linear import SplitQuantizedLinear
 from splitquant.trans_utils import SVDSingleGroupTransMatrix
 from splitquant.trans_utils import SVDSingleTransMatrix
 from splitquant.utils import skip_initialization
+from splitquant.model_tools.device_utils import align_attention_auxiliary_tensors
+from splitquant.model_tools.device_utils import build_cache_kwargs_on_device
 
 from transformers.models.qwen2.modeling_qwen2 import ALL_ATTENTION_FUNCTIONS as QWEN2_ATTENTION_FUNCTIONS
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
@@ -456,6 +458,13 @@ class SplitQuantQwen2Attention(_SplitQuantQwenAttentionMixin, Qwen2Attention):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
+        attention_mask, position_ids, cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            query_states.device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+        )
         if position_embeddings is None:
             cos, sin = self.rotary_emb(value_states, position_ids)
         else:
@@ -467,7 +476,7 @@ class SplitQuantQwen2Attention(_SplitQuantQwenAttentionMixin, Qwen2Attention):
             value_states = self.quant_vcache(value_states)
 
         if past_key_values is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            cache_kwargs = build_cache_kwargs_on_device(query_states.device, sin=sin, cos=cos, cache_position=cache_position)
             key_states, value_states = past_key_values.update(
                 key_states,
                 value_states,
@@ -523,6 +532,13 @@ class SplitQuantQwen2_5_VLAttention(_SplitQuantQwenAttentionMixin, Qwen2_5_VLAtt
         key_states = key_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
 
+        attention_mask, position_ids, cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            query_states.device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+        )
         if position_embeddings is None:
             rotary_position_ids = position_ids
             if rotary_position_ids is not None and rotary_position_ids.ndim == 2:
@@ -545,7 +561,7 @@ class SplitQuantQwen2_5_VLAttention(_SplitQuantQwenAttentionMixin, Qwen2_5_VLAtt
             value_states = self.quant_vcache(value_states)
 
         if past_key_values is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            cache_kwargs = build_cache_kwargs_on_device(query_states.device, sin=sin, cos=cos, cache_position=cache_position)
             key_states, value_states = past_key_values.update(
                 key_states,
                 value_states,

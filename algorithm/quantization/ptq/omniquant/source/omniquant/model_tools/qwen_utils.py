@@ -35,6 +35,18 @@ def _resolve_mrope_section(config) -> list[int]:
     raise KeyError("Qwen2.5-VL config is missing mrope_section in rope_parameters/rope_scaling.")
 
 
+def _move_optional_tensor(value, device: torch.device):
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, tuple):
+        return tuple(_move_optional_tensor(item, device) for item in value)
+    if isinstance(value, list):
+        return [_move_optional_tensor(item, device) for item in value]
+    if isinstance(value, dict):
+        return {key: _move_optional_tensor(item, device) for key, item in value.items()}
+    return value
+
+
 class QuantQwenMLP(nn.Module):
     def __init__(self, org_module: nn.Module, args):
         super().__init__()
@@ -163,6 +175,9 @@ class QuantQwen2Attention(_QuantQwenAttentionMixin, Qwen2Attention):
         query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        attention_mask = _move_optional_tensor(attention_mask, query_states.device)
+        position_ids = _move_optional_tensor(position_ids, query_states.device)
+        cache_position = _move_optional_tensor(cache_position, query_states.device)
 
         if position_embeddings is None:
             if not hasattr(self, "rotary_emb"):
@@ -171,6 +186,7 @@ class QuantQwen2Attention(_QuantQwenAttentionMixin, Qwen2Attention):
                 )
             cos, sin = self.rotary_emb(value_states, position_ids)
         else:
+            position_embeddings = _move_optional_tensor(position_embeddings, query_states.device)
             cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
@@ -230,6 +246,9 @@ class QuantQwen2_5_VLAttention(_QuantQwenAttentionMixin, Qwen2_5_VLAttention):
         query_states = self.q_proj(hidden_states).view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+        attention_mask = _move_optional_tensor(attention_mask, query_states.device)
+        position_ids = _move_optional_tensor(position_ids, query_states.device)
+        cache_position = _move_optional_tensor(cache_position, query_states.device)
 
         if position_embeddings is None:
             if not hasattr(self, "rotary_emb"):
@@ -243,6 +262,7 @@ class QuantQwen2_5_VLAttention(_QuantQwenAttentionMixin, Qwen2_5_VLAttention):
                 rotary_position_ids = cache_position.view(1, 1, -1).expand(3, hidden_states.shape[0], -1)
             position_embeddings = self.rotary_emb(hidden_states, rotary_position_ids)
 
+        position_embeddings = _move_optional_tensor(position_embeddings, query_states.device)
         cos, sin = position_embeddings
         query_states, key_states = apply_multimodal_rotary_pos_emb(
             query_states,
@@ -321,11 +341,13 @@ class QuantQwenDecoderLayer(nn.Module):
             output_attentions=output_attentions,
             **kwargs,
         )
+        hidden_states = hidden_states.to(residual.device)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
+        hidden_states = hidden_states.to(residual.device)
         hidden_states = residual + hidden_states
         return hidden_states
 

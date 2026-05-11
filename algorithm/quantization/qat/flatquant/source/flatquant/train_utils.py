@@ -12,6 +12,7 @@ from algorithm.common.device import empty_cache
 from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import move_tensors_to_device
 from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import create_causal_mask as create_qwen3_5_moe_causal_mask
 
 from flatquant.backbone_utils import build_batched_layer_kwargs
 from flatquant.backbone_utils import get_decoder_config
@@ -24,7 +25,7 @@ from flatquant.quant_utils import set_quantizer_state
 
 def _build_calibration_forward_kwargs(model, sample):
     model_type = getattr(model.config, "model_type", None)
-    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
         # Keep an explicit all-ones mask during capture so Qwen3.5-family models
         # stay on the expected masking path before the first decoder block.
         return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
@@ -43,14 +44,19 @@ def _resolve_calibration_input_device(model):
     return next(model.parameters()).device
 
 
-def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs):
+def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs, model_type):
     position_ids = layer_kwargs.get("position_ids")
     if position_ids is None:
         seq_len = inputs.shape[1]
         position_ids = torch.arange(seq_len, device=inputs.device).view(1, -1)
 
+    causal_mask_fn = (
+        create_qwen3_5_moe_causal_mask
+        if model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}
+        else create_qwen3_5_causal_mask
+    )
     full_attention_kwargs = dict(layer_kwargs)
-    full_attention_kwargs["attention_mask"] = create_qwen3_5_causal_mask(
+    full_attention_kwargs["attention_mask"] = causal_mask_fn(
         config=decoder_config,
         inputs_embeds=inputs[:1],
         attention_mask=torch.ones((1, inputs.shape[1]), dtype=torch.long, device=inputs.device),
@@ -106,14 +112,20 @@ def _reset_transformation_module(module):
 
 
 def _stabilize_flatquant_layer(layer):
-    for attr_name in ("ln_trans", "o_trans", "kcache_trans", "vcache_trans"):
-        _reset_transformation_module(getattr(layer.self_attn, attr_name, None))
-    for attr_name in ("_ln_trans",):
-        _reset_transformation_module(getattr(layer.self_attn, attr_name, None))
-    for attr_name in ("up_gate_trans", "down_trans"):
-        _reset_transformation_module(getattr(layer.mlp, attr_name, None))
-    for attr_name in ("_up_gate_trans", "_down_trans"):
-        _reset_transformation_module(getattr(layer.mlp, attr_name, None))
+    for module in layer.modules():
+        for attr_name in (
+            "ln_trans",
+            "o_trans",
+            "kcache_trans",
+            "vcache_trans",
+            "_ln_trans",
+            "up_gate_trans",
+            "down_trans",
+            "_up_gate_trans",
+            "_down_trans",
+            "_moe_in_trans",
+        ):
+            _reset_transformation_module(getattr(module, attr_name, None))
 
 
 def cali_flat_quant(args, model, dataloader, dev, logger):
@@ -181,8 +193,9 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
     layer_kwargs = dict(cache["layer_kwargs"])
     layer_kwargs_by_type = None
     batched_layer_kwargs_by_type = None
-    if getattr(model.config, "model_type", None) == "qwen3_5":
-        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(decoder_config, inps, layer_kwargs)
+    model_type = getattr(model.config, "model_type", None)
+    if model_type in {"qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
+        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(decoder_config, inps, layer_kwargs, model_type)
         batched_layer_kwargs_by_type = {
             layer_type: build_batched_layer_kwargs(kwargs, args.cali_bsz)
             for layer_type, kwargs in layer_kwargs_by_type.items()

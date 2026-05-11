@@ -239,6 +239,10 @@ class FlatQuantMethod(BaseQuantizationMethod):
                 from flatquant.model_tools.qwen3_5_utils import apply_flatquant_to_qwen3_5
 
                 apply_wrapper = apply_flatquant_to_qwen3_5
+            elif model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}:
+                from flatquant.model_tools.qwen3_5_utils import apply_flatquant_to_qwen3_5_moe
+
+                apply_wrapper = apply_flatquant_to_qwen3_5_moe
             else:
                 raise NotImplementedError(
                     f"FlatQuant does not support model_type={model_type!r} in the unified launcher yet."
@@ -253,7 +257,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
             for layer, original_device in zip(flatquant_layers(model), original_layer_devices):
                 layer.to(original_device)
                 restored_layer_devices.append(next(layer.parameters()).device)
-            LOGGER.info("Restored FlatQuant layer devices after wrapping: %s", restored_layer_devices)
+            LOGGER.debug("Restored FlatQuant layer devices after wrapping: %s", restored_layer_devices)
 
             if source_args.resume:
                 load_flat_parameters(source_args, model, path=args.flatquant_resume_from)

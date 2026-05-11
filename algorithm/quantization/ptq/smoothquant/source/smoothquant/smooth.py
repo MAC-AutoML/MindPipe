@@ -25,6 +25,38 @@ def _compute_smooth_scales(fcs, act_scales, alpha=0.5):
     return fcs, scales
 
 
+def _compute_qwen3_5_moe_ffn_scales(mlp, act_scales, alpha=0.5):
+    shared_expert = mlp.shared_expert
+    experts = mlp.experts
+    fcs = [
+        shared_expert.gate_proj,
+        shared_expert.up_proj,
+        mlp.shared_expert_gate,
+        mlp.gate,
+    ]
+    for fc in fcs:
+        if not hasattr(fc, "weight"):
+            raise TypeError(f"SmoothQuant requires modules with weight tensors; got {type(fc)}")
+        assert fc.weight.shape[-1] == act_scales.numel()
+    assert experts.gate_up_proj.shape[-1] == act_scales.numel()
+
+    device = shared_expert.gate_proj.weight.device
+    dtype = shared_expert.gate_proj.weight.dtype
+    act_scales = act_scales.to(device=device, dtype=dtype)
+    weight_scales = [
+        fc.weight.to(device=device).abs().reshape(-1, act_scales.numel()).max(dim=0, keepdim=True)[0]
+        for fc in fcs
+    ]
+    weight_scales.append(
+        experts.gate_up_proj.to(device=device).abs().reshape(-1, act_scales.numel()).max(dim=0, keepdim=True)[0]
+    )
+    weight_scales = torch.cat(weight_scales, dim=0).max(dim=0)[0].clamp(min=1e-5)
+    scales = (
+        act_scales.pow(alpha) / weight_scales.pow(1 - alpha)
+    ).clamp(min=1e-5).to(device=device, dtype=dtype)
+    return scales
+
+
 @torch.no_grad()
 def smooth_ln_fcs_llama_like(ln, fcs, act_scales, alpha=0.5):
     if not hasattr(ln, "weight") or ln.weight is None:
@@ -54,6 +86,33 @@ def smooth_ln_fcs_qwen3_5(ln, fcs, act_scales, alpha=0.5):
 
 
 @torch.no_grad()
+def smooth_qwen3_5_moe_ffn(ln, mlp, act_scales, alpha=0.5):
+    if not hasattr(ln, "weight") or ln.weight is None:
+        raise TypeError(f"SmoothQuant requires a norm module with a learnable weight; got {type(ln)}")
+    assert ln.weight.numel() == act_scales.numel()
+    scales = _compute_qwen3_5_moe_ffn_scales(mlp, act_scales, alpha)
+
+    ln_weight = ln.weight.data
+    ori_dtype = ln_weight.dtype
+    ln_weight = ln_weight.to(torch.float64)
+    scale = scales.to(torch.float64)
+    ln.weight.data = ((1.0 + ln_weight) / scale - 1.0).to(ori_dtype)
+
+    for weight in (
+        mlp.shared_expert.gate_proj.weight,
+        mlp.shared_expert.up_proj.weight,
+        mlp.shared_expert_gate.weight,
+        mlp.gate.weight,
+    ):
+        weight.mul_(scales.to(device=weight.device, dtype=weight.dtype).view(1, -1))
+    expert_scales = scales.to(
+        device=mlp.experts.gate_up_proj.device,
+        dtype=mlp.experts.gate_up_proj.dtype,
+    )
+    mlp.experts.gate_up_proj.mul_(expert_scales.view(1, 1, -1))
+
+
+@torch.no_grad()
 def smooth_lm(model, scales, alpha=0.5):
     supported_model_types = {
         "llama",
@@ -62,6 +121,8 @@ def smooth_lm(model, scales, alpha=0.5):
         "qwen3",
         "qwen3_vl",
         "qwen3_5",
+        "qwen3_5_moe",
+        "qwen3_5_moe_text",
         "minicpm",
         "minicpmv",
     }
@@ -92,6 +153,26 @@ def smooth_lm(model, scales, alpha=0.5):
             ffn_fcs = [layer.mlp.gate_proj, layer.mlp.up_proj]
             ffn_input_scales = scales[layer_name + ".mlp.gate_proj"]
             smooth_ln_fcs_qwen3_5(ffn_ln, ffn_fcs, ffn_input_scales, alpha)
+            continue
+
+        if model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}:
+            attn_ln = layer.input_layernorm
+            if getattr(layer, "layer_type", None) == "linear_attention":
+                attn_fcs = [
+                    layer.linear_attn.in_proj_qkv,
+                    layer.linear_attn.in_proj_z,
+                    layer.linear_attn.in_proj_a,
+                    layer.linear_attn.in_proj_b,
+                ]
+                attn_input_scales = scales[layer_name + ".linear_attn.in_proj_qkv"]
+            else:
+                attn_fcs = [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj]
+                attn_input_scales = scales[layer_name + ".self_attn.q_proj"]
+            smooth_ln_fcs_qwen3_5(attn_ln, attn_fcs, attn_input_scales, alpha)
+
+            ffn_ln = layer.post_attention_layernorm
+            ffn_input_scales = scales[layer_name + ".mlp.shared_expert.gate_proj"]
+            smooth_qwen3_5_moe_ffn(ffn_ln, layer.mlp, ffn_input_scales, alpha)
             continue
 
         attn_ln = layer.input_layernorm

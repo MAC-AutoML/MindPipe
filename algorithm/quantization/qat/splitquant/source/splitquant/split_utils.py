@@ -35,9 +35,9 @@ def reparameterize_splitquant_model(model):
         layer.self_attn.reparameterize()
         layer.mlp.reparameterize()
         # fuse per-channel scaling to layernorm
-        if layer.self_attn.ln_trans is not None and layer.self_attn.ln_trans.add_diag:
+        if getattr(layer.self_attn, "ln_trans", None) is not None and layer.self_attn.ln_trans.add_diag:
             reparameterize_ln(layer.input_layernorm, layer.self_attn.ln_trans)
-        if layer.mlp.up_gate_trans is not None and layer.mlp.up_gate_trans.add_diag:
+        if getattr(layer.mlp, "up_gate_trans", None) is not None and layer.mlp.up_gate_trans.add_diag:
             reparameterize_ln(layer.post_attention_layernorm, layer.mlp.up_gate_trans)
     return model
 
@@ -72,7 +72,7 @@ def save_splitquant_matrices(args, model, rank=None):
         layer = layers[i]
         layer.self_attn.rep_matrix_only()
         layer.mlp.rep_matrix_only()
-        paras_name = ["trans.matrix", "trans.diag_scale", "clip_factor_w", "clip_factor_a"]
+        paras_name = ["trans.matrix", "trans.diag_scale", "matrix_list", "matrix_inv_t_list", "clip_factor_w", "clip_factor_a"]
         splitquant_matrices[i] = get_paras_dict_by_name(layer, required_names=paras_name)
     if rank is not None:
         matrices_path = os.path.join(args.exp_dir, f"splitquant_matrices_{rank}.pth")

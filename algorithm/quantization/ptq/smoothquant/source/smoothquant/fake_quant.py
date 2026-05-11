@@ -121,6 +121,83 @@ class SmoothQuantLinear(nn.Module):
         )
 
 
+class SmoothQuantPackedMoeExperts(nn.Module):
+    def __init__(
+        self,
+        gate_up_proj,
+        down_proj,
+        act_fn,
+        *,
+        weight_bits=8,
+        activation_bits=8,
+    ):
+        super().__init__()
+        self.num_experts = int(gate_up_proj.shape[0])
+        self.hidden_dim = int(gate_up_proj.shape[2])
+        self.intermediate_dim = int(down_proj.shape[2])
+        self.weight_bits = int(weight_bits)
+        self.activation_bits = int(activation_bits)
+        self.act_fn = act_fn
+        self.register_buffer(
+            "gate_up_proj",
+            quantize_weight_per_channel_absmax(gate_up_proj, n_bits=weight_bits),
+        )
+        self.register_buffer(
+            "down_proj",
+            quantize_weight_per_channel_absmax(down_proj, n_bits=weight_bits),
+        )
+        self.act_quant = (
+            partial(quantize_activation_per_token_absmax, n_bits=self.activation_bits)
+            if self.activation_bits < 16
+            else _identity
+        )
+
+    @staticmethod
+    def from_float(module, weight_bits=8, activation_bits=8):
+        return SmoothQuantPackedMoeExperts(
+            module.gate_up_proj.detach(),
+            module.down_proj.detach(),
+            module.act_fn,
+            weight_bits=weight_bits,
+            activation_bits=activation_bits,
+        )
+
+    @torch.no_grad()
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        final_hidden_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        for expert_idx in expert_hit:
+            expert_idx = expert_idx[0]
+            if expert_idx == self.num_experts:
+                continue
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = self.act_quant(hidden_states[token_idx])
+            gate, up = F.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
+            current_hidden_states = self.act_fn(gate) * up
+            current_hidden_states = self.act_quant(current_hidden_states)
+            current_hidden_states = F.linear(current_hidden_states, self.down_proj[expert_idx])
+            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+        return final_hidden_states
+
+    def __repr__(self):
+        return (
+            f"SmoothQuantPackedMoeExperts(num_experts={self.num_experts}, "
+            f"hidden_dim={self.hidden_dim}, intermediate_dim={self.intermediate_dim}, "
+            f"weight_bits={self.weight_bits}, activation_bits={self.activation_bits})"
+        )
+
+
 def _replace_linear_with_smoothquant(
     module,
     proj_name,
@@ -154,6 +231,8 @@ def quantize_llama_like(model, weight_bits=8, activation_bits=8, act_quant="per_
         "qwen3",
         "qwen3_vl",
         "qwen3_5",
+        "qwen3_5_moe",
+        "qwen3_5_moe_text",
         "minicpm",
         "minicpmv",
     }
@@ -211,6 +290,77 @@ def quantize_llama_like(model, weight_bits=8, activation_bits=8, act_quant="per_
                     activation_bits=activation_bits,
                     act_quant=act_quant,
                 )
+        elif model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}:
+            if getattr(layer, "layer_type", None) == "linear_attention":
+                for proj_name in ("in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b"):
+                    _replace_linear_with_smoothquant(
+                        layer.linear_attn,
+                        proj_name,
+                        quantized_linear_names,
+                        f"{layer_prefix}.linear_attn.{proj_name}",
+                        weight_bits=weight_bits,
+                        activation_bits=activation_bits,
+                        act_quant=act_quant,
+                        quantize_output=quantize_bmm_input,
+                    )
+                _replace_linear_with_smoothquant(
+                    layer.linear_attn,
+                    "out_proj",
+                    quantized_linear_names,
+                    f"{layer_prefix}.linear_attn.out_proj",
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                    act_quant=act_quant,
+                )
+            else:
+                for proj_name in ("q_proj", "k_proj", "v_proj"):
+                    _replace_linear_with_smoothquant(
+                        layer.self_attn,
+                        proj_name,
+                        quantized_linear_names,
+                        f"{layer_prefix}.self_attn.{proj_name}",
+                        weight_bits=weight_bits,
+                        activation_bits=activation_bits,
+                        act_quant=act_quant,
+                        quantize_output=quantize_bmm_input,
+                    )
+                _replace_linear_with_smoothquant(
+                    layer.self_attn,
+                    "o_proj",
+                    quantized_linear_names,
+                    f"{layer_prefix}.self_attn.o_proj",
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                    act_quant=act_quant,
+                )
+
+            shared_expert = layer.mlp.shared_expert
+            for proj_name in ("gate_proj", "up_proj", "down_proj"):
+                _replace_linear_with_smoothquant(
+                    shared_expert,
+                    proj_name,
+                    quantized_linear_names,
+                    f"{layer_prefix}.mlp.shared_expert.{proj_name}",
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                    act_quant=act_quant,
+                )
+            _replace_linear_with_smoothquant(
+                layer.mlp,
+                "shared_expert_gate",
+                quantized_linear_names,
+                f"{layer_prefix}.mlp.shared_expert_gate",
+                weight_bits=weight_bits,
+                activation_bits=activation_bits,
+                act_quant=act_quant,
+            )
+            layer.mlp.experts = SmoothQuantPackedMoeExperts.from_float(
+                layer.mlp.experts,
+                weight_bits=weight_bits,
+                activation_bits=activation_bits,
+            )
+            quantized_linear_names.append(f"{layer_prefix}.mlp.experts.gate_up_proj")
+            quantized_linear_names.append(f"{layer_prefix}.mlp.experts.down_proj")
         else:
             for proj_name in ("q_proj", "k_proj", "v_proj"):
                 _replace_linear_with_smoothquant(
@@ -232,17 +382,16 @@ def quantize_llama_like(model, weight_bits=8, activation_bits=8, act_quant="per_
                 activation_bits=activation_bits,
                 act_quant=act_quant,
             )
-
-        for proj_name in ("gate_proj", "up_proj", "down_proj"):
-            _replace_linear_with_smoothquant(
-                layer.mlp,
-                proj_name,
-                quantized_linear_names,
-                f"{layer_prefix}.mlp.{proj_name}",
-                weight_bits=weight_bits,
-                activation_bits=activation_bits,
-                act_quant=act_quant,
-            )
+            for proj_name in ("gate_proj", "up_proj", "down_proj"):
+                _replace_linear_with_smoothquant(
+                    layer.mlp,
+                    proj_name,
+                    quantized_linear_names,
+                    f"{layer_prefix}.mlp.{proj_name}",
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                    act_quant=act_quant,
+                )
     return quantized_linear_names
 
 

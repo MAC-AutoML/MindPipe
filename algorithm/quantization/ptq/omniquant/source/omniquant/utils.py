@@ -55,10 +55,28 @@ def get_named_linears(module):
     return {name: child for name, child in module.named_modules() if isinstance(child, QuantLinear)}
 
 
+def _is_packed_moe_experts(module) -> bool:
+    return (
+        hasattr(module, "gate_up_quantizer")
+        and hasattr(module, "down_quantizer")
+        and callable(getattr(module, "prepare_temporary_quant", None))
+    )
+
+
+def get_named_packed_moe_experts(module):
+    return {
+        name: child
+        for name, child in module.named_modules()
+        if _is_packed_moe_experts(child)
+    }
+
+
 def register_scales_and_zeros(model):
     for _name, module in model.named_modules():
         if isinstance(module, QuantLinear):
             module.weight_quantizer.register_scales_and_zeros()
+        elif _is_packed_moe_experts(module):
+            module.register_scales_and_zeros()
 
 
 def ampscaler_get_grad_norm(parameters, norm_type: float = 2.0) -> torch.Tensor:
@@ -121,6 +139,8 @@ def smooth_and_quant_temporary(model, args):
             if isinstance(module, QuantLinear):
                 module.temp_weight = module.weight
                 module.temp_bias = module.bias
+            elif callable(getattr(module, "prepare_temporary_quant", None)):
+                module.prepare_temporary_quant()
 
     for _name, module in model.named_modules():
         if isinstance(module, QuantLinear):
@@ -138,6 +158,8 @@ def clear_temp_variable(model):
                 del module.temp_weight
             if hasattr(module, "temp_bias"):
                 del module.temp_bias
+        elif callable(getattr(module, "clear_temporary_quant", None)):
+            module.clear_temporary_quant()
 
 
 @torch.no_grad()
@@ -174,6 +196,8 @@ def smooth_and_quant_inplace(model, args):
         if isinstance(module, QuantLinear):
             module.weight = module.weight_quantizer(module.weight)
             module.use_temporary_parameter = False
+        elif callable(getattr(module, "quantize_inplace", None)):
+            module.quantize_inplace()
 
 
 def set_quant_state(module, weight_quant: bool = False, act_quant: bool = False):
@@ -181,5 +205,7 @@ def set_quant_state(module, weight_quant: bool = False, act_quant: bool = False)
     module.use_act_quant = act_quant
     for child in module.modules():
         if isinstance(child, (QuantLinear, QuantMatMul)):
+            child.set_quant_state(weight_quant, act_quant)
+        elif callable(getattr(child, "set_quant_state", None)) and child is not module:
             child.set_quant_state(weight_quant, act_quant)
 # Adapt OmniQuant to Qwen2.5, Qwen2.5-VL, LLaMA-family, and MiniCPM models.
