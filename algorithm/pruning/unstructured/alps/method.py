@@ -10,11 +10,8 @@ from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import capture_first_block_inputs
 from ....common.modeling import find_linear_layers
-from ....common.modeling import filter_moe_shared_expert
 from ....common.modeling import get_layer_device
 from ....common.modeling import get_text_backbone
-from ....common.modeling import is_moe_layer
-from ....common.modeling import make_expert_forward_with_callback
 from ....common.modeling import move_tensors_to_device
 from ....common.modeling import unwrap_layer_output
 from ....common.runtime import prepend_python_path
@@ -87,115 +84,57 @@ class ALPSMethod(BasePruningMethod):
                 output_states = output_states.to(target_device)
                 layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
                 linear_layers = find_linear_layers(block)
-                # MoE 层：过滤掉 shared_expert 相关的 linear 层
-                linear_layers = filter_moe_shared_expert(linear_layers, block)
-
-                # MoE 层：用 ALPS 自身的算法处理 expert down_proj
-                expert_alps_states = {}
-                original_expert_forward = None
-                if is_moe_layer(block):
-                    import torch.nn as nn
-                    experts = block.mlp.experts
-                    num_experts = experts.gate_up_proj.shape[0]
-                    expert_inter_size = experts.down_proj.shape[-1]
-                    hidden_size = experts.gate_up_proj.shape[-1]
-
-                    # 为每个 expert 的 down_proj 创建 ALPS 状态
-                    for eid in range(num_experts):
-                        tmp_linear = nn.Linear(expert_inter_size, hidden_size, bias=False)
-                        tmp_linear.weight.data = experts.down_proj.data[eid].clone()
-                        expert_alps_states[eid] = ALPS_prune(
-                            tmp_linear,
-                            nsamples=args.calibration_samples,
-                            seqlen=args.sequence_length,
-                            dev=target_device,
-                        )
-
-                    original_expert_forward = type(experts).forward
-
-                    def alps_callback(eid, inp, out):
-                        expert_alps_states[eid].add_batch(inp, out)
-
-                    type(experts).forward = make_expert_forward_with_callback(alps_callback)
 
                 # ALPS: collect statistics for ALL linear layers in one pass,
                 # then prune all — same semantics as the original implementation.
-                try:
-                    all_names = list(linear_layers.keys())
-                    subset = {n: linear_layers[n] for n in all_names}
+                all_names = list(linear_layers.keys())
+                subset = {n: linear_layers[n] for n in all_names}
 
-                    alps_states = {
-                        name: ALPS_prune(
-                            linear,
-                            nsamples=args.calibration_samples,
-                            seqlen=args.sequence_length,
-                            dev=target_device,
+                alps_states = {
+                    name: ALPS_prune(
+                        linear,
+                        nsamples=args.calibration_samples,
+                        seqlen=args.sequence_length,
+                        dev=target_device,
+                    )
+                    for name, linear in subset.items()
+                }
+
+                def add_batch(name: str):
+                    def hook(_module, inputs, outputs):
+                        alps_states[name].add_batch(inputs[0].data, outputs.data)
+
+                    return hook
+
+                handles = [
+                    subset[name].register_forward_hook(add_batch(name))
+                    for name in subset
+                ]
+                for sample_index in range(args.calibration_samples):
+                    with torch.no_grad():
+                        output_states[sample_index] = unwrap_layer_output(
+                            block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
                         )
-                        for name, linear in subset.items()
-                    }
+                for handle in handles:
+                    handle.remove()
 
-                    def add_batch(name: str):
-                        def hook(_module, inputs, outputs):
-                            alps_states[name].add_batch(inputs[0].data, outputs.data)
+                for name, alps_state in alps_states.items():
+                    print(f"pruning layer {layer_index} name {name}")
+                    alps_state.ALPS_admm(
+                        sp=args.sparsity_ratio,
+                        nm_n=prune_n,
+                        nm_m=prune_m,
+                        rho=rho,
+                    )
+                    alps_state.free()
+                    pruned_linear_layers.append(f"{backbone.prefix}.layers.{layer_index}.{name}")
+                del alps_states
 
-                        return hook
-
-                    handles = [
-                        subset[name].register_forward_hook(add_batch(name))
-                        for name in subset
-                    ]
-                    try:
-                        for sample_index in range(args.calibration_samples):
-                            with torch.no_grad():
-                                output_states[sample_index] = unwrap_layer_output(
-                                    block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
-                                )
-                    finally:
-                        for handle in handles:
-                            handle.remove()
-
-                    for name, alps_state in alps_states.items():
-                        print(f"pruning layer {layer_index} name {name}")
-                        alps_state.ALPS_admm(
-                            sp=args.sparsity_ratio,
-                            nm_n=prune_n,
-                            nm_m=prune_m,
-                            rho=rho,
+                for sample_index in range(args.calibration_samples):
+                    with torch.no_grad():
+                        output_states[sample_index] = unwrap_layer_output(
+                            block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
                         )
-                        alps_state.free()
-                        pruned_linear_layers.append(f"{backbone.prefix}.layers.{layer_index}.{name}")
-                    del alps_states
-
-                    for sample_index in range(args.calibration_samples):
-                        with torch.no_grad():
-                            output_states[sample_index] = unwrap_layer_output(
-                                block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
-                            )
-                finally:
-                    # MoE 层：恢复原始 expert forward
-                    if original_expert_forward is not None:
-                        type(block.mlp.experts).forward = original_expert_forward
-
-                # MoE expert 剪枝：用 ALPS 自己的 ADMM 算法
-                if expert_alps_states:
-                    experts = block.mlp.experts
-                    for eid, state in expert_alps_states.items():
-                        print(f"pruning layer {layer_index} expert {eid}")
-                        state.ALPS_admm(
-                            sp=args.sparsity_ratio,
-                            nm_n=prune_n,
-                            nm_m=prune_m,
-                            rho=rho,
-                        )
-                        # 把剪枝后的权重写回 expert Parameter
-                        experts.down_proj.data[eid] = state.layer.weight.data.clone()
-                        state.free()
-                    # expert 剪枝后重算 output_states，让下一层拿到正确的输入
-                    for sample_index in range(args.calibration_samples):
-                        with torch.no_grad():
-                            output_states[sample_index] = unwrap_layer_output(
-                                block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
-                            )
 
                 input_states, output_states = output_states, input_states
 

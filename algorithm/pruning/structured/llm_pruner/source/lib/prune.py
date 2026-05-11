@@ -8,12 +8,8 @@ from tqdm import tqdm
 
 from algorithm.common.device import empty_cache, resolve_device
 from algorithm.common.modeling import (
-    compress_experts,
     get_head_geometry,
     get_mlp_projections,
-    get_text_backbone,
-    is_moe_layer,
-    pseudo_prune_experts,
     supports_head_pruning,
 )
 
@@ -290,8 +286,7 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
     # --- Step 2: Compute importance per layer ---
     attn_imp_per_layer = []
     mlp_imp_per_layer = []
-    expert_imp_per_layer = {}  # layer_idx -> (num_experts, inter_size)
-    for layer_idx, layer in enumerate(tqdm(layers, desc="Computing importance")):
+    for layer in tqdm(layers, desc="Computing importance"):
         attn_imp = _reduce_attention_importance_to_groups(
             importance.compute_attention_importance(layer),
             layer,
@@ -299,9 +294,6 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
         mlp_imp = importance.compute_mlp_importance(layer)
         attn_imp_per_layer.append(attn_imp)
         mlp_imp_per_layer.append(mlp_imp)
-        # MoE expert 重要性：使用 LLM-Pruner 自带的 magnitude/Taylor 评分
-        if is_moe_layer(layer):
-            expert_imp_per_layer[layer_idx] = importance.compute_expert_importance(layer)
 
     # Clean up gradients after reading them
     if pruner_type == "taylor":
@@ -326,15 +318,12 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
     for layer_idx, layer in enumerate(tqdm(layers, desc="Applying pruning")):
         attn_keep_mask = attn_keep_masks[layer_idx]
         mlp_keep_mask = mlp_keep_masks[layer_idx]
-        is_moe = is_moe_layer(layer)
 
         if pseudo_pruning:
             # Pseudo-pruning: zero masked channels without changing shapes
             if attn_keep_mask is not None:
                 pseudo_mask_attention(layer, attn_keep_mask, device)
-            # MoE 层：跳过 shared_expert 伪剪枝
-            if not is_moe:
-                pseudo_mask_mlp(layer, mlp_keep_mask, device)
+            pseudo_mask_mlp(layer, mlp_keep_mask, device)
         else:
             # Real pruning: reshape weights by slicing pruned channels
             if attn_keep_mask is not None:
@@ -344,29 +333,13 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
                 if remove_groups:
                     prune_attention(layer, remove_groups, device)
 
-            # MoE 层：跳过 shared_expert 剪枝
-            if not is_moe:
-                remove_neurons = sorted(
-                    (mlp_keep_mask == False).nonzero(as_tuple=False).flatten().tolist()  # noqa: E712
-                )
-                if remove_neurons:
-                    prune_mlp(layer, remove_neurons, device)
+            remove_neurons = sorted(
+                (mlp_keep_mask == False).nonzero(as_tuple=False).flatten().tolist()  # noqa: E712
+            )
+            if remove_neurons:
+                prune_mlp(layer, remove_neurons, device)
 
-    # --- Step 4.5: MoE expert 剪枝 ---
-    # 使用 LLM-Pruner 自带的 magnitude/Taylor 重要性评分（已在 Step 2 中计算）
-    keep_ratio = 1.0 - target_ratio
-    if expert_imp_per_layer:
-        import logging as _logging
-        _logger = _logging.getLogger(__name__)
-        _logger.info("LLM-Pruner: pruning experts on %d MoE layers, keep_ratio=%.2f, pseudo=%s",
-                     len(expert_imp_per_layer), keep_ratio, pseudo_pruning)
-        for layer_idx, imp in expert_imp_per_layer.items():
-            if pseudo_pruning:
-                pseudo_prune_experts(layers[layer_idx], importance=imp, keep_ratio=keep_ratio)
-            else:
-                compress_experts(layers[layer_idx], importance=imp, keep_ratio=keep_ratio)
-
-    # --- Step 5: Sync config (only needed for real pruning, 必须在 expert 剪枝之后) ---
+    # --- Step 5: Sync config (only needed for real pruning) ---
     if not pseudo_pruning:
         sync_config(backbone)
 
@@ -384,4 +357,6 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
     }
 
 
+# 为了兼容，从 common 导入 get_text_backbone
+from algorithm.common.modeling import get_text_backbone
 # Add pruning support for Qwen3.5.
