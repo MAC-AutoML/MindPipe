@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from algorithm.common.modeling import (
+    ensure_moe_intermediate_size,
     get_head_geometry,
     get_mlp_projections,
     get_q_stride,
@@ -302,8 +303,8 @@ def sync_config(backbone):
                 head_counts.append(num_heads)
                 kv_head_counts.append(num_kv_heads)
                 kv_group_counts.append(num_kv_groups)
+        ensure_moe_intermediate_size(layer)
         intermediate_sizes.append(int(layer.mlp.intermediate_size))
-
     decoder_config = backbone.decoder_config
     if len(set(head_counts)) == 1:
         decoder_config.num_attention_heads = head_counts[0]
@@ -313,4 +314,15 @@ def sync_config(backbone):
         decoder_config.num_key_value_groups = kv_group_counts[0]
     if len(set(intermediate_sizes)) == 1:
         decoder_config.intermediate_size = intermediate_sizes[0]
+
+    # MoE expert intermediate size 同步
+    from algorithm.common.modeling import is_moe_layer
+    expert_inter_sizes = []
+    for layer in backbone.layers:
+        if is_moe_layer(layer):
+            experts = layer.mlp.experts
+            expert_inter_sizes.append(experts.gate_up_proj.shape[1] // 2)
+    if expert_inter_sizes and hasattr(decoder_config, 'moe_intermediate_size'):
+        if len(set(expert_inter_sizes)) == 1:
+            decoder_config.moe_intermediate_size = expert_inter_sizes[0]
 # Add pruning support for Qwen3.5.

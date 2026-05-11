@@ -3,11 +3,17 @@ import torch.nn as nn
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from algorithm.common.modeling import (
+    ExpertStatsCollector,
+    compress_experts,
+    ensure_moe_intermediate_size,
     get_attn_output_proj,
     get_attn_projections as _get_attn_projections,
     get_head_geometry as _get_head_geometry,
     get_mlp_projections as _get_mlp_projections,
     get_q_stride,
+    is_moe_layer,
+    make_expert_forward_with_stats,
+    pseudo_prune_experts,
     supports_head_pruning,
 )
 from .layerwrapper import BiasGPT
@@ -91,7 +97,11 @@ def get_projection_subset(layer):
     full_attention 层返回 attn_output + mlp.down_proj，
     linear_attention 层仅返回 mlp.down_proj（不剪 attention）。
     """
-    down_proj = resolve_linear_module(layer.mlp.down_proj)
+    # 尝试标准 down_proj
+    down_proj = resolve_linear_module(getattr(layer.mlp, 'down_proj', None))
+    # MoE 层：尝试 shared_expert.down_proj
+    if down_proj is None and hasattr(layer.mlp, 'shared_expert'):
+        down_proj = resolve_linear_module(layer.mlp.shared_expert.down_proj)
     if not supports_head_pruning(layer):
         # linear_attention 层：只剪 MLP
         if down_proj is None:
@@ -592,6 +602,8 @@ def _sync_decoder_config(layers, decoder_config):
                 head_counts.append(num_heads)
                 kv_head_counts.append(num_kv_heads)
                 kv_group_counts.append(num_kv_groups)
+        # MoE 层：确保 intermediate_size 属性存在
+        ensure_moe_intermediate_size(layer)
         intermediate_sizes.append(int(layer.mlp.intermediate_size))
 
     if head_counts and len(set(head_counts)) == 1:
@@ -610,6 +622,17 @@ def _sync_decoder_config(layers, decoder_config):
         _align_mlp_dimensions(layers, min_inter)
         decoder_config.intermediate_size = min_inter
 
+    # MoE expert intermediate size 同步
+    expert_inter_sizes = []
+    for layer in layers:
+        if is_moe_layer(layer):
+            experts = layer.mlp.experts
+            # gate_up_proj shape: (num_experts, 2*inter_size, hidden_size)
+            expert_inter_sizes.append(experts.gate_up_proj.shape[1] // 2)
+    if expert_inter_sizes and hasattr(decoder_config, 'moe_intermediate_size'):
+        if len(set(expert_inter_sizes)) == 1:
+            decoder_config.moe_intermediate_size = expert_inter_sizes[0]
+
 
 def _align_mlp_dimensions(layers, target_size):
     """将所有层的 MLP 维度裁剪到目标大小（最小公共维度）。
@@ -625,9 +648,7 @@ def _align_mlp_dimensions(layers, target_size):
         cur = int(layer.mlp.intermediate_size)
         if cur <= target_size:
             continue
-        gate_proj = layer.mlp.gate_proj
-        up_proj = layer.mlp.up_proj
-        down_proj = layer.mlp.down_proj
+        up_proj, gate_proj, down_proj = get_mlp_projections(layer)
 
         # 裁剪 gate_proj 和 up_proj 的输出维度（行）
         gate_proj.weight.data = gate_proj.weight.data[:target_size]
@@ -695,6 +716,10 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
     # 记录哪些层有 attn_output（用于后续索引对齐）
     layer_has_attn = []
 
+    # MoE expert 统计量收集
+    expert_collectors = {}  # layer_idx -> ExpertStatsCollector
+    original_experts_forwards = {}  # layer_idx -> original forward
+
     # Split into sub-problems, separate statistics for each module
     for i in tqdm(range(len(layers)), desc="Processing layers"):
         layer = layers[i]
@@ -706,6 +731,16 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
         target_dev = next(layer.parameters()).device
         inps, outs = inps.to(target_dev), outs.to(target_dev)
         layer_kwargs = move_layer_kwargs(layer_kwargs, target_dev)
+
+        # MoE 层：设置 expert 统计量收集（与 shared_expert 同时进行）
+        if is_moe_layer(layer):
+            experts = layer.mlp.experts
+            num_experts = experts.gate_up_proj.shape[0]
+            expert_inter_size = experts.down_proj.shape[-1]
+            collector = ExpertStatsCollector(num_experts, expert_inter_size, args.metrics, target_dev)
+            expert_collectors[i] = collector
+            original_experts_forwards[i] = type(experts).forward
+            type(experts).forward = make_expert_forward_with_stats(collector)
 
         wrapped_layers = {}
         for name in subset:
@@ -719,11 +754,16 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
         handles = []
         for name in wrapped_layers:
             handles.append(subset[name].register_forward_hook(add_batch(name)))
-        for j in range(args.nsamples):
-            with torch.no_grad():
-                outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
-        for h in handles:
-            h.remove()
+        try:
+            for j in range(args.nsamples):
+                with torch.no_grad():
+                    outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
+        finally:
+            for h in handles:
+                h.remove()
+            # MoE 层：恢复原始 expert forward
+            if i in original_experts_forwards:
+                type(layer.mlp.experts).forward = original_experts_forwards.pop(i)
 
         for name in subset:
             if name == 'attn_output':
@@ -857,7 +897,23 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
         if layer_has_attn[idx]:
             compress(layers[idx], attn_mask[idx], None, attn_baseline_inp_list[attn_inp_idx], None, target_dev, unstr=args.unstr)
             attn_inp_idx += 1
-        compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], target_dev, unstr=args.unstr)
+        # MoE 层：跳过 shared_expert 剪枝，只剪 expert
+        if not is_moe_layer(layers[idx]):
+            compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], target_dev, unstr=args.unstr)
+
+    # MoE expert 剪枝（pseudo 模式置零不改 shape，real 模式真裁剪）
+    if expert_collectors:
+        keep_ratio = 1.0 - args.pruning_ratio
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
+        _logger.info("FLAP: pruning experts on %d MoE layers, keep_ratio=%.2f, pseudo=%s",
+                     len(expert_collectors), keep_ratio, args.unstr)
+        for layer_idx, collector in expert_collectors.items():
+            if args.unstr:
+                pseudo_prune_experts(layers[layer_idx], collector, keep_ratio)
+            else:
+                compress_experts(layers[layer_idx], collector, keep_ratio)
+            collector.free()
 
     # 真剪枝后同步全局配置，确保 save_pretrained 能正确保存
     if not args.unstr:

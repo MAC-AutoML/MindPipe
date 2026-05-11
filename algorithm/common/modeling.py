@@ -637,13 +637,21 @@ def load_model_and_tokenizer(
         resolved_no_split = _parse_no_split_module_classes_arg(no_split_module_classes)
         if resolved_no_split is not None:
             model_kwargs["no_split_module_classes"] = resolved_no_split
+    is_qwen3_5_moe = config.model_type == "qwen3_5_moe" or "Qwen3_5MoeForConditionalGeneration" in architectures
     is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
     is_qwen2_vl = config.model_type == "qwen2_vl" or "Qwen2VLForConditionalGeneration" in architectures
     is_llava = config.model_type == "llava" or "LlavaForConditionalGeneration" in architectures
 
-    if is_qwen3_5:
+    if is_qwen3_5_moe:
+        # Qwen3.6-35B-A3B 等 MoE 模型
+        from transformers import Qwen3_5MoeForConditionalGeneration
+        model = Qwen3_5MoeForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
+        if hasattr(model, "language_model"):
+            ensure_generation_compat(model.language_model)
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif is_qwen3_5:
         try:
             from transformers import Qwen3_5ForConditionalGeneration
 
@@ -911,8 +919,318 @@ def get_attn_projections(layer):
 
 
 def get_mlp_projections(layer):
-    """获取 MLP 的三个投影层 (up_proj, gate_proj, down_proj)。"""
-    return layer.mlp.up_proj, layer.mlp.gate_proj, layer.mlp.down_proj
+    """获取 MLP 的三个投影层 (up_proj, gate_proj, down_proj)。
+    MoE 层返回 shared_expert 的投影。"""
+    mlp = layer.mlp
+    if is_moe_layer(layer):
+        # 确保 mlp 上有 intermediate_size 属性（sync_config 需要）
+        if not hasattr(mlp, 'intermediate_size'):
+            mlp.intermediate_size = mlp.shared_expert.down_proj.in_features
+        return mlp.shared_expert.up_proj, mlp.shared_expert.gate_proj, mlp.shared_expert.down_proj
+    return mlp.up_proj, mlp.gate_proj, mlp.down_proj
+
+
+def is_moe_layer(layer) -> bool:
+    """判断该层是否为 MoE 层。"""
+    mlp = getattr(layer, 'mlp', None)
+    if mlp is None:
+        return False
+    return hasattr(mlp, 'shared_expert') and hasattr(mlp, 'experts')
+
+
+def get_expert_parameters(layer) -> dict[str, nn.Parameter]:
+    """获取 MoE 层中 expert 的 raw Parameter 权重。"""
+    mlp = getattr(layer, 'mlp', None)
+    if mlp is None:
+        return {}
+    experts = getattr(mlp, 'experts', None)
+    if experts is None:
+        return {}
+    result = {}
+    if hasattr(experts, 'gate_up_proj') and isinstance(experts.gate_up_proj, nn.Parameter):
+        result["mlp.experts.gate_up_proj"] = experts.gate_up_proj
+    if hasattr(experts, 'down_proj') and isinstance(experts.down_proj, nn.Parameter):
+        result["mlp.experts.down_proj"] = experts.down_proj
+    return result
+
+
+# ── MoE Expert 结构化剪枝公共工具 ──
+
+
+class ExpertStatsCollector:
+    """收集 MoE expert 的中间激活统计量，用于 FLAP 风格的重要性评估。
+
+    每个 expert 独立统计 down_proj 的输入（即 SiLU(gate) * up 的输出），
+    使用与 BiasGPT 相同的算法计算 fluc_inp / scaler_inp。
+    """
+
+    def __init__(self, num_experts, intermediate_size, metric='WIFV', device='cuda'):
+        self.num_experts = num_experts
+        self.intermediate_size = intermediate_size
+        self.metric = metric
+        self.device = device
+
+        self.nsamples = torch.zeros(num_experts, dtype=torch.float32, device=device)
+        self.baseline_inp = torch.zeros(num_experts, intermediate_size, device=device)
+        if metric == 'WIFN':
+            self.scaler_inp = torch.zeros(num_experts, intermediate_size, device=device)
+        else:
+            self.fluc_inp = torch.zeros(num_experts, intermediate_size, device=device)
+
+    def add_batch(self, expert_idx, intermediate_act):
+        """为一个 expert 添加一批中间激活统计量。"""
+        if len(intermediate_act.shape) == 1:
+            intermediate_act = intermediate_act.unsqueeze(0)
+        batch_size = intermediate_act.shape[0]
+        inp = intermediate_act.t().float()  # (intermediate_size, n_tokens)
+
+        old_n = self.nsamples[expert_idx]
+        new_n = old_n + batch_size
+
+        old_baseline = self.baseline_inp[expert_idx].clone()
+        self.baseline_inp[expert_idx] *= old_n / new_n
+        self.baseline_inp[expert_idx] += inp.mean(dim=1) / new_n
+
+        if self.metric == 'WIFN':
+            self.scaler_inp[expert_idx] *= old_n / new_n
+            self.scaler_inp[expert_idx] += (inp ** 2).sum(dim=1) / new_n
+        else:
+            if old_n > 0:
+                self.fluc_inp[expert_idx] *= (old_n - 1) / (new_n - 1)
+                diff_new = inp - self.baseline_inp[expert_idx].unsqueeze(1)
+                diff_old = inp - old_baseline.unsqueeze(1)
+                self.fluc_inp[expert_idx] += (diff_new * diff_old).sum(dim=1) / new_n
+
+        self.nsamples[expert_idx] = new_n
+
+    def compute_importance(self, down_proj_weight):
+        """计算每个 expert 每个 neuron 的重要性。
+
+        Args:
+            down_proj_weight: Tensor (num_experts, hidden_size, intermediate_size)
+
+        Returns:
+            importance: Tensor (num_experts, intermediate_size)
+        """
+        if self.metric == 'IFV':
+            return self.fluc_inp
+        elif self.metric == 'WIFV':
+            weight_sq_sum = (down_proj_weight ** 2).sum(dim=1)
+            return self.fluc_inp * weight_sq_sum
+        else:  # WIFN
+            scaler_sqrt = torch.sqrt(self.scaler_inp)
+            return (torch.abs(down_proj_weight) * scaler_sqrt.unsqueeze(1)).mean(dim=1)
+
+    def free(self):
+        self.baseline_inp = None
+        self.nsamples = None
+        if hasattr(self, 'fluc_inp'):
+            self.fluc_inp = None
+        if hasattr(self, 'scaler_inp'):
+            self.scaler_inp = None
+
+
+def make_expert_forward_with_callback(callback):
+    """创建带回调的 expert forward 函数，用于临时替换原始 forward。
+
+    callback 签名: callback(eid: int, intermediate: Tensor, output: Tensor)
+    - intermediate: 每个 expert 的中间激活 SiLU(gate)*up
+    - output: 每个 expert 的 down_proj 输出
+    """
+    import torch.nn.functional as F
+
+    def forward_with_callback(self_e, hidden_states, top_k_index, top_k_weights):
+        final_hidden_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            expert_mask = F.one_hot(top_k_index, num_classes=self_e.num_experts)
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        for expert_idx_tensor in expert_hit:
+            eid = expert_idx_tensor[0]
+            if eid == self_e.num_experts:
+                continue
+            top_k_pos, token_idx = torch.where(expert_mask[eid])
+            current_state = hidden_states[token_idx]
+            gate, up = F.linear(current_state, self_e.gate_up_proj[eid]).chunk(2, dim=-1)
+            intermediate = self_e.act_fn(gate) * up
+            current_hidden_states = F.linear(intermediate, self_e.down_proj[eid])
+
+            # 调用回调（收集统计量/激活）
+            callback(eid.item(), intermediate.data, current_hidden_states.data)
+
+            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+        return final_hidden_states
+
+    return forward_with_callback
+
+
+def make_expert_forward_with_stats(collector):
+    """创建带统计量收集的 expert forward 函数（FLAP/WandaSP/Wanda 使用）。
+
+    内部调用 make_expert_forward_with_callback。
+    """
+    def cb(eid, inp, out):
+        collector.add_batch(eid, inp)
+    return make_expert_forward_with_callback(cb)
+
+
+def pseudo_prune_experts(layer, collector=None, keep_ratio=0.5, importance=None):
+    """对 MoE expert 进行伪结构化剪枝（置零不重要的神经元，不改变 shape）。
+
+    每个 expert 各自按重要性排序，将底部 (1-keep_ratio) 的神经元置零。
+    与 compress_experts 不同，tensor shape 保持不变。
+
+    Args:
+        collector: ExpertStatsCollector（用于 FLAP/WandaSP 等方法）
+        importance: 预计算的重要性张量 (num_experts, inter_size)，
+                    传入时跳过 collector（用于 LLM-Pruner 等自带评分的方法）
+    """
+    experts = layer.mlp.experts
+    num_experts = experts.gate_up_proj.shape[0]
+    expert_inter_size = experts.down_proj.shape[-1]
+    keep_count = max(1, int(expert_inter_size * keep_ratio))
+
+    if keep_count >= expert_inter_size:
+        return
+
+    if importance is None:
+        importance = collector.compute_importance(experts.down_proj)
+
+    gate_up_proj = experts.gate_up_proj.data
+    down_proj = experts.down_proj.data
+
+    for eid in range(num_experts):
+        _, indices = torch.sort(importance[eid], descending=True)
+        remove_indices = indices[keep_count:]
+
+        # gate_up_proj: 置零 gate 部分和 up 部分
+        gate_up_proj[eid, :expert_inter_size, :][remove_indices] = 0
+        gate_up_proj[eid, expert_inter_size:, :][remove_indices] = 0
+        # down_proj: 置零对应列
+        down_proj[eid][:, remove_indices] = 0
+
+
+def compress_experts(layer, collector=None, keep_ratio=0.5, importance=None):
+    """对 MoE expert 进行结构化剪枝（真剪枝，改变 shape）。
+
+    每个 expert 各自按重要性排序，保留相同数量的 neuron。
+    gate_up_proj: (num_experts, 2*inter, hidden) -> (num_experts, 2*kept, hidden)
+    down_proj:    (num_experts, hidden, inter) -> (num_experts, hidden, kept)
+
+    Args:
+        collector: ExpertStatsCollector（用于 FLAP/WandaSP 等方法）
+        importance: 预计算的重要性张量 (num_experts, inter_size)，
+                    传入时跳过 collector（用于 LLM-Pruner 等自带评分的方法）
+    """
+    experts = layer.mlp.experts
+    num_experts = experts.gate_up_proj.shape[0]
+    expert_inter_size = experts.down_proj.shape[-1]
+    hidden_size = experts.gate_up_proj.shape[-1]
+    keep_count = max(1, int(expert_inter_size * keep_ratio))
+
+    if keep_count >= expert_inter_size:
+        return
+
+    if importance is None:
+        importance = collector.compute_importance(experts.down_proj)
+
+    gate_up_proj = experts.gate_up_proj.data
+    down_proj = experts.down_proj.data
+    device = gate_up_proj.device
+    dtype = gate_up_proj.dtype
+
+    new_gate_up = torch.zeros(num_experts, 2 * keep_count, hidden_size, dtype=dtype, device=device)
+    new_down = torch.zeros(num_experts, hidden_size, keep_count, dtype=dtype, device=device)
+
+    for eid in range(num_experts):
+        _, indices = torch.sort(importance[eid], descending=True)
+        keep_indices, _ = torch.sort(indices[:keep_count])
+
+        gate_part = gate_up_proj[eid, :expert_inter_size, :][keep_indices]
+        up_part = gate_up_proj[eid, expert_inter_size:, :][keep_indices]
+
+        new_gate_up[eid, :keep_count, :] = gate_part
+        new_gate_up[eid, keep_count:, :] = up_part
+        new_down[eid] = down_proj[eid][:, keep_indices]
+
+    experts.gate_up_proj = nn.Parameter(new_gate_up)
+    experts.down_proj = nn.Parameter(new_down)
+
+    # 更新 experts 模块的 intermediate_size 属性
+    if hasattr(experts, 'intermediate_size'):
+        experts.intermediate_size = keep_count
+
+
+def ensure_moe_intermediate_size(layer):
+    """确保 MoE 层有 intermediate_size 属性（sync_config 需要）。"""
+    if is_moe_layer(layer) and not hasattr(layer.mlp, 'intermediate_size'):
+        layer.mlp.intermediate_size = layer.mlp.shared_expert.down_proj.in_features
+
+
+def filter_moe_shared_expert(linear_layers: dict, layer) -> dict:
+    """过滤掉 MoE 层中 shared_expert 相关的 linear 层，避免对辅助 MLP 做剪枝。"""
+    if not is_moe_layer(layer):
+        return linear_layers
+    return {k: v for k, v in linear_layers.items()
+            if not k.startswith('mlp.shared_expert') and 'shared_expert_gate' not in k}
+
+
+def unstructured_prune_experts(layer, collector, sparsity_ratio):
+    """对 MoE expert 参数做非结构化剪枝（基于激活统计量的重要性）。
+
+    使用 collector 中收集的中间激活统计量，按 WIFN 指标
+    (|W| * sqrt(activation_norm)) 计算逐元素重要性，置零最不重要的元素。
+
+    Args:
+        layer: decoder layer
+        collector: ExpertStatsCollector（已收集完统计量）
+        sparsity_ratio: 剪枝比例
+    """
+    if not is_moe_layer(layer):
+        return
+    experts = layer.mlp.experts
+
+    # down_proj: 使用 collector 中的 per-expert per-neuron 统计量
+    down_proj_weight = experts.down_proj.data  # (num_experts, hidden_size, inter_size)
+    num_experts = down_proj_weight.shape[0]
+    inter_size = down_proj_weight.shape[-1]
+
+    for eid in range(num_experts):
+        w = down_proj_weight[eid]  # (hidden_size, inter_size)
+        if collector.metric == 'WIFN':
+            scaler = collector.scaler_inp[eid]  # (inter_size,)
+        else:
+            scaler = collector.fluc_inp[eid]  # (inter_size,)
+        # 逐元素重要性: |W[i,j]| * sqrt(scaler[j])
+        importance = w.abs() * torch.sqrt(scaler.unsqueeze(0).float())
+        flat_imp = importance.flatten()
+        k = int(flat_imp.numel() * sparsity_ratio)
+        if k <= 0:
+            continue
+        threshold = torch.sort(flat_imp)[0][k]
+        w[importance <= threshold] = 0
+
+    # gate_up_proj: 没有直接的激活统计量，用 down_proj 的统计量近似
+    # (gate_up 的输出维度与 down_proj 的输入维度一致)
+    gate_up_weight = experts.gate_up_proj.data  # (num_experts, 2*inter_size, hidden_size)
+    for eid in range(num_experts):
+        w = gate_up_weight[eid]  # (2*inter_size, hidden_size)
+        if collector.metric == 'WIFN':
+            scaler = collector.scaler_inp[eid]  # (inter_size,)
+        else:
+            scaler = collector.fluc_inp[eid]
+        # gate 部分和 up 部分共享同一个 scaler
+        full_scaler = scaler.repeat(2)  # (2*inter_size,)
+        importance = w.abs() * torch.sqrt(full_scaler.unsqueeze(1).float())
+        flat_imp = importance.flatten()
+        k = int(flat_imp.numel() * sparsity_ratio)
+        if k <= 0:
+            continue
+        threshold = torch.sort(flat_imp)[0][k]
+        w[importance <= threshold] = 0
 
 
 # ── 多卡并行设备管理 helpers ──
