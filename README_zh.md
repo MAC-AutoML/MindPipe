@@ -4,7 +4,7 @@
 
 **大语言模型与视觉语言模型的统一压缩与评测框架**
 
-[![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)](https://python.org)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org)
 [![Hugging Face](https://img.shields.io/badge/🤗%20Hugging%20Face-Transformers-orange)](https://huggingface.co/docs/transformers)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
@@ -182,33 +182,36 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
 
 ## 📦 支持算法
 
+请使用 CLI 列中的方法名作为命令行参数值。QA-LoRA、LLM-Pruner、Wanda-SP
+等是展示名；实际 CLI 值分别是 `qalora`、`llm_pruner`、`wanda_sp`。
+
 ### 量化（11 种方法）
 
-| 方法 | 类型 | 技术特点 | NPU |
-|:----:|:----:|:--------:|:---:|
-| **AWQ** | PTQ | Activation-aware 权重量化 | ✅ |
-| **GPTQ** | PTQ | GPTQ 权重量化 | ✅ |
-| **MQuant** | PTQ | 多模态 GPTQ/AWQ 量化（语言+视觉分支） | ⏳ |
-| **OmniQuant** | PTQ | 可学习的权重与激活变换 | ✅ |
-| **QuaRot** | PTQ | 基于旋转的 W/A/KV 量化 | ⏳ |
-| **SmoothQuant** | PTQ | 面向 W/A 量化的激活平滑 | ✅ |
-| **SpinQuant** | PTQ | 基于 SpinQuant hook 的旋转量化 | ⏳ |
-| **FlatQuant** | QAT | 可训练变换 | ✅ |
-| **QLoRA** | QAT | 低比特 fake-quant adapter 训练 | ✅ |
-| **QA-LoRA** | QAT | Group-pooled adapter 训练 | 🔶 |
-| **SplitQuant** | QAT | SplitQuant 风格可训练变换 | ✅ |
+| 方法 | CLI | 类型 | 技术特点 | NPU |
+|:----:|:---:|:----:|:--------:|:---:|
+| **AWQ** | `awq` | PTQ | Activation-aware 权重量化 | ✅ |
+| **GPTQ** | `gptq` | PTQ | GPTQ 权重量化 | ✅ |
+| **MQuant** | `mquant` | PTQ | 多模态 GPTQ/AWQ 量化（语言+视觉分支） | ⏳ |
+| **OmniQuant** | `omniquant` | PTQ | 可学习的权重与激活变换 | ✅ |
+| **QuaRot** | `quarot` | PTQ | 基于旋转的 W/A/KV 量化 | ⏳ |
+| **SmoothQuant** | `smoothquant` | PTQ | 面向 W/A 量化的激活平滑 | ✅ |
+| **SpinQuant** | `spinquant` | PTQ | 基于 SpinQuant hook 的旋转量化 | ⏳ |
+| **FlatQuant** | `flatquant` | QAT | 可训练变换 | ✅ |
+| **QLoRA** | `qlora` | QAT | 低比特 fake-quant adapter 训练 | ✅ |
+| **QA-LoRA** | `qalora` | QAT | Group-pooled adapter 训练 | 🔶 |
+| **SplitQuant** | `splitquant` | QAT | SplitQuant 风格可训练变换 | ✅ |
 
 ### 剪枝（7 种方法）
 
-| 方法 | 类型 | 校准集 | NPU |
-|:----:|:----:|:------:|:---:|
-| **ALPS** | 非结构化 / n:m | `c4` | ✅ |
-| **FLAP** | 结构化 | `wikitext2` | ✅ |
-| **LLM-Pruner** | 结构化 | `c4` | ✅ |
-| **ShortGPT** | 层剪枝 | `pg19` | ✅ |
-| **SparseGPT** | 非结构化 / n:m | `c4` | ✅ |
-| **Wanda** | 非结构化 / n:m | `c4` | ✅ |
-| **Wanda-SP** | 结构化 | `c4` | ✅ |
+| 方法 | CLI | 类型 | 校准集 | NPU |
+|:----:|:---:|:----:|:------:|:---:|
+| **ALPS** | `alps` | 非结构化 / n:m | `c4` | ✅ |
+| **FLAP** | `flap` | 结构化 | `wikitext2` | ✅ |
+| **LLM-Pruner** | `llm_pruner` | 结构化 | `c4` | ✅ |
+| **ShortGPT** | `shortgpt` | 层剪枝 | `pg19` | ✅ |
+| **SparseGPT** | `sparsegpt` | 非结构化 / n:m | `c4` | ✅ |
+| **Wanda** | `wanda` | 非结构化 / n:m | `c4` | ✅ |
+| **Wanda-SP** | `wanda_sp` | 结构化 | `c4` | ✅ |
 
 > ✅ 已支持 &nbsp;|&nbsp; ⏳ 适配中 &nbsp;|&nbsp; 🔶 仅 CUDA
 
@@ -347,7 +350,7 @@ MindPipe/
 
 ### 环境要求
 
-- Python 3.8+
+- Python 3.10+
 - PyTorch 2.0+
 - CUDA 11.8+（GPU）或 Ascend CANN（NPU）
 
@@ -407,7 +410,7 @@ results/
 ├── <model>/<algorithm>/<run_spec>/
 │   ├── metrics.json        # 评测结果与运行元数据
 │   └── artifacts.json      # 算法细节、校准设置、checkpoint 路径
-└── <model>/<workflow>/<run_spec>/
+└── <model>/<execution_order>/<algorithm1>__<algorithm2>/<run_spec>/
     └── metrics.json
 ```
 

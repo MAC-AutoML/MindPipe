@@ -4,7 +4,7 @@
 
 **A Unified Compression & Evaluation Framework for LLMs and VLMs**
 
-[![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)](https://python.org)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org)
 [![Hugging Face](https://img.shields.io/badge/🤗%20Hugging%20Face-Transformers-orange)](https://huggingface.co/docs/transformers)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
@@ -182,33 +182,37 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
 
 ## 📦 Supported Algorithms
 
+Use the method identifiers in the CLI column as command-line values. Display
+names such as QA-LoRA, LLM-Pruner, and Wanda-SP are descriptive; the actual CLI
+values are `qalora`, `llm_pruner`, and `wanda_sp`.
+
 ### Quantization (11 Methods)
 
-| Method | Family | Technique | NPU |
-|:------:|:------:|:---------:|:---:|
-| **AWQ** | PTQ | Weight-only with activation-aware scaling | ✅ |
-| **GPTQ** | PTQ | Weight-only GPTQ quantization | ✅ |
-| **MQuant** | PTQ | Multimodal GPTQ/AWQ for language & visual branches | ⏳ |
-| **OmniQuant** | PTQ | Learnable weight & activation transformation | ✅ |
-| **QuaRot** | PTQ | Rotation-based W/A/KV quantization | ⏳ |
-| **SmoothQuant** | PTQ | Activation smoothing for W/A quantization | ✅ |
-| **SpinQuant** | PTQ | Rotation-based W/A/KV with SpinQuant hooks | ⏳ |
-| **FlatQuant** | QAT | Trainable transformations | ✅ |
-| **QLoRA** | QAT | Low-bit fake-quant adapter training | ✅ |
-| **QA-LoRA** | QAT | Group-pooled adapter training | 🔶 |
-| **SplitQuant** | QAT | SplitQuant-style trainable transformations | ✅ |
+| Method | CLI | Family | Technique | NPU |
+|:------:|:---:|:------:|:---------:|:---:|
+| **AWQ** | `awq` | PTQ | Weight-only with activation-aware scaling | ✅ |
+| **GPTQ** | `gptq` | PTQ | Weight-only GPTQ quantization | ✅ |
+| **MQuant** | `mquant` | PTQ | Multimodal GPTQ/AWQ for language & visual branches | ⏳ |
+| **OmniQuant** | `omniquant` | PTQ | Learnable weight & activation transformation | ✅ |
+| **QuaRot** | `quarot` | PTQ | Rotation-based W/A/KV quantization | ⏳ |
+| **SmoothQuant** | `smoothquant` | PTQ | Activation smoothing for W/A quantization | ✅ |
+| **SpinQuant** | `spinquant` | PTQ | Rotation-based W/A/KV with SpinQuant hooks | ⏳ |
+| **FlatQuant** | `flatquant` | QAT | Trainable transformations | ✅ |
+| **QLoRA** | `qlora` | QAT | Low-bit fake-quant adapter training | ✅ |
+| **QA-LoRA** | `qalora` | QAT | Group-pooled adapter training | 🔶 |
+| **SplitQuant** | `splitquant` | QAT | SplitQuant-style trainable transformations | ✅ |
 
 ### Pruning (7 Methods)
 
-| Method | Type | Calibration | NPU |
-|:------:|:----:|:-----------:|:---:|
-| **ALPS** | Unstructured / n:m | `c4` | ✅ |
-| **FLAP** | Structured | `wikitext2` | ✅ |
-| **LLM-Pruner** | Structured | `c4` | ✅ |
-| **ShortGPT** | Layer pruning | `pg19` | ✅ |
-| **SparseGPT** | Unstructured / n:m | `c4` | ✅ |
-| **Wanda** | Unstructured / n:m | `c4` | ✅ |
-| **Wanda-SP** | Structured | `c4` | ✅ |
+| Method | CLI | Type | Calibration | NPU |
+|:------:|:---:|:----:|:-----------:|:---:|
+| **ALPS** | `alps` | Unstructured / n:m | `c4` | ✅ |
+| **FLAP** | `flap` | Structured | `wikitext2` | ✅ |
+| **LLM-Pruner** | `llm_pruner` | Structured | `c4` | ✅ |
+| **ShortGPT** | `shortgpt` | Layer pruning | `pg19` | ✅ |
+| **SparseGPT** | `sparsegpt` | Unstructured / n:m | `c4` | ✅ |
+| **Wanda** | `wanda` | Unstructured / n:m | `c4` | ✅ |
+| **Wanda-SP** | `wanda_sp` | Structured | `c4` | ✅ |
 
 > ✅ Ready &nbsp;|&nbsp; ⏳ In Progress &nbsp;|&nbsp; 🔶 CUDA Only
 
@@ -347,7 +351,7 @@ MindPipe/
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - PyTorch 2.0+
 - CUDA 11.8+ (for GPU) or Ascend CANN (for NPU)
 
@@ -407,7 +411,7 @@ results/
 ├── <model>/<algorithm>/<run_spec>/
 │   ├── metrics.json        # Evaluation results & run metadata
 │   └── artifacts.json      # Algorithm details, calibration settings, checkpoints
-└── <model>/<workflow>/<run_spec>/
+└── <model>/<execution_order>/<algorithm1>__<algorithm2>/<run_spec>/
     └── metrics.json
 ```
 
