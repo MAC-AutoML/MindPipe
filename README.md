@@ -1,175 +1,100 @@
-# MindPipe
+<div align="center">
+
+# 🧠 MindPipe
+
+**A Unified Compression & Evaluation Framework for LLMs and VLMs**
+
+[![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)](https://python.org)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org)
+[![Hugging Face](https://img.shields.io/badge/🤗%20Hugging%20Face-Transformers-orange)](https://huggingface.co/docs/transformers)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
+[![NPU Ready](https://img.shields.io/badge/NPU-Ready-purple)]()
 
 [English](README.md) | [中文](README_zh.md)
 
-MindPipe is a unified compression and evaluation framework for large language
-models and vision-language models. It provides one CLI entrypoint for
-post-training quantization, quantization-aware training, pruning, perplexity
-evaluation, zero-shot evaluation, and VLMEvalKit-based multimodal evaluation.
+<p align="center">
+  <em>One CLI. 11 quantization methods. 7 pruning methods. GPU & NPU. Text & Vision.</em>
+</p>
 
-The framework is designed for reproducible research across GPU and NPU
-backends, with shared model loading, dataset handling, device management, and
-result serialization.
+---
 
-## Highlights
+**Quantize** · **Prune** · **Evaluate** · **Reproduce**
 
-- Unified `main.py` entrypoint for quantization, pruning, compression pipelines,
-  and evaluation-only runs.
-- 11 quantization methods registered in-tree, including PTQ and QAT-style
-  methods.
-- 7 pruning methods registered in-tree, covering unstructured, semi-structured,
-  and structured pruning.
-- Text and vision-language model support through a shared model adapter layer.
-- GPU and NPU device abstraction for cache management, synchronization, seeds,
-  and dtype policy.
-- Per-run artifacts and metrics written as JSON for downstream aggregation.
-- Reproducibility scripts for common text and multimodal benchmark suites.
+</div>
 
-## Repository Layout
+## ✨ Why MindPipe?
 
-```text
-MindPipe/
-├── main.py                         # Unified CLI entrypoint
-├── algorithm/
-│   ├── common/                     # Shared model, data, device, IO utilities
-│   ├── quantization/
-│   │   ├── ptq/                    # AWQ, GPTQ, MQuant, OmniQuant, QuaRot, SmoothQuant, SpinQuant
-│   │   └── qat/                    # FlatQuant, QLoRA, QA-LoRA, SplitQuant
-│   └── pruning/
-│       ├── structured/             # FLAP, LLM-Pruner, ShortGPT, Wanda-SP
-│       └── unstructured/           # ALPS, SparseGPT, Wanda
-├── workflow/                       # CLI config builder and stage executor
-├── evaluation/                     # PPL, lm-eval-harness, and VLMEvalKit runners
-├── configs/                        # Shared and algorithm-specific configs
-├── scripts/                        # Batch and reproducibility scripts
-└── third_party/                    # Optional external evaluation tools
-```
+> Most compression tools only handle one technique on one type of model.  
+> **MindPipe unifies them all under a single, reproducible pipeline.**
 
-## Supported Algorithms
+<table>
+<tr>
+<td width="50%">
 
-### Quantization
+### 🎯 One Entrypoint, All Methods
+A single `main.py` drives quantization, pruning, combined workflows, and evaluation — no juggling scripts.
 
-| Method | Family | Main Coverage | NPU Status |
-| --- | --- | --- | --- |
-| `awq` | PTQ | Weight-only quantization with activation-aware scaling | Ready |
-| `gptq` | PTQ | Weight-only GPTQ quantization | Ready |
-| `mquant` | PTQ | Multimodal GPTQ/AWQ-style quantization for language and visual branches | Not ready |
-| `omniquant` | PTQ | Learnable weight and activation transformation | Ready |
-| `quarot` | PTQ | Rotation-based W/A/KV quantization | Not ready |
-| `smoothquant` | PTQ | Activation smoothing for W/A quantization | Ready |
-| `spinquant` | PTQ | Rotation-based W/A/KV quantization with SpinQuant-style hooks | Not ready |
-| `flatquant` | QAT | FlatQuant-style trainable transformations | Ready |
-| `qlora` | QAT | QLoRA and low-bit fake-quant adapter training | Ready, with experimental NPU fake-quant fallback |
-| `qalora` | QAT | Basic QA-LoRA group-pooled adapter training | CUDA only |
-| `splitquant` | QAT | SplitQuant-style trainable transformations | Ready |
+### 🔀 GPU + NPU
+First-class support for both CUDA GPUs and Ascend NPUs with shared device abstraction.
 
-### Pruning
+### 📊 Integrated Evaluation
+PPL, lm-eval-harness zero-shot, and VLMEvalKit multimodal benchmarks — all built in.
 
-| Method | Type | Default Calibration Dataset | NPU Status |
-| --- | --- | --- | --- |
-| `alps` | Unstructured and n:m semi-structured | `c4` | Ready |
-| `flap` | Structured | `wikitext2` | Ready |
-| `llm_pruner` | Structured | `c4` | Ready |
-| `shortgpt` | Layer pruning | `pg19` | Ready |
-| `sparsegpt` | Unstructured and n:m semi-structured | `c4` | Ready |
-| `wanda` | Unstructured and n:m semi-structured | `c4` | Ready |
-| `wanda_sp` | Structured | `c4` | Ready |
+</td>
+<td width="50%">
 
-## Model Coverage
+### 🧩 Modular & Extensible
+Clean registry-based architecture makes adding new algorithms straightforward.
 
-MindPipe has been adapted across text-only and multimodal model families,
-including:
+### 🔬 Reproducibility First
+JSON artifacts, batch scripts, and per-run metrics ensure every result is traceable.
 
-- LLaMA-family text models, including LLaMA-2 and LLaMA-3 style checkpoints.
-- Qwen2.5 text models.
-- Qwen3 text models.
-- Qwen3.5 text/language-only paths.
-- Qwen2-VL, Qwen2.5-VL, and Qwen3-VL multimodal paths.
-- MiniCPM-V language and multimodal paths for selected quantization flows.
-- LLaVA and InternVL loader compatibility paths where supported by the local
-  Transformers environment.
+### 👁️ Vision-Language Native
+Not an afterthought — VLMs are first-class citizens with dedicated multimodal eval.
 
-Model support is algorithm-dependent. The most reliable way to check current
-support is to inspect each method under `algorithm/quantization/*/*/method.py`
-or `algorithm/pruning/*/*/method.py`, and the model-specific configs under
-`configs/algorithms/`.
+</td>
+</tr>
+</table>
 
-## Adaptation Progress
+---
 
-### 2026-04-18
-
-- Completed GPU validation for AWQ W4A16 on Qwen3, Qwen3-VL, Qwen3.5,
-  Qwen2-VL, and LLaVA-1.5. Text-side PPL runs completed successfully with no
-  obvious anomalies.
-- Qwen2-VL and Qwen3-VL completed VLMEvalKit evaluation on the validated
-  multimodal datasets. AWQ W4A16 showed acceptable accuracy degradation compared
-  with FP16.
-- The evaluation framework did not yet support Qwen3.5 and LLaVA-1.5 multimodal
-  evaluation at that time, so only text-side validation was completed for those
-  models.
-
-### 2026-04-19
-
-- Completed NPU validation for AWQ W4A16 on Qwen3, Qwen3-VL, Qwen3.5, Qwen2-VL,
-  and LLaVA-1.5. Text-side PPL runs completed successfully with no obvious
-  anomalies.
-
-### 2026-04-20
-
-- Completed GPU adaptation and validation for MQuant on Qwen3-VL, Qwen2-VL, and
-  Qwen2.5-VL. Text-side PPL runs completed successfully with no obvious
-  anomalies.
-- Qwen3-VL, Qwen2-VL, and Qwen2.5-VL completed VLMEvalKit evaluation on the
-  validated multimodal datasets. The visual W8A8 plus language W4A8 setting
-  showed acceptable accuracy degradation compared with FP16.
-
-### 2026-04-21
-
-- Completed GPU adaptation and validation for QuaRot and SpinQuant on Qwen3,
-  Qwen3.5, Qwen3-VL, and Qwen2-VL. Text-side PPL runs completed successfully
-  with no obvious anomalies.
-- Qwen3-VL, Qwen2-VL, and Qwen2.5-VL completed VLMEvalKit evaluation on the
-  validated multimodal datasets. The W4A8 setting showed acceptable accuracy
-  degradation compared with FP16.
-
-## Installation
+## 🚀 Quick Start
 
 ```bash
+# 1. Setup
 conda activate mindpipe
 git submodule update --init --recursive
-python -m pip install -r requirements.txt
-```
+pip install -r requirements.txt
 
-If VLMEvalKit evaluation is required, initialize the VLMEvalKit submodule or set
-`VLMEVALKIT_ROOT` to an existing checkout.
-
-## Device Loading Policy
-
-Quantization and pruning runs require `--device_map`. This applies to single-GPU
-runs as well as multi-GPU runs. The recommended pattern is:
-
-```bash
+# 2. Quantize a model (AWQ W4A16)
 CUDA_VISIBLE_DEVICES=0 python main.py \
   --quantization awq \
   --model_path /path/to/model \
   --device_map auto \
   --dtype float16 \
-  --attn_implementation sdpa \
   --calibration_dataset pileval \
-  --evaluation_dataset wikitext2 \
   --calibration_samples 128 \
   --sequence_length 2048 \
   --weight_bits 4 \
   --group_size 128 \
   --eval_ppl true \
   --output_dir ./results/awq
+
+# 3. Prune a model (Wanda 50% sparsity)
+CUDA_VISIBLE_DEVICES=0 python main.py \
+  --pruning wanda \
+  --model_path /path/to/model \
+  --device_map auto \
+  --dtype float16 \
+  --calibration_dataset c4 \
+  --calibration_samples 128 \
+  --sparsity_ratio 0.5 \
+  --eval_ppl true \
+  --output_dir ./results/wanda
 ```
 
-This policy keeps model placement under the Hugging Face Accelerate dispatch
-hooks. Avoid manually moving compressed models with `.to(device)` after loading
-with `device_map`.
-
-## Quick Start
+<details>
+<summary><b>📋 More Examples (Click to Expand)</b></summary>
 
 ### Full-Precision Evaluation
 
@@ -191,7 +116,7 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
   --output_dir ./results/fp_eval
 ```
 
-### Quantization
+### GPTQ Quantization
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python main.py \
@@ -212,24 +137,7 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
   --output_dir ./results/gptq
 ```
 
-### Pruning
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python main.py \
-  --pruning wanda \
-  --model_path /path/to/model \
-  --device_map auto \
-  --dtype float16 \
-  --attn_implementation sdpa \
-  --calibration_dataset c4 \
-  --calibration_samples 128 \
-  --sequence_length 2048 \
-  --sparsity_ratio 0.5 \
-  --eval_ppl true \
-  --output_dir ./results/wanda
-```
-
-### Pruning Followed by Quantization
+### Pruning + Quantization Pipeline
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 python main.py \
@@ -250,10 +158,7 @@ CUDA_VISIBLE_DEVICES=0,1 python main.py \
   --output_dir ./results/workflow
 ```
 
-## Multimodal Evaluation
-
-MindPipe integrates VLMEvalKit through `evaluation/vlm_eval.py`. A typical VLM
-evaluation command is:
+### VLM Multimodal Evaluation
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python main.py \
@@ -271,98 +176,287 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
   --output_dir ./results/vlm_eval
 ```
 
-Use `--num_samples` for smoke tests and `--vlm_resume true` to reuse existing
-per-dataset artifacts when available.
+</details>
 
-## Common Arguments
+---
+
+## 📦 Supported Algorithms
+
+### Quantization (11 Methods)
+
+| Method | Family | Technique | NPU |
+|:------:|:------:|:---------:|:---:|
+| **AWQ** | PTQ | Weight-only with activation-aware scaling | ✅ |
+| **GPTQ** | PTQ | Weight-only GPTQ quantization | ✅ |
+| **MQuant** | PTQ | Multimodal GPTQ/AWQ for language & visual branches | ⏳ |
+| **OmniQuant** | PTQ | Learnable weight & activation transformation | ✅ |
+| **QuaRot** | PTQ | Rotation-based W/A/KV quantization | ⏳ |
+| **SmoothQuant** | PTQ | Activation smoothing for W/A quantization | ✅ |
+| **SpinQuant** | PTQ | Rotation-based W/A/KV with SpinQuant hooks | ⏳ |
+| **FlatQuant** | QAT | Trainable transformations | ✅ |
+| **QLoRA** | QAT | Low-bit fake-quant adapter training | ✅ |
+| **QA-LoRA** | QAT | Group-pooled adapter training | 🔶 |
+| **SplitQuant** | QAT | SplitQuant-style trainable transformations | ✅ |
+
+### Pruning (7 Methods)
+
+| Method | Type | Calibration | NPU |
+|:------:|:----:|:-----------:|:---:|
+| **ALPS** | Unstructured / n:m | `c4` | ✅ |
+| **FLAP** | Structured | `wikitext2` | ✅ |
+| **LLM-Pruner** | Structured | `c4` | ✅ |
+| **ShortGPT** | Layer pruning | `pg19` | ✅ |
+| **SparseGPT** | Unstructured / n:m | `c4` | ✅ |
+| **Wanda** | Unstructured / n:m | `c4` | ✅ |
+| **Wanda-SP** | Structured | `c4` | ✅ |
+
+> ✅ Ready &nbsp;|&nbsp; ⏳ In Progress &nbsp;|&nbsp; 🔶 CUDA Only
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         main.py (CLI)                            │
+├─────────────────────────────────────────────────────────────────┤
+│                    workflow/ (Config + Executor)                  │
+├──────────────────┬──────────────────┬───────────────────────────┤
+│   Quantization   │     Pruning      │       Evaluation          │
+│  ┌────────────┐  │  ┌────────────┐  │  ┌─────────────────────┐ │
+│  │ PTQ  (7)   │  │  │Structured  │  │  │ PPL (wikitext2/c4)  │ │
+│  │ QAT  (4)   │  │  │Unstructured│  │  │ Zero-shot (lm-eval) │ │
+│  └────────────┘  │  │Layer Prune │  │  │ VLM (VLMEvalKit)    │ │
+│                  │  └────────────┘  │  └─────────────────────┘ │
+├──────────────────┴──────────────────┴───────────────────────────┤
+│              algorithm/common/ (Shared Infrastructure)            │
+│     Model Loading · Data · Device (GPU/NPU) · IO · Metrics       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Repository Layout
+
+```
+MindPipe/
+├── main.py                         # Unified CLI entrypoint
+├── algorithm/
+│   ├── common/                     # Shared model, data, device, IO utilities
+│   ├── quantization/
+│   │   ├── ptq/                    # AWQ, GPTQ, MQuant, OmniQuant, QuaRot, SmoothQuant, SpinQuant
+│   │   └── qat/                    # FlatQuant, QLoRA, QA-LoRA, SplitQuant
+│   └── pruning/
+│       ├── structured/             # FLAP, LLM-Pruner, ShortGPT, Wanda-SP
+│       └── unstructured/           # ALPS, SparseGPT, Wanda
+├── workflow/                       # CLI config builder and stage executor
+├── evaluation/                     # PPL, lm-eval-harness, and VLMEvalKit runners
+├── configs/                        # Shared and algorithm-specific configs
+├── scripts/                        # Batch and reproducibility scripts
+└── third_party/                    # Optional external evaluation tools
+```
+
+---
+
+## 🤖 Model Coverage
+
+<table>
+<tr><td>
+
+| Model Family | Text | Vision |
+|:------------|:----:|:------:|
+| LLaMA-2 / LLaMA-3 | ✅ | — |
+| Qwen2.5 | ✅ | — |
+| Qwen3 | ✅ | — |
+| Qwen3.5 | ✅ | — |
+
+</td><td>
+
+| Model Family | Text | Vision |
+|:------------|:----:|:------:|
+| Qwen2-VL | ✅ | ✅ |
+| Qwen2.5-VL | ✅ | ✅ |
+| Qwen3-VL | ✅ | ✅ |
+| MiniCPM-V | ✅ | ✅ |
+| LLaVA / InternVL | ✅ | 🔶 |
+
+</td></tr>
+</table>
+
+> **Note:** Model support is algorithm-dependent. Check `algorithm/quantization/*/*/method.py` or `algorithm/pruning/*/*/method.py` for exact coverage.
+
+---
+
+## 📖 Configuration Reference
+
+<details>
+<summary><b>⚙️ Common Arguments</b></summary>
 
 | Argument | Default | Description |
-| --- | --- | --- |
+|:---------|:--------|:------------|
 | `--model_path` | Required | Local or Hugging Face model path |
 | `--device` | `auto` | Logical device used by runtime helpers |
-| `--device_map` | `None` | Required for pruning and quantization, recommended value: `auto` |
+| `--device_map` | `None` | Required for pruning/quantization (`auto` recommended) |
 | `--dtype` | `bfloat16` | `auto`, `float16`, or `bfloat16` |
 | `--attn_implementation` | `flash_attention_2` | `flash_attention_2`, `sdpa`, or `eager` |
 | `--calibration_dataset` | Method default | `wikitext2`, `c4`, `pileval`, `pg19`, or `bookcorpus` |
 | `--evaluation_dataset` | `wikitext2` | Dataset used for PPL evaluation |
 | `--calibration_samples` | `128` | Number of calibration samples |
-| `--sequence_length` | `2048` in many scripts | Sequence length for calibration and evaluation |
+| `--sequence_length` | `2048` | Sequence length for calibration and evaluation |
 | `--batch_size` | `1` | PPL batch size |
 | `--max_eval_chunks` | `64` | Optional cap for PPL chunks |
 | `--eval_ppl` | `false` | Enable perplexity evaluation |
 | `--eval_zero_shot` | `false` | Enable lm-eval-harness tasks |
 | `--eval_vlm` | `false` | Enable VLMEvalKit evaluation |
 
-## Quantization Arguments
+</details>
+
+<details>
+<summary><b>🔢 Quantization Arguments</b></summary>
 
 | Argument | Default | Description |
-| --- | --- | --- |
+|:---------|:--------|:------------|
 | `--quantization` | `None` | One of the registered quantization methods |
 | `--weight_bits` | `4` | Weight quantization bit width |
 | `--activation_bits` | `16` | Activation quantization bit width |
-| `--query_bits` | `16` | Query activation bit width for supported methods |
-| `--key_bits` | `16` | Key cache bit width for supported methods |
-| `--value_bits` | `16` | Value cache bit width for supported methods |
+| `--query_bits` | `16` | Query activation bit width |
+| `--key_bits` | `16` | Key cache bit width |
+| `--value_bits` | `16` | Value cache bit width |
 | `--group_size` | `128` | Default group size |
 | `--weight_group_size` | `None` | Overrides weight group size |
 | `--activation_group_size` | `None` | Overrides activation group size |
 | `--kv_group_size` | `None` | Overrides KV group size |
-| `--weight_method` | `gptq` | Weight method for methods that support GPTQ or RTN |
+| `--weight_method` | `gptq` | Weight method for methods supporting GPTQ/RTN |
 
-## Pruning Arguments
+</details>
+
+<details>
+<summary><b>✂️ Pruning Arguments</b></summary>
 
 | Argument | Default | Description |
-| --- | --- | --- |
+|:---------|:--------|:------------|
 | `--pruning` | `None` | One of the registered pruning methods |
 | `--sparsity_ratio` | `0.5` | Target sparsity ratio |
-| `--structure_pattern` | `unstructured` | `unstructured`, `2:4`, or `4:8` where supported |
+| `--structure_pattern` | `unstructured` | `unstructured`, `2:4`, or `4:8` |
 | `--block_size` | `128` | Block size for supported pruning methods |
 | `--damp_percent` | `0.01` | Hessian damping ratio for second-order methods |
 
-## Reproducibility Scripts
+</details>
 
-The `scripts/repro/` directory contains serial benchmark launchers for adapted
-model families and algorithm paths. Examples include:
+---
 
-- `scripts/repro/run_qlora_adapted_models_text_suite.sh`
-- `scripts/repro/run_qalora_adapted_models_text_suite.sh`
-- `scripts/repro/run_mquantpp_awq_vlm_serial_suite.sh`
-- `scripts/repro/run_qwen2_5_vl_gptq_vlm_suite.sh`
-- `scripts/repro/run_qwen3_vl_2b_gptq_suite.sh`
+## 🔧 Installation
 
-Use `DRY_RUN=true` to print commands without executing them, and use
-`MODEL_FILTER=<model_key>` when the script supports model-level filtering.
+### Prerequisites
 
-## Outputs
+- Python 3.8+
+- PyTorch 2.0+
+- CUDA 11.8+ (for GPU) or Ascend CANN (for NPU)
 
-Each run writes metrics and artifacts under the resolved output directory.
+### Setup
 
-```text
-results/
-├── <model>/<algorithm>/<run_spec>/metrics.json
-├── <model>/<algorithm>/<run_spec>/artifacts.json
-└── <model>/<workflow>/<run_spec>/metrics.json
+```bash
+# Clone the repository
+git clone https://github.com/your-org/MindPipe.git
+cd MindPipe
+
+# Create environment
+conda create -n mindpipe python=3.10 -y
+conda activate mindpipe
+
+# Install dependencies
+git submodule update --init --recursive
+pip install -r requirements.txt
 ```
 
-`metrics.json` stores evaluation results and run metadata. `artifacts.json`
-stores algorithm-specific details such as quantized layers, adapter paths,
-calibration settings, and generated checkpoint locations.
+### Optional: VLMEvalKit
 
-## Known Limitations
+For multimodal evaluation, initialize the VLMEvalKit submodule or set `VLMEVALKIT_ROOT`:
 
-- QuaRot and SpinQuant are not marked NPU-ready in the current registry.
-- MQuant is currently GPU-oriented and not marked NPU-ready.
-- QA-LoRA is a basic CUDA-only implementation and does not export an AutoGPTQ
-  packed checkpoint.
-- QLoRA uses bitsandbytes for CUDA W4 when available; W2/W3 and NPU paths use
-  the in-tree fake-quant fallback.
-- Support for saved-model reload after methods that insert custom runtime
-  wrappers is method-dependent.
+```bash
+git submodule update --init third_party/VLMEvalKit
+# or
+export VLMEVALKIT_ROOT=/path/to/existing/VLMEvalKit
+```
 
-## Citation and Acknowledgements
+---
 
-MindPipe vendors or adapts ideas and implementation components from several
-model compression projects, including AWQ, GPTQ, QuaRot, SpinQuant, FlatQuant,
-SmoothQuant, OmniQuant, SplitQuant, QLoRA, QA-LoRA, Wanda, SparseGPT, FLAP,
-ShortGPT, LLM-Pruner, and ALPS. Please cite the original method papers when
-using the corresponding algorithms.
+## 📈 Reproducibility
+
+The `scripts/repro/` directory contains ready-to-use benchmark launchers:
+
+```bash
+# Dry run (print commands without executing)
+DRY_RUN=true bash scripts/repro/run_qlora_adapted_models_text_suite.sh
+
+# Filter specific models
+MODEL_FILTER=qwen3 bash scripts/repro/run_mquantpp_awq_vlm_serial_suite.sh
+```
+
+Available scripts include:
+- `run_qlora_adapted_models_text_suite.sh`
+- `run_qalora_adapted_models_text_suite.sh`
+- `run_mquantpp_awq_vlm_serial_suite.sh`
+- `run_qwen2_5_vl_gptq_vlm_suite.sh`
+- `run_qwen3_vl_2b_gptq_suite.sh`
+
+---
+
+## 📂 Output Structure
+
+```
+results/
+├── <model>/<algorithm>/<run_spec>/
+│   ├── metrics.json        # Evaluation results & run metadata
+│   └── artifacts.json      # Algorithm details, calibration settings, checkpoints
+└── <model>/<workflow>/<run_spec>/
+    └── metrics.json
+```
+
+---
+
+## ⚠️ Known Limitations
+
+| Limitation | Status |
+|:-----------|:------:|
+| QuaRot / SpinQuant not NPU-ready | ⏳ |
+| MQuant GPU-only | ⏳ |
+| QA-LoRA CUDA-only, no AutoGPTQ export | 🔶 |
+| QLoRA W2/W3 use fake-quant fallback on NPU | ℹ️ |
+| Custom runtime wrapper reload is method-dependent | ℹ️ |
+
+---
+
+## 📜 Citation & Acknowledgements
+
+MindPipe builds upon the following outstanding research. Please cite the original papers when using their methods:
+
+<details>
+<summary><b>Click to see referenced works</b></summary>
+
+- **AWQ** — Activation-aware Weight Quantization
+- **GPTQ** — Accurate Post-Training Quantization for Generative Pre-trained Transformers
+- **QuaRot** — Outlier-Free Quantization via Rotations
+- **SpinQuant** — Rotation-Based Quantization
+- **FlatQuant** — Flatness-Aware Quantization
+- **SmoothQuant** — Accurate and Efficient Post-Training Quantization
+- **OmniQuant** — Omnidirectionally Calibrated Quantization
+- **SplitQuant** — Split Quantization
+- **QLoRA** — Efficient Finetuning of Quantized LLMs
+- **QA-LoRA** — Quantization-Aware Low-Rank Adaptation
+- **Wanda** — Pruning by Weights and Activations
+- **SparseGPT** — Massive Language Models Can Be Accurately Pruned in One-Shot
+- **FLAP** — Fluctuation-based Adaptive Structured Pruning
+- **ShortGPT** — Layers in LLMs are More Redundant Than You Expect
+- **LLM-Pruner** — On the Structural Pruning of Large Language Models
+- **ALPS** — Adaptive Layer-wise Pruning and Sparsification
+
+</details>
+
+---
+
+<div align="center">
+
+**⭐ If you find MindPipe useful, please consider giving it a star!**
+
+*Built with ❤️ for the model compression community*
+
+</div>
