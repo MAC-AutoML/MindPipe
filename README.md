@@ -218,19 +218,19 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         main.py (CLI)                            │
+│                         main.py (CLI)                           │
 ├─────────────────────────────────────────────────────────────────┤
-│                    workflow/ (Config + Executor)                  │
+│                    workflow/ (Config + Executor)                │
 ├──────────────────┬──────────────────┬───────────────────────────┤
 │   Quantization   │     Pruning      │       Evaluation          │
-│  ┌────────────┐  │  ┌────────────┐  │  ┌─────────────────────┐ │
-│  │ PTQ  (7)   │  │  │Structured  │  │  │ PPL (wikitext2/c4)  │ │
-│  │ QAT  (4)   │  │  │Unstructured│  │  │ Zero-shot (lm-eval) │ │
-│  └────────────┘  │  │Layer Prune │  │  │ VLM (VLMEvalKit)    │ │
-│                  │  └────────────┘  │  └─────────────────────┘ │
+│  ┌────────────┐  │  ┌────────────┐  │  ┌─────────────────────┐  │
+│  │ PTQ  (7)   │  │  │Structured  │  │  │ PPL (wikitext2/c4)  │  │
+│  │ QAT  (4)   │  │  │Unstructured│  │  │ Zero-shot (lm-eval) │  │
+│  └────────────┘  │  │Layer Prune │  │  │ VLM (VLMEvalKit)    │  │
+│                  │  └────────────┘  │  └─────────────────────┘  │
 ├──────────────────┴──────────────────┴───────────────────────────┤
-│              algorithm/common/ (Shared Infrastructure)            │
-│     Model Loading · Data · Device (GPU/NPU) · IO · Metrics       │
+│              algorithm/common/ (Shared Infrastructure)          │
+│     Model Loading · Data · Device (GPU/NPU) · IO · Metrics      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
