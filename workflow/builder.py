@@ -237,6 +237,74 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--splitquant_reload_matrix_from", default=None)
     parser.add_argument("--splitquant_save_matrix", type=_bool_flag, default=False)
     parser.add_argument("--static_groups", type=_bool_flag, default=False)
+    # SliderQuant
+    parser.add_argument("--sliderquant_epochs", type=int, default=10)
+    parser.add_argument("--sliderquant_quant_step", type=int, default=2)
+    parser.add_argument("--sliderquant_num_layer", type=int, default=1)
+    parser.add_argument(
+        "--sliderquant_max_layers",
+        type=int,
+        default=None,
+        help="SliderQuant debug/smoke: quantize at most this many decoder layers.",
+    )
+    parser.add_argument("--sliderquant_sliding_layer", type=int, default=None)
+    parser.add_argument("--sliderquant_fill_window_size", type=int, default=None)
+    parser.add_argument("--sliderquant_layer_windows_scheduler", default=None)
+    parser.add_argument("--sliderquant_quant_rate", type=float, default=1.0)
+    parser.add_argument(
+        "--sliderquant_quant_rate_list",
+        default=None,
+        help="Comma-separated SliderQuant progressive quantization ratios, e.g. 0.5,1.0.",
+    )
+    parser.add_argument("--sliderquant_quant_mode", default="slider", choices=["slider", "fp16", "lora_only", "weight_merge"])
+    parser.add_argument("--sliderquant_batch_size", type=int, default=1)
+    parser.add_argument("--sliderquant_inference_batch_size", type=int, default=1)
+    parser.add_argument("--sliderquant_scale_lr", type=float, default=5e-3)
+    parser.add_argument("--sliderquant_lwc_lr", type=float, default=1e-2)
+    parser.add_argument("--sliderquant_lora_lr", type=float, default=0.0)
+    parser.add_argument("--sliderquant_warmup_ratio", type=float, default=0.0)
+    parser.add_argument("--sliderquant_grad_clip", type=float, default=None)
+    parser.add_argument("--sliderquant_loss_function", default="mse", choices=["mse", "huber"])
+    parser.add_argument("--sliderquant_huber_loss_max", type=float, default=1.0)
+    parser.add_argument("--sliderquant_loss_type", default="mean", choices=["mean", "add"])
+    parser.add_argument("--sliderquant_use_base_loss", default="last", choices=["none", "last", "all"])
+    parser.add_argument("--sliderquant_use_fp_inp_loss", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_use_quant_tar_loss", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_last_round_inp_num", type=int, default=1)
+    parser.add_argument("--sliderquant_lwc", type=_bool_flag, default=True)
+    parser.add_argument("--sliderquant_let", type=_bool_flag, default=True)
+    parser.add_argument("--sliderquant_use_lora", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_lora_rank", type=int, default=4)
+    parser.add_argument("--sliderquant_lora_quant", type=_bool_flag, default=True)
+    parser.add_argument("--sliderquant_use_lr_scheduler", type=_bool_flag, default=True)
+    parser.add_argument("--sliderquant_auto_lr_scale", type=_bool_flag, default=True)
+    parser.add_argument("--sliderquant_use_down_scale", type=_bool_flag, default=True)
+    parser.add_argument("--sliderquant_gqa_scales", default="copy", choices=["copy", "mean"])
+    parser.add_argument("--sliderquant_low_memory", type=_bool_flag, default=True)
+    parser.add_argument("--sliderquant_low_cpu_memory", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_fp16_act", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_deactive_amp", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_circular_aug", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_weight_merge", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_quant_warp", type=_bool_flag, default=False)
+    parser.add_argument(
+        "--sliderquant_rotate",
+        type=_bool_flag,
+        default=False,
+        help="Apply SliderQuant model rotation before quantization.",
+    )
+    parser.add_argument("--sliderquant_test_mode", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_debug", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_resume_from", default=None)
+    parser.add_argument("--sliderquant_train_resume", default=None)
+    parser.add_argument("--sliderquant_resume_layers_num", type=int, default=None)
+    parser.add_argument("--sliderquant_start_round", type=int, default=0)
+    parser.add_argument("--sliderquant_little_bs_round", default=None)
+    parser.add_argument("--sliderquant_layers_assigned_gpu", default=None)
+    parser.add_argument("--sliderquant_net", default=None)
+    parser.add_argument("--sliderquant_teach_model", default=None)
+    parser.add_argument("--sliderquant_quant_gate", type=_bool_flag, default=False)
+    parser.add_argument("--sliderquant_update_gate", type=_bool_flag, default=False)
     # QLoRA
     parser.add_argument("--qlora_train_file", default=None, help="Local supervised training file for QLoRA (.json/.jsonl/.csv/.parquet).")
     parser.add_argument("--qlora_eval_file", default=None, help="Optional local supervised evaluation file for QLoRA.")
