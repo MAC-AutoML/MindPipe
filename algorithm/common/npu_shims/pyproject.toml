@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "causal-conv1d"
+version = "1.6.2.post1"
+description = "Ascend NPU shim for the CUDA-only causal-conv1d package"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["causal_conv1d"]

@@ -3,9 +3,11 @@ import torch.nn as nn
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from algorithm.common.modeling import (
+    find_prunable_linear_layers,
     get_attn_output_proj,
     get_attn_projections as _get_attn_projections,
     get_head_geometry as _get_head_geometry,
+    iter_mlp_projection_groups,
     get_mlp_projections as _get_mlp_projections,
     get_q_stride,
     supports_head_pruning,
@@ -91,23 +93,24 @@ def get_projection_subset(layer):
     full_attention 层返回 attn_output + mlp.down_proj，
     linear_attention 层仅返回 mlp.down_proj（不剪 attention）。
     """
-    down_proj = resolve_linear_module(layer.mlp.down_proj)
+    mlp_groups = iter_mlp_projection_groups(layer)
+    mlp_targets = {
+        f"{group.name}.down_proj": group.down_proj
+        for group in mlp_groups
+    }
     if not supports_head_pruning(layer):
         # linear_attention 层：只剪 MLP
-        if down_proj is None:
-            raise KeyError("Failed to resolve mlp.down_proj")
-        return {"mlp.down_proj": down_proj}
+        if not mlp_targets:
+            raise KeyError("Failed to resolve MLP projection groups")
+        return mlp_targets
     o_proj = resolve_linear_module(layer.self_attn.o_proj)
-    if o_proj is None or down_proj is None:
+    if o_proj is None or not mlp_targets:
         available = ", ".join(sorted(find_layers(layer).keys()))
         raise KeyError(
             "Failed to resolve FLAP target projections. "
             f"available_layers=[{available}]"
         )
-    return {
-        "attn_output": o_proj,
-        "mlp.down_proj": down_proj,
-    }
+    return {"attn_output": o_proj, **mlp_targets}
 
 
 def get_decoder_root(model):
@@ -305,7 +308,7 @@ def compute_output_bias(mean_input, mask, output_weight):
 
 
 def get_layer_weight_count(layer):
-    return sum(module.weight.numel() for module in find_layers(layer).values())
+    return sum(module.weight.numel() for module in find_prunable_linear_layers(layer).values())
 
 
 def estimate_attention_zero_count(layer, head_keep_mask):
@@ -338,6 +341,10 @@ def estimate_attention_zero_count(layer, head_keep_mask):
 
 def estimate_mlp_zero_count(layer, neuron_keep_mask):
     up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+    return estimate_mlp_group_zero_count(up_proj, gate_proj, down_proj, neuron_keep_mask)
+
+
+def estimate_mlp_group_zero_count(up_proj, gate_proj, down_proj, neuron_keep_mask):
     removed_neurons = int((~neuron_keep_mask).sum().item())
     zero_count = 0
     zero_count += removed_neurons * up_proj.weight.shape[1]
@@ -346,20 +353,31 @@ def estimate_mlp_zero_count(layer, neuron_keep_mask):
     return zero_count
 
 
-def estimate_unstructured_sparsity(layers, attn_masks, mlp_masks):
+def estimate_unstructured_sparsity(layers, attn_masks, mlp_masks, mlp_groups_by_layer=None):
     zero_count = 0
     total_count = 0
-    for layer, attn_mask, mlp_mask in zip(layers, attn_masks, mlp_masks):
+    mlp_index = 0
+    for layer_index, (layer, attn_mask) in enumerate(zip(layers, attn_masks)):
         total_count += get_layer_weight_count(layer)
         if attn_mask is not None:
             zero_count += estimate_attention_zero_count(layer, attn_mask)
-        zero_count += estimate_mlp_zero_count(layer, mlp_mask)
+        if mlp_groups_by_layer is None:
+            zero_count += estimate_mlp_zero_count(layer, mlp_masks[layer_index])
+        else:
+            for group in mlp_groups_by_layer[layer_index]:
+                zero_count += estimate_mlp_group_zero_count(
+                    group.up_proj,
+                    group.gate_proj,
+                    group.down_proj,
+                    mlp_masks[mlp_index],
+                )
+                mlp_index += 1
     return zero_count / max(total_count, 1)
 
 
 def _build_full_attn_masks(attn_metric_heads, threshold, layer_has_attn, n_layers):
     """根据阈值构建 full-size 的 attn_mask 列表，linear_attention 层填 None。"""
-    attn_mask_full = attn_metric_heads > threshold
+    attn_mask_full = _build_keep_mask(attn_metric_heads, threshold)
     result = [None] * n_layers
     full_idx = 0
     for i in range(n_layers):
@@ -369,8 +387,51 @@ def _build_full_attn_masks(attn_metric_heads, threshold, layer_has_attn, n_layer
     return result
 
 
-def find_threshold_for_target_unstructured_sparsity(layers, attn_metric, mlp_metric, target_ratio, layer_has_attn=None):
-    candidates = torch.sort(torch.cat([attn_metric.reshape(-1), mlp_metric.reshape(-1)])).values
+def _split_flat_mlp_values(flat_values, group_sizes):
+    result = []
+    offset = 0
+    for group_size in group_sizes:
+        result.append(flat_values[offset: offset + group_size])
+        offset += group_size
+    return result
+
+
+def _safe_standardize_rows(metric):
+    mean = torch.mean(metric, dim=1, keepdim=True)
+    std = torch.std(metric, dim=1, keepdim=True)
+    safe_std = torch.where(std > 0, std, torch.ones_like(std))
+    standardized = (metric - mean) / safe_std
+    return torch.nan_to_num(standardized, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _safe_standardize_1d(metric):
+    metric = torch.nan_to_num(metric, nan=0.0, posinf=0.0, neginf=0.0)
+    std = torch.std(metric)
+    if torch.isclose(std, torch.zeros((), device=metric.device, dtype=metric.dtype)):
+        return metric - torch.mean(metric)
+    return (metric - torch.mean(metric)) / std
+
+
+def _build_keep_mask(metric, threshold):
+    # `>=` avoids pruning every channel when a metric is flat, which happens with
+    # WIFV and very small calibration sets.
+    return torch.isfinite(metric) & (metric >= threshold)
+
+
+def find_threshold_for_target_unstructured_sparsity(
+    layers,
+    attn_metric,
+    mlp_metric,
+    target_ratio,
+    layer_has_attn=None,
+    mlp_groups_by_layer=None,
+):
+    candidates = torch.cat([attn_metric.reshape(-1), mlp_metric.reshape(-1)])
+    candidates = candidates[torch.isfinite(candidates)]
+    if candidates.numel() == 0:
+        threshold = torch.tensor(float("-inf"), device=mlp_metric.device, dtype=mlp_metric.dtype)
+        return threshold, 0.0
+    candidates = torch.sort(torch.unique(candidates)).values
     low, high = 0, candidates.numel() - 1
     best_threshold = candidates[0]
     best_ratio = 0.0
@@ -379,15 +440,34 @@ def find_threshold_for_target_unstructured_sparsity(layers, attn_metric, mlp_met
     while low <= high:
         mid = (low + high) // 2
         threshold = candidates[mid]
-        attn_mask = attn_metric > threshold
-        mlp_mask = mlp_metric > threshold
+        attn_mask = _build_keep_mask(attn_metric, threshold)
+        mlp_mask = _build_keep_mask(mlp_metric, threshold)
+        if mlp_groups_by_layer is not None:
+            group_sizes = [
+                group.down_proj.weight.shape[1]
+                for layer_groups in mlp_groups_by_layer
+                for group in layer_groups
+            ]
+            mlp_mask_for_estimate = _split_flat_mlp_values(mlp_mask, group_sizes)
+        else:
+            mlp_mask_for_estimate = mlp_mask
 
         if layer_has_attn is not None:
             # 混合架构：构建 full-size mask，linear_attention 层为 None
             full_attn_masks = _build_full_attn_masks(attn_metric, threshold, layer_has_attn, len(layers))
-            estimated_ratio = estimate_unstructured_sparsity(layers, full_attn_masks, mlp_mask)
+            estimated_ratio = estimate_unstructured_sparsity(
+                layers,
+                full_attn_masks,
+                mlp_mask_for_estimate,
+                mlp_groups_by_layer=mlp_groups_by_layer,
+            )
         else:
-            estimated_ratio = estimate_unstructured_sparsity(layers, attn_mask, mlp_mask)
+            estimated_ratio = estimate_unstructured_sparsity(
+                layers,
+                attn_mask,
+                mlp_mask_for_estimate,
+                mlp_groups_by_layer=mlp_groups_by_layer,
+            )
 
         diff = abs(estimated_ratio - target_ratio)
         if diff < best_diff:
@@ -420,6 +500,35 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
         None: This function modifies the layer in-place and doesn't return anything.
     """
     up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+    return compress_mlp_group(
+        layer,
+        up_proj,
+        gate_proj,
+        down_proj,
+        attn_mask,
+        mlp_mask,
+        attn_mean_inp,
+        mlp_mean_inp,
+        device,
+        bias=bias,
+        unstr=unstr,
+    )
+
+
+def compress_mlp_group(
+    layer,
+    up_proj,
+    gate_proj,
+    down_proj,
+    attn_mask,
+    mlp_mask,
+    attn_mean_inp,
+    mlp_mean_inp,
+    device,
+    bias=True,
+    unstr=False,
+):
+    """压缩一组 MLP gate/up/down；attention 仍按 decoder layer 处理。"""
 
     # linear_attention 层没有标准 head 结构，跳过 attention 剪枝
     can_prune_attn = supports_head_pruning(layer) and attn_mask is not None
@@ -546,7 +655,16 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             gate_proj.out_features = mlp_indices.numel()
 
             output_weight = down_proj.weight.data
-            layer.mlp.intermediate_size = mlp_indices.numel()
+            owner = getattr(down_proj, "_mindpipe_mlp_owner", None)
+            if owner is None:
+                for candidate in iter_mlp_projection_groups(layer):
+                    if candidate.down_proj is down_proj:
+                        owner = candidate.owner
+                        break
+            if owner is None:
+                owner = layer.mlp
+            if hasattr(owner, "intermediate_size"):
+                owner.intermediate_size = int(mlp_indices.numel())
             if bias:
                 # Add the additional bias to compensate for the loss
                 output_bias = compute_output_bias(mlp_mean_inp, mlp_mask.to(device), output_weight)
@@ -568,6 +686,22 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
 
     # Explicitly empty the CUDA cache to clean up some memory
     empty_cache(device)
+
+
+def _compress_mlp_group_only(layer, group, mlp_mask, mlp_mean_inp, device, bias=True, unstr=False):
+    compress_mlp_group(
+        layer,
+        group.up_proj,
+        group.gate_proj,
+        group.down_proj,
+        None,
+        mlp_mask,
+        None,
+        mlp_mean_inp,
+        device,
+        bias=bias,
+        unstr=unstr,
+    )
 
 
 def _sync_decoder_config(layers, decoder_config):
@@ -592,7 +726,8 @@ def _sync_decoder_config(layers, decoder_config):
                 head_counts.append(num_heads)
                 kv_head_counts.append(num_kv_heads)
                 kv_group_counts.append(num_kv_groups)
-        intermediate_sizes.append(int(layer.mlp.intermediate_size))
+        if hasattr(layer.mlp, "intermediate_size"):
+            intermediate_sizes.append(int(layer.mlp.intermediate_size))
 
     if head_counts and len(set(head_counts)) == 1:
         decoder_config.num_attention_heads = head_counts[0]
@@ -622,6 +757,8 @@ def _align_mlp_dimensions(layers, target_size):
     logger = logging.getLogger(__name__)
     trimmed = 0
     for layer in layers:
+        if not hasattr(layer.mlp, "intermediate_size"):
+            continue
         cur = int(layer.mlp.intermediate_size)
         if cur <= target_size:
             continue
@@ -687,6 +824,7 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
     with torch.no_grad():
         inps, outs, layer_kwargs = prepare_calibration_input(model, dataloader, device)
     layers = get_decoder_layers(model)
+    mlp_groups_by_layer = [iter_mlp_projection_groups(layer) for layer in layers]
 
     attn_metric_list, mlp_metric_list = [], []
     attn_baseline_inp_list, mlp_baseline_inp_list = [], []
@@ -754,12 +892,15 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
                     mlp_mask.append(W_mask)
                 else:
                     mlp_metric_list.append(W_metric.cpu())
+                layer_group = next(
+                    group
+                    for group in mlp_groups_by_layer[i]
+                    if name == f"{group.name}.down_proj"
+                )
                 mlp_baseline_inp_list.append(wrapped_layers[name].baseline_inp.type(torch.half))
             wrapped_layers[name].free()
 
         inps, outs = outs, inps # Use the original output as input to the next layer
-
-    standarlization = lambda x: (x - torch.mean(x, axis=1, keepdim=True)) / torch.std(x, axis=1, keepdim=True)
 
     if args.structure in ["AL-MM", "AL-AM"]:
         if not attn_metric_list:
@@ -768,34 +909,36 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
         # 只对 full_attention 层做 head 级聚合
         full_attn_indices = [i for i, h in enumerate(layer_has_attn) if h]
         attn_metric_full = torch.stack(attn_metric_list)  # [n_full_attn, columns]
-        attn_metric_full = standarlization(attn_metric_full)
+        attn_metric_full = _safe_standardize_rows(attn_metric_full)
 
         # 从第一个 full_attention 层获取 head_dim
         first_full_attn = layers[full_attn_indices[0]]
         attn_head_dim = get_attention_head_geometry(first_full_attn)[3]
         attn_metric_heads = attn_metric_full.reshape(len(full_attn_indices), -1, attn_head_dim).mean(dim=2)
 
-        mlp_metric = torch.stack(mlp_metric_list)
-        mlp_metric = standarlization(mlp_metric)
+        mlp_metric_flat = torch.cat([_safe_standardize_1d(metric) for metric in mlp_metric_list])
+        mlp_group_sizes = [metric.numel() for metric in mlp_metric_list]
 
         if args.structure == "AL-MM":
             sorted_attn = torch.sort(attn_metric_heads.view(-1), descending=True)[0]
             attn_thres = sorted_attn[-int(args.remove_heads)]
-            attn_mask_full = (attn_metric_heads > attn_thres)
+            attn_mask_full = _build_keep_mask(attn_metric_heads, attn_thres)
 
-            sorted_mlp = torch.sort(mlp_metric.view(-1), descending=True)[0]
-            mlp_thres = sorted_mlp[-cal_remove_neuron(args, model)]
-            mlp_mask_all = (mlp_metric > mlp_thres)
+            sorted_mlp = torch.sort(mlp_metric_flat, descending=True)[0]
+            mlp_rank = min(max(cal_remove_neuron(args, model), 1), sorted_mlp.numel())
+            mlp_thres = sorted_mlp[-mlp_rank]
+            mlp_mask_all = _split_flat_mlp_values(_build_keep_mask(mlp_metric_flat, mlp_thres), mlp_group_sizes)
         else:
             # AL-AM
-            prune_metric = torch.cat([attn_metric_heads.view(-1), mlp_metric.view(-1)])
+            prune_metric = torch.cat([attn_metric_heads.view(-1), mlp_metric_flat])
             if args.unstr:
                 threshold, estimated_ratio = find_threshold_for_target_unstructured_sparsity(
                     layers,
                     attn_metric_heads,
-                    mlp_metric,
+                    mlp_metric_flat,
                     args.pruning_ratio,
                     layer_has_attn=layer_has_attn,
+                    mlp_groups_by_layer=mlp_groups_by_layer,
                 )
                 print(
                     f"AL-AM exact sparsity targeting: requested={args.pruning_ratio:.4f}, "
@@ -821,8 +964,8 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
                         )
                     )
                 ]
-            attn_mask_full = (attn_metric_heads > threshold)
-            mlp_mask_all = (mlp_metric > threshold)
+            attn_mask_full = _build_keep_mask(attn_metric_heads, threshold)
+            mlp_mask_all = _split_flat_mlp_values(_build_keep_mask(mlp_metric_flat, threshold), mlp_group_sizes)
 
         # 将 attn_mask 对齐到所有层：linear_attention 层为 None
         attn_mask = [None] * len(layers)
@@ -847,17 +990,27 @@ def prune_flap(args, model, tokenizer, device=None, dataloader=None):
             attn_mask = aligned_attn_mask
         else:
             attn_mask = torch.stack(attn_mask)
-        mlp_mask = torch.stack(mlp_mask)
+        # MLP group 宽度可能不同（MoE shared_expert 和 routed experts），保持列表。
 
     # 应用剪枝：attn_baseline_inp_list 只有 full_attention 层的条目
     attn_inp_idx = 0
+    mlp_mask_idx = 0
     for idx in range(len(layers)):
         target_dev = next(layers[idx].parameters()).device
 
         if layer_has_attn[idx]:
             compress(layers[idx], attn_mask[idx], None, attn_baseline_inp_list[attn_inp_idx], None, target_dev, unstr=args.unstr)
             attn_inp_idx += 1
-        compress(layers[idx], None, mlp_mask[idx], None, mlp_baseline_inp_list[idx], target_dev, unstr=args.unstr)
+        for group in mlp_groups_by_layer[idx]:
+            _compress_mlp_group_only(
+                layers[idx],
+                group,
+                mlp_mask[mlp_mask_idx],
+                mlp_baseline_inp_list[mlp_mask_idx],
+                target_dev,
+                unstr=args.unstr,
+            )
+            mlp_mask_idx += 1
 
     # 真剪枝后同步全局配置，确保 save_pretrained 能正确保存
     if not args.unstr:

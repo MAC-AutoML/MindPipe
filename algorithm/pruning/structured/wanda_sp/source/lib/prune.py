@@ -4,9 +4,11 @@ import torch.nn as nn
 from algorithm.common.device import empty_cache
 from algorithm.common.device import resolve_device
 from algorithm.common.modeling import (
+    find_prunable_linear_layers,
     get_attn_output_proj,
     get_attn_projections as _get_attn_projections,
     get_head_geometry as _get_head_geometry,
+    iter_mlp_projection_groups,
     get_mlp_projections as _get_mlp_projections,
     get_q_stride,
     supports_head_pruning,
@@ -71,23 +73,24 @@ def get_projection_subset(layer):
     full_attention 层返回 attn_output + mlp.down_proj，
     linear_attention 层仅返回 mlp.down_proj（不剪 attention）。
     """
-    down_proj = resolve_linear_module(layer.mlp.down_proj)
+    mlp_groups = iter_mlp_projection_groups(layer)
+    mlp_targets = {
+        f"{group.name}.down_proj": group.down_proj
+        for group in mlp_groups
+    }
     if not supports_head_pruning(layer):
         # linear_attention 层：只剪 MLP
-        if down_proj is None:
-            raise KeyError("Failed to resolve mlp.down_proj")
-        return {"mlp.down_proj": down_proj}
+        if not mlp_targets:
+            raise KeyError("Failed to resolve MLP projection groups")
+        return mlp_targets
     o_proj = resolve_linear_module(layer.self_attn.o_proj)
-    if o_proj is None or down_proj is None:
+    if o_proj is None or not mlp_targets:
         available = ", ".join(sorted(find_layers(layer).keys()))
         raise KeyError(
             "Failed to resolve structured Wanda target projections. "
             f"available_layers=[{available}]"
         )
-    return {
-        "attn_output": o_proj,
-        "mlp.down_proj": down_proj,
-    }
+    return {"attn_output": o_proj, **mlp_targets}
 
 
 def get_decoder_root(model):
@@ -222,6 +225,35 @@ def compute_output_bias(mean_input, mask, output_weight):
 
 def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bias=True, unstr=False):
     up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+    return compress_mlp_group(
+        layer,
+        up_proj,
+        gate_proj,
+        down_proj,
+        attn_mask,
+        mlp_mask,
+        attn_mean_inp,
+        mlp_mean_inp,
+        device,
+        bias=bias,
+        unstr=unstr,
+    )
+
+
+def compress_mlp_group(
+    layer,
+    up_proj,
+    gate_proj,
+    down_proj,
+    attn_mask,
+    mlp_mask,
+    attn_mean_inp,
+    mlp_mean_inp,
+    device,
+    bias=True,
+    unstr=False,
+):
+    """压缩一组 MLP gate/up/down；attention 仍按 decoder layer 处理。"""
 
     # linear_attention 层没有标准 head 结构，跳过 attention 剪枝
     can_prune_attn = supports_head_pruning(layer) and attn_mask is not None
@@ -316,7 +348,15 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             gate_proj.out_features = mlp_mask.sum().item()
 
             output_weight = down_proj.weight.data
-            layer.mlp.intermediate_size = mlp_mask.sum().item()
+            owner = None
+            for candidate in iter_mlp_projection_groups(layer):
+                if candidate.down_proj is down_proj:
+                    owner = candidate.owner
+                    break
+            if owner is None:
+                owner = layer.mlp
+            if hasattr(owner, "intermediate_size"):
+                owner.intermediate_size = int(mlp_mask.sum().item())
             if bias:
                 output_bias = compute_output_bias(mlp_mean_inp, mlp_mask.to(device), output_weight)
             output_weight = down_proj.weight.data[:, kept_indices]
@@ -326,6 +366,22 @@ def compress(layer, attn_mask, mlp_mask, attn_mean_inp, mlp_mean_inp, device, bi
             down_proj.weight.data = output_weight
 
     empty_cache(device)
+
+
+def compress_mlp_group_only(layer, group, mlp_mask, device, bias=True, unstr=False):
+    compress_mlp_group(
+        layer,
+        group.up_proj,
+        group.gate_proj,
+        group.down_proj,
+        None,
+        mlp_mask,
+        None,
+        None,
+        device,
+        bias=bias,
+        unstr=unstr,
+    )
 
 
 def _sync_decoder_config(layers, decoder_config):
@@ -346,7 +402,8 @@ def _sync_decoder_config(layers, decoder_config):
                 head_counts.append(num_heads)
                 kv_head_counts.append(num_kv_heads)
                 kv_group_counts.append(num_kv_groups)
-        intermediate_sizes.append(int(layer.mlp.intermediate_size))
+        if hasattr(layer.mlp, "intermediate_size"):
+            intermediate_sizes.append(int(layer.mlp.intermediate_size))
 
     if head_counts and len(set(head_counts)) == 1:
         decoder_config.num_attention_heads = head_counts[0]
@@ -367,6 +424,7 @@ def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
         inps, outs, layer_kwargs = prepare_calibration_input(model, dataloader, device)
 
     layers = get_decoder_layers(model)
+    mlp_groups_by_layer = [iter_mlp_projection_groups(layer) for layer in layers]
     for i in range(len(layers)):
         layer = layers[i]
         subset = get_projection_subset(layer)
@@ -406,7 +464,12 @@ def prune_wanda_sp(args, model, tokenizer, device=None, dataloader=None):
                 W_metric = W_metric.mean(axis=0)
                 thresh = torch.sort(W_metric)[0][int(W_metric.numel() * args.pruning_ratio)]
                 W_mask = W_metric >= thresh
-                compress(layer, None, W_mask, None, None, target_dev, bias=False, unstr=args.unstr)
+                group = next(
+                    group
+                    for group in mlp_groups_by_layer[i]
+                    if name == f"{group.name}.down_proj"
+                )
+                compress_mlp_group_only(layer, group, W_mask, target_dev, bias=False, unstr=args.unstr)
 
             wrapped_layers[name].free()
 

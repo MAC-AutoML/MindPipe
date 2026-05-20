@@ -9,7 +9,7 @@ import torch
 from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import capture_first_block_inputs
-from ....common.modeling import find_linear_layers
+from ....common.modeling import find_prunable_linear_layers
 from ....common.modeling import get_layer_device
 from ....common.modeling import get_text_backbone
 from ....common.modeling import move_tensors_to_device
@@ -31,7 +31,7 @@ def _check_sparsity(model) -> float:
     for layer_index, block in enumerate(backbone.layers):
         layer_zero_count = 0
         layer_total_count = 0
-        for linear in find_linear_layers(block).values():
+        for linear in find_prunable_linear_layers(block).values():
             weight = linear.weight.data
             layer_zero_count += int((weight == 0).sum().item())
             layer_total_count += int(weight.numel())
@@ -83,7 +83,7 @@ class ALPSMethod(BasePruningMethod):
                 input_states = input_states.to(target_device)
                 output_states = output_states.to(target_device)
                 layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
-                linear_layers = find_linear_layers(block)
+                linear_layers = find_prunable_linear_layers(block)
 
                 # ALPS: collect statistics for ALL linear layers in one pass,
                 # then prune all — same semantics as the original implementation.

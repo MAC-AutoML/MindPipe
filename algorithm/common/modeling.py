@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import os
 from types import MethodType
 from typing import Any
@@ -36,6 +37,10 @@ except Exception:  # pragma: no cover - older/newer transformers variants
 
 from .device import empty_cache
 from .device import resolve_device
+from .qwen3_5_npu_linear_attn_patch import maybe_enable_qwen3_5_npu_linear_attention
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _load_vision_text_model(model_path: str, **model_kwargs):
@@ -278,6 +283,17 @@ class TextBackbone:
         head = get_output_head(self.model)
         if head is not None:
             head.to(device)
+
+
+@dataclass(frozen=True)
+class MLPProjectionGroup:
+    """一组必须共享 neuron mask 的 MLP 投影层。"""
+
+    name: str
+    up_proj: nn.Linear
+    gate_proj: nn.Linear
+    down_proj: nn.Linear
+    owner: nn.Module
 
 
 def resolve_dtype(dtype_name: str) -> str | torch.dtype:
@@ -606,6 +622,7 @@ def load_model_and_tokenizer(
     _ensure_transformers_remote_code_compat()
     config = _load_config_with_fallback(model_path, trust_remote_code=True)
     _normalize_legacy_remote_config(config)
+    maybe_enable_qwen3_5_npu_linear_attention(config)
     if attn_implementation is None:
         raise ValueError("attn_implementation must be specified explicitly when loading a model.")
     architectures = set(getattr(config, "architectures", []) or [])
@@ -638,12 +655,26 @@ def load_model_and_tokenizer(
         if resolved_no_split is not None:
             model_kwargs["no_split_module_classes"] = resolved_no_split
     is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
+    is_qwen3_5_moe = (
+        config.model_type == "qwen3_5_moe"
+        or "Qwen3_5MoeForConditionalGeneration" in architectures
+    )
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
     is_qwen2_vl = config.model_type == "qwen2_vl" or "Qwen2VLForConditionalGeneration" in architectures
     is_llava = config.model_type == "llava" or "LlavaForConditionalGeneration" in architectures
 
-    if is_qwen3_5:
+    if is_qwen3_5_moe:
+        try:
+            from transformers import Qwen3_5MoeForConditionalGeneration
+
+            model = Qwen3_5MoeForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
+        except Exception:
+            model = _load_vision_text_model(model_path, **model_kwargs)
+        if hasattr(model, "language_model"):
+            ensure_generation_compat(model.language_model)
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif is_qwen3_5:
         try:
             from transformers import Qwen3_5ForConditionalGeneration
 
@@ -795,6 +826,234 @@ def find_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Line
     return result
 
 
+def _is_pruning_ignored_linear(name: str) -> bool:
+    """统一过滤 router/control/head/embedding 等不适合作为剪枝目标的 Linear。"""
+    ignored_exact_suffixes = (
+        "lm_head",
+        "embed_tokens",
+        "mlp.gate",
+        "mlp.shared_expert_gate",
+    )
+    ignored_prefix_parts = (
+        "visual.",
+        "model.visual.",
+        "vision_tower.",
+        "image_newline",
+    )
+    if any(name == suffix or name.endswith(f".{suffix}") for suffix in ignored_exact_suffixes):
+        return True
+    return any(name == prefix or name.startswith(prefix) for prefix in ignored_prefix_parts)
+
+
+def find_prunable_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Linear]:
+    """查找剪枝可处理的 Linear，排除 MoE router 和 shared_expert_gate。"""
+    return {
+        name: linear
+        for name, linear in find_linear_layers(module, prefix).items()
+        if not _is_pruning_ignored_linear(name)
+    }
+
+
+def _as_linear(module: nn.Module | None) -> nn.Linear | None:
+    if isinstance(module, nn.Linear):
+        return module
+    for attr_name in ("linear", "module"):
+        child = getattr(module, attr_name, None)
+        if isinstance(child, nn.Linear):
+            return child
+    return None
+
+
+def _make_mlp_group(name: str, owner: nn.Module) -> MLPProjectionGroup | None:
+    up_proj = _as_linear(getattr(owner, "up_proj", None))
+    gate_proj = _as_linear(getattr(owner, "gate_proj", None))
+    down_proj = _as_linear(getattr(owner, "down_proj", None))
+    if up_proj is None or gate_proj is None or down_proj is None:
+        return None
+    return MLPProjectionGroup(
+        name=name,
+        up_proj=up_proj,
+        gate_proj=gate_proj,
+        down_proj=down_proj,
+        owner=owner,
+    )
+
+
+def iter_mlp_projection_groups(layer: nn.Module) -> list[MLPProjectionGroup]:
+    """枚举一层里所有 MLP 三件套，包括 dense、shared expert 和 routed experts。"""
+    mlp = getattr(layer, "mlp", None)
+    if mlp is None:
+        return []
+
+    groups: list[MLPProjectionGroup] = []
+    dense_group = _make_mlp_group("mlp", mlp)
+    if dense_group is not None:
+        groups.append(dense_group)
+
+    shared_expert = getattr(mlp, "shared_expert", None)
+    shared_group = _make_mlp_group("mlp.shared_expert", shared_expert)
+    if shared_group is not None:
+        groups.append(shared_group)
+
+    experts = getattr(mlp, "experts", None)
+    if isinstance(experts, nn.ModuleList):
+        for expert_index, expert in enumerate(experts):
+            expert_group = _make_mlp_group(f"mlp.experts.{expert_index}", expert)
+            if expert_group is not None:
+                groups.append(expert_group)
+
+    return groups
+
+
+def _is_dense_qwen3_config(config: Any | None) -> bool:
+    if config is None:
+        return False
+    model_type = str(getattr(config, "model_type", "") or "")
+    if model_type == "qwen3":
+        return True
+    architectures = getattr(config, "architectures", []) or []
+    return any(str(name) == "Qwen3ForCausalLM" for name in architectures)
+
+
+def _copy_or_pad_2d(weight: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
+    result = weight.new_zeros((int(rows), int(cols)))
+    copy_rows = min(int(rows), int(weight.shape[0]))
+    copy_cols = min(int(cols), int(weight.shape[1]))
+    result[:copy_rows, :copy_cols].copy_(weight[:copy_rows, :copy_cols])
+    return result
+
+
+def _resize_linear_for_hf_save(linear: nn.Linear, rows: int, cols: int) -> None:
+    rows = int(rows)
+    cols = int(cols)
+    if tuple(linear.weight.shape) == (rows, cols):
+        linear.out_features = rows
+        linear.in_features = cols
+        return
+
+    old_weight = linear.weight.data
+    linear.weight = nn.Parameter(
+        _copy_or_pad_2d(old_weight, rows, cols),
+        requires_grad=linear.weight.requires_grad,
+    )
+    linear.out_features = rows
+    linear.in_features = cols
+
+    if linear.bias is not None:
+        old_bias = linear.bias.data
+        new_bias = old_bias.new_zeros(rows)
+        copy_rows = min(rows, old_bias.numel())
+        new_bias[:copy_rows].copy_(old_bias[:copy_rows])
+        linear.bias = nn.Parameter(new_bias, requires_grad=linear.bias.requires_grad)
+
+
+def _set_intermediate_size_on_configs(
+    model: nn.Module,
+    backbone: TextBackbone,
+    intermediate_size: int,
+) -> None:
+    seen: set[int] = set()
+    candidates = [
+        getattr(model, "config", None),
+        getattr(backbone.root, "config", None),
+    ]
+    for config in list(candidates):
+        text_config = getattr(config, "text_config", None)
+        if text_config is not None:
+            candidates.append(text_config)
+
+    for config in candidates:
+        if config is None or id(config) in seen:
+            continue
+        seen.add(id(config))
+        if hasattr(config, "intermediate_size"):
+            setattr(config, "intermediate_size", int(intermediate_size))
+
+
+def _dense_mlp_width(group: MLPProjectionGroup) -> int:
+    gate_width = int(group.gate_proj.weight.shape[0])
+    up_width = int(group.up_proj.weight.shape[0])
+    down_width = int(group.down_proj.weight.shape[1])
+    if gate_width != up_width or gate_width != down_width:
+        raise ValueError(
+            f"Dense MLP projection widths differ in {group.name}: "
+            f"gate={tuple(group.gate_proj.weight.shape)}, "
+            f"up={tuple(group.up_proj.weight.shape)}, "
+            f"down={tuple(group.down_proj.weight.shape)}"
+        )
+    return gate_width
+
+
+@torch.no_grad()
+def normalize_dense_qwen3_mlp_intermediate_size_for_hf_save(model: nn.Module) -> int:
+    """Pad dense Qwen3 MLPs to one global intermediate_size before HF save.
+
+    Structured FFN pruning can leave one layer with a width that differs by one
+    channel due to rounding. Stock Qwen3Config only stores one intermediate_size,
+    so every layer must have the same gate/up/down shape in the saved checkpoint.
+    Extra zero channels are output-equivalent to the pruned model.
+    """
+    config = getattr(model, "config", None)
+    text_config = getattr(config, "text_config", config)
+    if not (_is_dense_qwen3_config(config) or _is_dense_qwen3_config(text_config)):
+        return 0
+
+    try:
+        backbone = get_text_backbone(model)
+    except NotImplementedError:
+        return 0
+
+    groups: list[MLPProjectionGroup] = []
+    widths: list[int] = []
+    for layer in backbone.layers:
+        group = _make_mlp_group("mlp", getattr(layer, "mlp", None))
+        if group is None:
+            continue
+        groups.append(group)
+        widths.append(_dense_mlp_width(group))
+
+    if not groups:
+        return 0
+
+    target_width = max(widths)
+    hidden_sizes = {
+        int(group.gate_proj.weight.shape[1])
+        for group in groups
+    }
+    if len(hidden_sizes) != 1:
+        raise ValueError(f"Dense Qwen3 MLP hidden sizes differ across layers: {sorted(hidden_sizes)}")
+    hidden_size = hidden_sizes.pop()
+
+    changed = 0
+    for group, current_width in zip(groups, widths, strict=True):
+        if current_width != target_width:
+            changed += 1
+        _resize_linear_for_hf_save(group.gate_proj, target_width, hidden_size)
+        _resize_linear_for_hf_save(group.up_proj, target_width, hidden_size)
+        _resize_linear_for_hf_save(
+            group.down_proj,
+            int(group.down_proj.weight.shape[0]),
+            target_width,
+        )
+        if hasattr(group.owner, "intermediate_size"):
+            group.owner.intermediate_size = int(target_width)
+        owner_config = getattr(group.owner, "config", None)
+        if owner_config is not None and hasattr(owner_config, "intermediate_size"):
+            owner_config.intermediate_size = int(target_width)
+
+    _set_intermediate_size_on_configs(model, backbone, target_width)
+    config_width = getattr(text_config, "intermediate_size", None)
+    if changed or config_width != target_width:
+        LOGGER.info(
+            "Normalized %d dense Qwen3 MLP block(s) for HF save "
+            "(intermediate_size=%d, padded_layers=%d).",
+            len(groups),
+            target_width,
+            changed,
+        )
+    return changed
+
+
 def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> list[list[str]]:
     groups: list[list[str]] = []
     grouped_names: set[str] = set()
@@ -823,12 +1082,9 @@ def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> l
         add_group(["mlp.up_proj", "mlp.gate_proj"])
         add_group(["mlp.down_proj"])
 
-    # Qwen3.5/3.6 MoE keeps the shared expert as ordinary Linear modules under
-    # `mlp.shared_expert`, while routed experts may be linearized by GPTQ into
-    # per-expert ModuleLists under `mlp.experts`.
-    add_group(["mlp.shared_expert.gate_proj", "mlp.shared_expert.up_proj"])
-    add_group(["mlp.shared_expert.down_proj"])
-    add_group(["mlp.shared_expert_gate"])
+    for mlp_group in iter_mlp_projection_groups(layer):
+        add_group([f"{mlp_group.name}.up_proj", f"{mlp_group.name}.gate_proj"])
+        add_group([f"{mlp_group.name}.down_proj"])
 
     routed_gate_up = sorted(name for name in available_names if name.startswith("mlp.experts.gate_up_projs."))
     routed_down = sorted(name for name in available_names if name.startswith("mlp.experts.down_projs."))
@@ -912,7 +1168,11 @@ def get_attn_projections(layer):
 
 def get_mlp_projections(layer):
     """获取 MLP 的三个投影层 (up_proj, gate_proj, down_proj)。"""
-    return layer.mlp.up_proj, layer.mlp.gate_proj, layer.mlp.down_proj
+    groups = iter_mlp_projection_groups(layer)
+    if not groups:
+        raise AttributeError(f"Layer {type(layer)} does not expose MLP projection groups.")
+    group = groups[0]
+    return group.up_proj, group.gate_proj, group.down_proj
 
 
 # ── 多卡并行设备管理 helpers ──

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from algorithm.common.modeling import find_prunable_linear_layers
 from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import get_layer_device
 from algorithm.common.modeling import move_tensors_to_device
@@ -17,6 +18,11 @@ def find_layers(module, layers=[nn.Linear], name=''):
             child, layers=layers, name=name + '.' + name1 if name != '' else name1
         ))
     return res
+
+
+def find_prunable_layers(module):
+    """查找统一剪枝策略允许处理的 Linear 层。"""
+    return find_prunable_linear_layers(module)
 
 
 def _move_layer_kwargs(layer_kwargs, device):
@@ -47,7 +53,7 @@ def check_sparsity(model):
     total_params = 0
     for i in range(len(layers)):
         layer = layers[i]
-        subset = find_layers(layer)
+        subset = find_prunable_layers(layer)
 
         sub_count = 0
         sub_params = 0
@@ -144,7 +150,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
         inps = inps.to(target_device)
         outs = outs.to(target_device)
         layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
-        subset = find_layers(layer)
+        subset = find_prunable_layers(layer)
 
         wrapped_layers = {}
         for name in subset:

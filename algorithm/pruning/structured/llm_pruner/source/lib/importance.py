@@ -19,6 +19,7 @@ import torch.nn as nn
 from algorithm.common.modeling import (
     get_attn_projections,
     get_head_geometry,
+    iter_mlp_projection_groups,
     get_mlp_projections,
     get_q_stride,
     supports_head_pruning,
@@ -87,6 +88,16 @@ class MagnitudeImportance:
     def compute_mlp_importance(self, layer) -> torch.Tensor:
         """Return importance score per intermediate neuron: shape [intermediate_size]."""
         up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+        return self.compute_mlp_group_importance(up_proj, gate_proj, down_proj)
+
+    @torch.no_grad()
+    def compute_mlp_group_importance(
+        self,
+        up_proj: nn.Linear,
+        gate_proj: nn.Linear,
+        down_proj: nn.Linear,
+    ) -> torch.Tensor:
+        """计算单个 MLP group 的逐 neuron 重要性。"""
 
         # up_proj [intermediate_size, hidden_size]: output channel (row) importance
         up_imp = up_proj.weight.data.abs().pow(self.p).sum(dim=1)   # [intermediate_size]
@@ -96,6 +107,21 @@ class MagnitudeImportance:
         down_imp = down_proj.weight.data.abs().pow(self.p).sum(dim=0)  # [intermediate_size]
 
         return up_imp + gate_imp + down_imp  # [intermediate_size]
+
+    @torch.no_grad()
+    def compute_mlp_group_importances(self, layer) -> list[tuple[object, torch.Tensor]]:
+        """计算一层内 dense/shared/routed MLP groups 的逐 neuron 重要性。"""
+        return [
+            (
+                group,
+                self.compute_mlp_group_importance(
+                    group.up_proj,
+                    group.gate_proj,
+                    group.down_proj,
+                ),
+            )
+            for group in iter_mlp_projection_groups(layer)
+        ]
 
 
 class TaylorImportance:
@@ -164,6 +190,16 @@ class TaylorImportance:
     def compute_mlp_importance(self, layer) -> torch.Tensor:
         """Return Taylor importance per intermediate neuron: shape [intermediate_size]."""
         up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+        return self.compute_mlp_group_importance(up_proj, gate_proj, down_proj)
+
+    @torch.no_grad()
+    def compute_mlp_group_importance(
+        self,
+        up_proj: nn.Linear,
+        gate_proj: nn.Linear,
+        down_proj: nn.Linear,
+    ) -> torch.Tensor:
+        """计算单个 MLP group 的 Taylor 逐 neuron 重要性。"""
 
         # up_proj: row-wise (output channel)
         up_imp = self._compute_salience(up_proj).abs().sum(dim=1)    # [intermediate_size]
@@ -173,4 +209,19 @@ class TaylorImportance:
         down_imp = self._compute_salience(down_proj).abs().sum(dim=0)  # [intermediate_size]
 
         return up_imp + gate_imp + down_imp  # [intermediate_size]
+
+    @torch.no_grad()
+    def compute_mlp_group_importances(self, layer) -> list[tuple[object, torch.Tensor]]:
+        """计算一层内所有 MLP groups 的 Taylor 逐 neuron 重要性。"""
+        return [
+            (
+                group,
+                self.compute_mlp_group_importance(
+                    group.up_proj,
+                    group.gate_proj,
+                    group.down_proj,
+                ),
+            )
+            for group in iter_mlp_projection_groups(layer)
+        ]
 # Add pruning support for Qwen3.5.

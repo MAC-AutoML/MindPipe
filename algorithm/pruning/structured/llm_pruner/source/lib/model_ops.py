@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from algorithm.common.modeling import (
+    MLPProjectionGroup,
     get_head_geometry,
     get_mlp_projections,
     get_q_stride,
@@ -164,6 +165,18 @@ def pseudo_mask_attention(layer, group_keep_mask: torch.Tensor, device):
 def pseudo_mask_mlp(layer, neuron_keep_mask: torch.Tensor, device):
     """Zero out pruned MLP neuron weights without changing shapes."""
     up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+    pseudo_mask_mlp_group(
+        MLPProjectionGroup("mlp", up_proj, gate_proj, down_proj, layer.mlp),
+        neuron_keep_mask,
+        device,
+    )
+
+
+def pseudo_mask_mlp_group(group: MLPProjectionGroup, neuron_keep_mask: torch.Tensor, device):
+    """对单个 MLP group 做伪剪枝，不改变权重形状。"""
+    up_proj = group.up_proj
+    gate_proj = group.gate_proj
+    down_proj = group.down_proj
     mask = neuron_keep_mask.to(up_proj.weight.device).unsqueeze(-1).to(up_proj.weight.data.dtype)
     up_proj.weight.data *= mask
     gate_proj.weight.data *= mask
@@ -260,6 +273,18 @@ def prune_attention(layer, remove_groups: list[int], device):
 def prune_mlp(layer, remove_neurons: list[int], device):
     """Remove MLP intermediate neurons by slicing weights."""
     up_proj, gate_proj, down_proj = get_mlp_projections(layer)
+    prune_mlp_group(
+        MLPProjectionGroup("mlp", up_proj, gate_proj, down_proj, layer.mlp),
+        remove_neurons,
+        device,
+    )
+
+
+def prune_mlp_group(group: MLPProjectionGroup, remove_neurons: list[int], device):
+    """对单个 MLP group 做真剪枝，通过切片移除中间 neuron。"""
+    up_proj = group.up_proj
+    gate_proj = group.gate_proj
+    down_proj = group.down_proj
     intermediate_size = up_proj.weight.shape[0]
     all_neurons = list(range(intermediate_size))
     keep_neurons = sorted(set(all_neurons) - set(remove_neurons))
@@ -275,8 +300,9 @@ def prune_mlp(layer, remove_neurons: list[int], device):
     # down_proj: prune INPUT columns
     _slice_prune_in_channels(down_proj, remove_neurons_sorted, keep_neurons)
 
-    # Update layer attribute
-    layer.mlp.intermediate_size = len(keep_neurons)
+    # 同步 group owner 上的 intermediate_size 属性。
+    if hasattr(group.owner, "intermediate_size"):
+        group.owner.intermediate_size = len(keep_neurons)
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +328,8 @@ def sync_config(backbone):
                 head_counts.append(num_heads)
                 kv_head_counts.append(num_kv_heads)
                 kv_group_counts.append(num_kv_groups)
-        intermediate_sizes.append(int(layer.mlp.intermediate_size))
+        if hasattr(layer.mlp, "intermediate_size"):
+            intermediate_sizes.append(int(layer.mlp.intermediate_size))
 
     decoder_config = backbone.decoder_config
     if len(set(head_counts)) == 1:
@@ -311,6 +338,6 @@ def sync_config(backbone):
         decoder_config.num_key_value_heads = kv_head_counts[0]
     if hasattr(decoder_config, "num_key_value_groups") and len(set(kv_group_counts)) == 1:
         decoder_config.num_key_value_groups = kv_group_counts[0]
-    if len(set(intermediate_sizes)) == 1:
+    if intermediate_sizes and len(set(intermediate_sizes)) == 1:
         decoder_config.intermediate_size = intermediate_sizes[0]
 # Add pruning support for Qwen3.5.

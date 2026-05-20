@@ -14,6 +14,10 @@ from algorithm.common.device import resolve_device_string
 from algorithm.common.io import ensure_dir
 from algorithm.common.io import write_json
 from algorithm.common.modeling import load_model_and_tokenizer
+from algorithm.common.modeling import normalize_dense_qwen3_mlp_intermediate_size_for_hf_save
+from algorithm.common.qwen3_5_moe_unfuse import refuse_qwen3_5_moe_experts_for_hf_save
+from algorithm.common.qwen3_5_moe_unfuse import set_qwen3_5_moe_calibrate_all_experts
+from algorithm.common.qwen3_5_moe_unfuse import unfuse_qwen3_5_moe_experts
 from algorithm.pruning.registry import get_method as get_pruning_method
 from algorithm.quantization.config import normalize_args as normalize_quantization_args
 from algorithm.quantization.registry import get_method as get_quantization_method
@@ -57,7 +61,11 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
     if stage.stage_type == "quantization":
         stage_result = stage_method.apply_fake_quantization(model, tokenizer_bundle, stage_args)
     else:
-        stage_result = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
+        unfuse_qwen3_5_moe_experts(model, calibrate_all_experts=True)
+        try:
+            stage_result = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
+        finally:
+            set_qwen3_5_moe_calibrate_all_experts(model, False)
 
     if not isinstance(stage_result, dict):
         raise TypeError(
@@ -168,6 +176,8 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     metrics.update(metrics_metadata)
     if config.save_model:
         model_dir = ensure_dir(final_output_dir / "saved_model")
+        refuse_qwen3_5_moe_experts_for_hf_save(model)
+        normalize_dense_qwen3_mlp_intermediate_size_for_hf_save(model)
         model.save_pretrained(model_dir)
         tokenizer_bundle.save_pretrained(str(model_dir))
         artifacts["saved_model_dir"] = str(model_dir)

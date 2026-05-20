@@ -8,17 +8,17 @@ from tqdm import tqdm
 
 from algorithm.common.device import empty_cache, resolve_device
 from algorithm.common.modeling import (
+    find_prunable_linear_layers,
     get_head_geometry,
-    get_mlp_projections,
     supports_head_pruning,
 )
 
 from .importance import MagnitudeImportance, TaylorImportance
 from .model_ops import (
     pseudo_mask_attention,
-    pseudo_mask_mlp,
     prune_attention,
-    prune_mlp,
+    pseudo_mask_mlp_group,
+    prune_mlp_group,
     sync_config,
 )
 
@@ -36,6 +36,8 @@ def _get_head_geometry(layer):
 
 
 def _get_mlp_projections(layer):
+    from algorithm.common.modeling import get_mlp_projections
+
     return get_mlp_projections(layer)
 
 
@@ -83,11 +85,7 @@ def _enforce_min_keep(imp: torch.Tensor, keep_mask: torch.Tensor, min_keep: int)
 # ---------------------------------------------------------------------------
 
 def _get_layer_weight_count(layer):
-    return sum(
-        m.weight.numel()
-        for m in layer.modules()
-        if isinstance(m, nn.Linear)
-    )
+    return sum(m.weight.numel() for m in find_prunable_linear_layers(layer).values())
 
 
 def _estimate_attention_zero_count(layer, group_keep_mask):
@@ -126,9 +124,11 @@ def _estimate_attention_zero_count(layer, group_keep_mask):
     return zero_count
 
 
-def _estimate_mlp_zero_count(layer, neuron_keep_mask):
-    """Estimate how many weight elements become zero when MLP neurons are pruned."""
-    up_proj, gate_proj, down_proj = _get_mlp_projections(layer)
+def _estimate_mlp_group_zero_count(group, neuron_keep_mask):
+    """估算单个 MLP group 剪掉 neuron 后会置零多少权重。"""
+    up_proj = group.up_proj
+    gate_proj = group.gate_proj
+    down_proj = group.down_proj
     removed = int((~neuron_keep_mask).sum().item())
     zero_count = 0
     zero_count += removed * up_proj.weight.shape[1]
@@ -145,14 +145,15 @@ def _estimate_sparsity(layers, attn_masks, mlp_masks):
         total_count += _get_layer_weight_count(layer)
         if attn_mask is not None:
             zero_count += _estimate_attention_zero_count(layer, attn_mask)
-        zero_count += _estimate_mlp_zero_count(layer, mlp_mask)
+        for group, group_mask in mlp_mask:
+            zero_count += _estimate_mlp_group_zero_count(group, group_mask)
     return zero_count / max(total_count, 1)
 
 
 def _build_local_keep_masks(
     layers,
     attn_imp_per_layer,
-    mlp_imp_per_layer,
+    mlp_group_imp_per_layer,
     target_ratio,
     min_attention_groups,
     min_mlp_neurons,
@@ -164,7 +165,7 @@ def _build_local_keep_masks(
     attn_masks = []
     mlp_masks = []
 
-    for layer, attn_imp, mlp_imp in zip(layers, attn_imp_per_layer, mlp_imp_per_layer):
+    for layer, attn_imp, mlp_group_imp in zip(layers, attn_imp_per_layer, mlp_group_imp_per_layer):
         if not supports_head_pruning(layer) or attn_imp.numel() == 0:
             # linear_attention 层：不做 attention 剪枝
             attn_masks.append(None)
@@ -187,17 +188,20 @@ def _build_local_keep_masks(
                 attn_keep_mask = _enforce_min_keep(attn_imp, attn_keep_mask, min_attention_groups)
                 attn_masks.append(attn_keep_mask)
 
-        mlp_width = mlp_imp.numel()
-        mlp_n_pruned = min(
-            mlp_width - int(mlp_width * (1 - target_ratio)),
-            max(0, mlp_width - min_mlp_neurons),
-        )
-        mlp_keep_mask = torch.ones_like(mlp_imp, dtype=torch.bool)
-        if mlp_n_pruned > 0:
-            prune_indices = torch.argsort(mlp_imp)[:mlp_n_pruned]
-            mlp_keep_mask[prune_indices] = False
-        mlp_keep_mask = _enforce_min_keep(mlp_imp, mlp_keep_mask, min_mlp_neurons)
-        mlp_masks.append(mlp_keep_mask)
+        group_masks = []
+        for group, mlp_imp in mlp_group_imp:
+            mlp_width = mlp_imp.numel()
+            mlp_n_pruned = min(
+                mlp_width - int(mlp_width * (1 - target_ratio)),
+                max(0, mlp_width - min_mlp_neurons),
+            )
+            mlp_keep_mask = torch.ones_like(mlp_imp, dtype=torch.bool)
+            if mlp_n_pruned > 0:
+                prune_indices = torch.argsort(mlp_imp)[:mlp_n_pruned]
+                mlp_keep_mask[prune_indices] = False
+            mlp_keep_mask = _enforce_min_keep(mlp_imp, mlp_keep_mask, min_mlp_neurons)
+            group_masks.append((group, mlp_keep_mask))
+        mlp_masks.append(group_masks)
 
     return attn_masks, mlp_masks
 
@@ -285,15 +289,15 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
 
     # --- Step 2: Compute importance per layer ---
     attn_imp_per_layer = []
-    mlp_imp_per_layer = []
+    mlp_group_imp_per_layer = []
     for layer in tqdm(layers, desc="Computing importance"):
         attn_imp = _reduce_attention_importance_to_groups(
             importance.compute_attention_importance(layer),
             layer,
         )
-        mlp_imp = importance.compute_mlp_importance(layer)
+        mlp_group_imp = importance.compute_mlp_group_importances(layer)
         attn_imp_per_layer.append(attn_imp)
-        mlp_imp_per_layer.append(mlp_imp)
+        mlp_group_imp_per_layer.append(mlp_group_imp)
 
     # Clean up gradients after reading them
     if pruner_type == "taylor":
@@ -303,7 +307,7 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
     attn_keep_masks, mlp_keep_masks = _build_local_keep_masks(
         layers,
         attn_imp_per_layer,
-        mlp_imp_per_layer,
+        mlp_group_imp_per_layer,
         target_ratio,
         min_attention_groups,
         min_mlp_neurons,
@@ -317,13 +321,14 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
     # --- Step 4: Apply pruning ---
     for layer_idx, layer in enumerate(tqdm(layers, desc="Applying pruning")):
         attn_keep_mask = attn_keep_masks[layer_idx]
-        mlp_keep_mask = mlp_keep_masks[layer_idx]
+        mlp_group_keep_masks = mlp_keep_masks[layer_idx]
 
         if pseudo_pruning:
             # Pseudo-pruning: zero masked channels without changing shapes
             if attn_keep_mask is not None:
                 pseudo_mask_attention(layer, attn_keep_mask, device)
-            pseudo_mask_mlp(layer, mlp_keep_mask, device)
+            for group, group_keep_mask in mlp_group_keep_masks:
+                pseudo_mask_mlp_group(group, group_keep_mask, device)
         else:
             # Real pruning: reshape weights by slicing pruned channels
             if attn_keep_mask is not None:
@@ -333,11 +338,12 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
                 if remove_groups:
                     prune_attention(layer, remove_groups, device)
 
-            remove_neurons = sorted(
-                (mlp_keep_mask == False).nonzero(as_tuple=False).flatten().tolist()  # noqa: E712
-            )
-            if remove_neurons:
-                prune_mlp(layer, remove_neurons, device)
+            for group, group_keep_mask in mlp_group_keep_masks:
+                remove_neurons = sorted(
+                    (group_keep_mask == False).nonzero(as_tuple=False).flatten().tolist()  # noqa: E712
+                )
+                if remove_neurons:
+                    prune_mlp_group(group, remove_neurons, device)
 
     # --- Step 5: Sync config (only needed for real pruning) ---
     if not pseudo_pruning:
@@ -352,7 +358,13 @@ def prune_llm_pruner(args, model, tokenizer, device, dataloader):
             int(mask.sum().item()) if mask is not None else -1
             for mask in attn_keep_masks
         ],
-        "mlp_keep_counts": [int(mask.sum().item()) for mask in mlp_keep_masks],
+        "mlp_keep_counts": [
+            {
+                group.name: int(group_mask.sum().item())
+                for group, group_mask in group_masks
+            }
+            for group_masks in mlp_keep_masks
+        ],
         "selection_strategy": "local_per_layer",
     }
 

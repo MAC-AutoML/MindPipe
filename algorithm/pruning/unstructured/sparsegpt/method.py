@@ -8,9 +8,8 @@ import torch
 
 from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
-from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
-from ....common.modeling import find_linear_layers
+from ....common.modeling import find_prunable_linear_layers
 from ....common.modeling import get_layer_device
 from ....common.modeling import get_text_backbone
 from ....common.modeling import move_tensors_to_device
@@ -32,7 +31,7 @@ def _check_sparsity(model) -> float:
     for layer_index, block in enumerate(backbone.layers):
         layer_zero_count = 0
         layer_total_count = 0
-        for linear in find_linear_layers(block).values():
+        for linear in find_prunable_linear_layers(block).values():
             weight = linear.weight.data
             layer_zero_count += int((weight == 0).sum().item())
             layer_total_count += int(weight.numel())
@@ -81,43 +80,47 @@ class SparseGPTMethod(BasePruningMethod):
                 input_states = input_states.to(target_device)
                 output_states = output_states.to(target_device)
                 layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
-                linear_layers = find_linear_layers(block)
-                layer_groups = build_decoder_layer_groups(block, set(linear_layers))
+                linear_layers = find_prunable_linear_layers(block)
 
-                for group in layer_groups:
-                    subset = {name: linear_layers[name] for name in group}
-                    gpt_states = {name: SparseGPT(linear) for name, linear in subset.items()}
+                # SparseGPT: collect statistics for every target Linear in one
+                # layer pass. Running one calibration pass per projection group
+                # is prohibitively slow after Qwen3.5/3.6 MoE experts are
+                # unfused into per-expert Linear modules.
+                gpt_states = {
+                    name: SparseGPT(linear)
+                    for name, linear in linear_layers.items()
+                }
 
-                    def add_batch(name: str):
-                        def hook(_module, inputs, outputs):
-                            gpt_states[name].add_batch(inputs[0].data, outputs.data)
+                def add_batch(name: str):
+                    def hook(_module, inputs, outputs):
+                        gpt_states[name].add_batch(inputs[0].data, outputs.data)
 
-                        return hook
+                    return hook
 
-                    handles = [
-                        subset[name].register_forward_hook(add_batch(name))
-                        for name in subset
-                    ]
-                    for sample_index in range(args.calibration_samples):
-                        with torch.no_grad():
-                            output_states[sample_index] = unwrap_layer_output(
-                                block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
-                            )
-                    for handle in handles:
-                        handle.remove()
-
-                    for name, gpt_state in gpt_states.items():
-                        print(f"pruning layer {layer_index} name {name}")
-                        gpt_state.fasterprune(
-                            args.sparsity_ratio,
-                            prunen=prune_n,
-                            prunem=prune_m,
-                            percdamp=args.damp_percent,
-                            blocksize=args.block_size,
+                handles = [
+                    linear_layers[name].register_forward_hook(add_batch(name))
+                    for name in linear_layers
+                ]
+                for sample_index in range(args.calibration_samples):
+                    with torch.no_grad():
+                        output_states[sample_index] = unwrap_layer_output(
+                            block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
                         )
-                        gpt_state.free()
-                        pruned_linear_layers.append(f"{backbone.prefix}.layers.{layer_index}.{name}")
-                    del gpt_states
+                for handle in handles:
+                    handle.remove()
+
+                for name, gpt_state in gpt_states.items():
+                    print(f"pruning layer {layer_index} name {name}")
+                    gpt_state.fasterprune(
+                        args.sparsity_ratio,
+                        prunen=prune_n,
+                        prunem=prune_m,
+                        percdamp=args.damp_percent,
+                        blocksize=args.block_size,
+                    )
+                    gpt_state.free()
+                    pruned_linear_layers.append(f"{backbone.prefix}.layers.{layer_index}.{name}")
+                del gpt_states
 
                 for sample_index in range(args.calibration_samples):
                     with torch.no_grad():
