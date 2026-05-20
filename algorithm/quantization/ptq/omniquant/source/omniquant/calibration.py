@@ -8,6 +8,20 @@ import torch.nn as nn
 from algorithm.common.modeling import get_text_backbone
 
 
+def _model_input_device(model: nn.Module, backbone) -> torch.device:
+    if hasattr(model, "get_input_embeddings"):
+        embeddings = model.get_input_embeddings()
+        if embeddings is not None:
+            weight = getattr(embeddings, "weight", None)
+            if torch.is_tensor(weight):
+                return weight.device
+            try:
+                return next(embeddings.parameters()).device
+            except StopIteration:
+                pass
+    return next(backbone.layers[0].parameters()).device
+
+
 def _build_calibration_forward_kwargs(model: nn.Module, input_ids: torch.Tensor) -> dict[str, torch.Tensor]:
     model_type = getattr(getattr(model, "config", None), "model_type", None)
     if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
@@ -49,9 +63,9 @@ def get_act_scales(model, calibration_batches, device):
             qualified_name = f"{backbone.prefix}.{name}" if name else backbone.prefix
             hooks.append(module.register_forward_hook(functools.partial(stat_input_hook, name=qualified_name)))
 
+    input_device = _model_input_device(model, backbone)
     for token_ids, _labels in calibration_batches:
-        # device_map 模式下输入数据放到模型所在设备
-        run_omniquant_calibration_forward(model, token_ids.to(next(model.parameters()).device))
+        run_omniquant_calibration_forward(model, token_ids.to(input_device))
 
     for hook in hooks:
         hook.remove()
@@ -85,9 +99,9 @@ def get_act_shifts(model, calibration_batches, device):
             qualified_name = f"{backbone.prefix}.{name}" if name else backbone.prefix
             hooks.append(module.register_forward_hook(functools.partial(stat_input_hook, name=qualified_name)))
 
+    input_device = _model_input_device(model, backbone)
     for token_ids, _labels in calibration_batches:
-        # device_map 模式下输入数据放到模型所在设备
-        run_omniquant_calibration_forward(model, token_ids.to(next(model.parameters()).device))
+        run_omniquant_calibration_forward(model, token_ids.to(input_device))
 
     for hook in hooks:
         hook.remove()

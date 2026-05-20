@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from splitquant.function_utils import get_init_scale
+from splitquant.quant_utils import ActivationQuantizer
+from splitquant.quant_utils import WeightQuantizer
 from splitquant.quant_utils import set_quantizer_state
 from splitquant.split_linear import SplitQuantizedLinear
 from splitquant.utils import skip_initialization
@@ -10,6 +12,9 @@ from splitquant.utils import skip_initialization
 from splitquant.model_tools.qwen_split_utils import _build_group_trans
 from splitquant.model_tools.qwen_split_utils import _resolve_split_group_size
 from splitquant.model_tools.qwen_split_utils import _weight_device
+from splitquant.model_tools.device_utils import align_attention_auxiliary_tensors
+from splitquant.model_tools.device_utils import get_module_device
+from splitquant.model_tools.device_utils import move_tensor_tree_to_device
 
 from transformers.models.qwen3_5.modeling_qwen3_5 import ALL_ATTENTION_FUNCTIONS as QWEN3_5_ATTENTION_FUNCTIONS
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Attention
@@ -17,6 +22,11 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNorm
 from transformers.models.qwen3_5.modeling_qwen3_5 import apply_mask_to_padding_states
 from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb as qwen3_5_apply_rotary_pos_emb
 from transformers.models.qwen3_5.modeling_qwen3_5 import eager_attention_forward as qwen3_5_eager_attention_forward
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import ALL_ATTENTION_FUNCTIONS as QWEN3_5_MOE_ATTENTION_FUNCTIONS
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeAttention
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import apply_mask_to_padding_states as qwen3_5_moe_apply_mask_to_padding_states
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import apply_rotary_pos_emb as qwen3_5_moe_apply_rotary_pos_emb
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import eager_attention_forward as qwen3_5_moe_eager_attention_forward
 
 
 def _decoder_root(model):
@@ -151,7 +161,7 @@ class SplitQuantQwen3_5Attention(Qwen3_5Attention):
         position_embeddings=None,
         **kwargs,
     ):
-        del position_ids, use_cache, cache_position
+        del use_cache
         if position_embeddings is None:
             raise AttributeError("SplitQuantQwen3_5Attention requires `position_embeddings` from the parent decoder layer.")
 
@@ -174,6 +184,13 @@ class SplitQuantQwen3_5Attention(Qwen3_5Attention):
         key_states = self.k_norm(key_states.view(hidden_shape)).transpose(1, 2)
         value_states = value_states.view(hidden_shape).transpose(1, 2)
 
+        attention_mask, position_ids, cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            query_states.device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+        )
         cos, sin = position_embeddings
         query_states, key_states = qwen3_5_apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
@@ -631,6 +648,453 @@ class SplitQuantQwen3_5GatedDeltaNet(nn.Module):
             self.o_trans.to_eval_mode()
 
 
+def _apply_trans_to_weight(weight: torch.Tensor, trans: nn.Module) -> torch.Tensor:
+    if trans is None:
+        return weight
+    return trans(weight, inv_t=True)
+
+
+def _apply_trans_to_packed_weight(weight: torch.Tensor, trans: nn.Module) -> torch.Tensor:
+    if trans is None:
+        return weight
+    original_shape = weight.shape
+    return _apply_trans_to_weight(weight.reshape(-1, original_shape[-1]), trans).reshape(original_shape)
+
+
+class SplitQuantQwen3_5MoeAttention(SplitQuantQwen3_5Attention):
+    def __init__(self, args, module: Qwen3_5MoeAttention):
+        nn.Module.__init__(self)
+        self.args = args
+        self.config = module.config
+        self.layer_idx = module.layer_idx
+        self.head_dim = module.head_dim
+        self.num_key_value_groups = module.num_key_value_groups
+        self.scaling = module.scaling
+        self.attention_dropout = module.attention_dropout
+        self.is_causal = getattr(module, "is_causal", True)
+        self.group_size = _resolve_split_group_size(args) if (args.w_bits < 16 or args.a_bits < 16) else -1
+
+        self.q_proj = SplitQuantizedLinear(args, module.q_proj)
+        self.k_proj = SplitQuantizedLinear(args, module.k_proj)
+        self.v_proj = SplitQuantizedLinear(args, module.v_proj)
+        self.o_proj = SplitQuantizedLinear(args, module.o_proj)
+        self.q_norm = module.q_norm
+        self.k_norm = module.k_norm
+        self._parent_input_layernorm = None
+        self.add_fq_trans()
+
+        self._ori_mode = False
+        self.diag_init = args.diag_init
+        if self.diag_init == "sq_style":
+            stat_device = _weight_device(self.q_proj.linear)
+            self.register_buffer(
+                "ln_smax",
+                torch.ones_like(self.q_proj.linear.weight.abs().max(dim=0)[0], device=stat_device) * 1e-5,
+            )
+            self.register_buffer(
+                "o_smax",
+                torch.ones_like(self.o_proj.linear.weight.abs().max(dim=0)[0], device=stat_device) * 1e-5,
+            )
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        output_attentions=False,
+        use_cache=False,
+        cache_position=None,
+        position_embeddings=None,
+        **kwargs,
+    ):
+        del use_cache
+        if position_embeddings is None:
+            raise AttributeError("SplitQuantQwen3_5MoeAttention requires `position_embeddings` from the parent decoder layer.")
+
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+        if self._ori_mode:
+            query_states, key_states, value_states = self._ori_forward_after_ln(hidden_states)
+        else:
+            query_states, key_states, value_states = self._trans_forward_after_ln(hidden_states)
+        attn_dtype = query_states.dtype
+
+        query_states, gate = torch.chunk(query_states.view(*input_shape, -1, self.head_dim * 2), 2, dim=-1)
+        gate = gate.reshape(*input_shape, -1)
+
+        query_states = self.q_norm(query_states.view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_norm(key_states.view(hidden_shape)).transpose(1, 2)
+        value_states = value_states.view(hidden_shape).transpose(1, 2)
+
+        attention_mask, position_ids, cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            query_states.device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+        )
+        cos, sin = position_embeddings
+        query_states, key_states = qwen3_5_moe_apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        if past_key_values is not None:
+            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+
+        attention_interface = _resolve_attention_interface(
+            QWEN3_5_MOE_ATTENTION_FUNCTIONS,
+            self.config._attn_implementation,
+            qwen3_5_moe_eager_attention_forward,
+        )
+        attn_output, attn_weights = attention_interface(
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            dropout=0.0 if not self.training else self.attention_dropout,
+            scaling=self.scaling,
+            output_attentions=output_attentions,
+            **kwargs,
+        )
+        attn_output = attn_output.reshape(*input_shape, -1).to(attn_dtype)
+        attn_output = attn_output * torch.sigmoid(gate)
+
+        if self._ori_mode and self.diag_init == "sq_style":
+            self.o_smax = torch.maximum(
+                self.o_smax,
+                attn_output.reshape(-1, attn_output.shape[-1]).abs().max(0)[0].clone().detach(),
+            )
+
+        attn_output = self._project_attn_output(attn_output)
+        if not output_attentions:
+            attn_weights = None
+        else:
+            attn_weights = attn_weights.to(attn_dtype)
+        return attn_output, attn_weights
+
+
+class SplitQuantQwen3_5MoeGatedDeltaNet(SplitQuantQwen3_5GatedDeltaNet):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids=None,
+        past_key_values=None,
+        output_attentions=False,
+        use_cache=False,
+        cache_position=None,
+        position_embeddings=None,
+        **kwargs,
+    ):
+        del position_ids, output_attentions, use_cache, cache_position, position_embeddings, kwargs
+        hidden_states = qwen3_5_moe_apply_mask_to_padding_states(hidden_states, attention_mask)
+        return super().forward(hidden_states, attention_mask=None, past_key_values=past_key_values)
+
+
+class SplitQuantQwen3_5MoeMLP(nn.Module):
+    def __init__(self, args, module: nn.Module):
+        super().__init__()
+        self.args = args
+        self.group_size = _resolve_split_group_size(args) if (args.w_bits < 16 or args.a_bits < 16) else -1
+        self.gate_proj = SplitQuantizedLinear(args, module.gate_proj)
+        self.up_proj = SplitQuantizedLinear(args, module.up_proj)
+        self.down_proj = SplitQuantizedLinear(args, module.down_proj)
+        self.act_fn = module.act_fn
+        self._ori_mode = False
+        self.add_fq_trans()
+
+    def add_fq_trans(self):
+        if self.args.w_bits < 16 or self.args.a_bits < 16:
+            self._down_trans = _build_group_trans(
+                self.down_proj.linear.weight.shape[1],
+                self.group_size,
+                self.args.add_diag,
+                "Qwen3.5-MoE shared expert down transform",
+            )
+        else:
+            self._down_trans = None
+
+    def forward(self, hidden_states: torch.Tensor, input_trans=None) -> torch.Tensor:
+        if self._ori_mode:
+            hidden_states = self.act_fn(self.gate_proj._ori_forward(hidden_states)) * self.up_proj._ori_forward(hidden_states)
+            return self.down_proj._ori_forward(hidden_states)
+        hidden_states = self.act_fn(self.gate_proj(hidden_states, qa_trans=input_trans)) * self.up_proj(hidden_states, qa_trans=input_trans)
+        if self._down_trans is not None:
+            hidden_states = self._down_trans(hidden_states)
+        return self.down_proj(hidden_states, qa_trans=self._down_trans)
+
+    def reparameterize(self, input_trans=None):
+        if self._down_trans is not None:
+            self._down_trans.to_eval_mode()
+        self.gate_proj.reparameterize(qa_trans=input_trans)
+        self.up_proj.reparameterize(qa_trans=input_trans)
+        self.down_proj.reparameterize(qa_trans=self._down_trans)
+
+    def init_diag_scale(self, alpha=0.5):
+        del alpha
+
+    def rep_matrix_only(self):
+        if self._down_trans is not None:
+            self._down_trans.to_eval_mode()
+
+
+class SplitQuantQwen3_5MoePackedExperts(nn.Module):
+    def __init__(self, args, module: nn.Module):
+        super().__init__()
+        self.args = args
+        self.num_experts = module.num_experts
+        self.hidden_dim = module.hidden_dim
+        self.intermediate_dim = module.intermediate_dim
+        self.act_fn = module.act_fn
+        self.gate_up_proj = nn.Parameter(module.gate_up_proj.detach().clone())
+        self.down_proj = nn.Parameter(module.down_proj.detach().clone())
+        self.weight_quantizer = WeightQuantizer()
+        self.weight_quantizer.configure(args.w_bits, perchannel=True, sym=not(args.w_asym), mse=False)
+        self.group_size = args.w_groupsize if args.w_groupsize > 0 else -1
+        self.act_quantizer = ActivationQuantizer(
+            bits=args.a_bits,
+            sym=not(args.a_asym),
+            lac=args.lac,
+            groupsize=args.a_groupsize,
+            in_channels=self.hidden_dim,
+        )
+        self.hidden_act_quantizer = ActivationQuantizer(
+            bits=args.a_bits,
+            sym=not(args.a_asym),
+            lac=args.lac,
+            groupsize=args.a_groupsize,
+            in_channels=self.intermediate_dim,
+        )
+        self._ori_mode = False
+        self.add_fq_trans()
+
+    def add_fq_trans(self):
+        if self.args.w_bits < 16 or self.args.a_bits < 16:
+            self._down_trans = _build_group_trans(
+                self.down_proj.shape[-1],
+                _resolve_split_group_size(self.args),
+                self.args.add_diag,
+                "Qwen3.5-MoE packed expert down transform",
+            )
+        else:
+            self._down_trans = None
+
+    def _group_weight(self, weight):
+        if self.group_size > 0:
+            return weight.reshape(-1, self.group_size)
+        return weight
+
+    def _degroup_weight(self, weight, original_shape):
+        if self.group_size > 0:
+            return weight.reshape(original_shape)
+        return weight
+
+    def _quantize_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        if self.args.w_bits >= 16:
+            return weight
+        original_shape = weight.shape
+        grouped_weight = self._group_weight(weight)
+        self.weight_quantizer.find_params(grouped_weight)
+        quantized = self.weight_quantizer(grouped_weight)
+        return self._degroup_weight(quantized, original_shape).to(weight.dtype)
+
+    def _weights(self, input_trans=None):
+        if self._ori_mode:
+            return self.gate_up_proj, self.down_proj
+        gate_up_weight = self.gate_up_proj
+        down_weight = self.down_proj
+        if input_trans is not None:
+            gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
+        if self._down_trans is not None:
+            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
+        return self._quantize_weight(gate_up_weight), self._quantize_weight(down_weight)
+
+    def forward(self, hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor, input_trans=None) -> torch.Tensor:
+        final_hidden_states = torch.zeros_like(hidden_states)
+        gate_up_proj, down_proj = self._weights(input_trans=input_trans)
+        with torch.no_grad():
+            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        for expert_idx in expert_hit:
+            expert_idx = expert_idx[0]
+            if expert_idx == self.num_experts:
+                continue
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            if not self._ori_mode:
+                current_state = self.act_quantizer(current_state)
+            gate, up = F.linear(current_state, gate_up_proj[expert_idx]).chunk(2, dim=-1)
+            current_hidden_states = self.act_fn(gate) * up
+            if not self._ori_mode:
+                current_hidden_states = self.hidden_act_quantizer(current_hidden_states)
+            if not self._ori_mode and self._down_trans is not None:
+                current_hidden_states = self._down_trans(current_hidden_states)
+            current_hidden_states = F.linear(current_hidden_states, down_proj[expert_idx])
+            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+        return final_hidden_states
+
+    def reparameterize(self, input_trans=None):
+        gate_up_weight = self.gate_up_proj.data
+        down_weight = self.down_proj.data
+        if input_trans is not None:
+            gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
+        if self._down_trans is not None:
+            self._down_trans.to_eval_mode()
+            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
+        self.gate_up_proj.data = self._quantize_weight(gate_up_weight)
+        self.down_proj.data = self._quantize_weight(down_weight)
+
+    def init_diag_scale(self, alpha=0.5):
+        del alpha
+
+    def rep_matrix_only(self):
+        if self._down_trans is not None:
+            self._down_trans.to_eval_mode()
+
+
+class SplitQuantQwen3_5MoeSparseMoeBlock(nn.Module):
+    def __init__(self, args, module: nn.Module):
+        super().__init__()
+        self.gate = module.gate
+        self.experts = SplitQuantQwen3_5MoePackedExperts(args, module.experts)
+        self.shared_expert = SplitQuantQwen3_5MoeMLP(args, module.shared_expert)
+        self.shared_expert_gate = SplitQuantizedLinear(args, module.shared_expert_gate)
+        self._ori_mode = False
+        self.add_fq_trans()
+
+    def add_fq_trans(self):
+        sample_weight = self.shared_expert_gate.linear.weight
+        if self.experts.args.w_bits < 16 or self.experts.args.a_bits < 16:
+            self._moe_in_trans = _build_group_trans(
+                sample_weight.shape[1],
+                _resolve_split_group_size(self.experts.args),
+                self.experts.args.add_diag,
+                "Qwen3.5-MoE shared input transform",
+            )
+        else:
+            self._moe_in_trans = None
+
+    def _route(self, hidden_states: torch.Tensor, input_trans=None):
+        if self._ori_mode or input_trans is None:
+            return self.gate(hidden_states)
+        router_weight = _apply_trans_to_weight(self.gate.weight, input_trans)
+        router_logits = F.linear(hidden_states, router_weight)
+        router_logits = torch.nn.functional.softmax(router_logits, dtype=torch.float, dim=-1)
+        router_top_value, router_indices = torch.topk(router_logits, self.gate.top_k, dim=-1)
+        router_top_value /= router_top_value.sum(dim=-1, keepdim=True)
+        router_scores = router_top_value.to(router_logits.dtype)
+        return router_logits, router_scores, router_indices
+
+    def forward(self, hidden_states: torch.Tensor):
+        self.experts._ori_mode = self._ori_mode
+        self.shared_expert._ori_mode = self._ori_mode
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+        input_trans = None
+        if not self._ori_mode and self._moe_in_trans is not None:
+            hidden_states_reshaped = self._moe_in_trans(hidden_states_reshaped)
+            input_trans = self._moe_in_trans
+        shared_expert_output = self.shared_expert(hidden_states_reshaped, input_trans=input_trans)
+        _, routing_weights, selected_experts = self._route(hidden_states_reshaped, input_trans=input_trans)
+        expert_output = self.experts(hidden_states_reshaped, selected_experts, routing_weights, input_trans=input_trans)
+        if self._ori_mode:
+            shared_gate = self.shared_expert_gate._ori_forward(hidden_states_reshaped)
+        else:
+            shared_gate = self.shared_expert_gate(hidden_states_reshaped, qa_trans=input_trans)
+        shared_expert_output = F.sigmoid(shared_gate) * shared_expert_output
+        expert_output = expert_output + shared_expert_output
+        return expert_output.reshape(batch_size, sequence_length, hidden_dim)
+
+    def reparameterize(self):
+        if self._moe_in_trans is not None:
+            self._moe_in_trans.to_eval_mode()
+            self.gate.weight.data = _apply_trans_to_weight(self.gate.weight.data, self._moe_in_trans)
+        self.shared_expert.reparameterize(input_trans=self._moe_in_trans)
+        self.shared_expert_gate.reparameterize(qa_trans=self._moe_in_trans)
+        self.experts.reparameterize(input_trans=self._moe_in_trans)
+
+    def init_diag_scale(self, alpha=0.5):
+        self.shared_expert.init_diag_scale(alpha=alpha)
+        self.experts.init_diag_scale(alpha=alpha)
+
+    def rep_matrix_only(self):
+        if self._moe_in_trans is not None:
+            self._moe_in_trans.to_eval_mode()
+        self.shared_expert.rep_matrix_only()
+        self.experts.rep_matrix_only()
+
+
+class SplitQuantQwen3_5MoeDecoderLayer(nn.Module):
+    def __init__(self, args, ori_layer):
+        super().__init__()
+        self.hidden_size = ori_layer.hidden_size
+        self.layer_type = ori_layer.layer_type
+        if self.layer_type == "linear_attention":
+            self.self_attn = SplitQuantQwen3_5MoeGatedDeltaNet(args, ori_layer.linear_attn)
+        elif self.layer_type == "full_attention":
+            self.self_attn = SplitQuantQwen3_5MoeAttention(args, ori_layer.self_attn)
+        else:
+            raise ValueError(f"Unsupported Qwen3.5-MoE layer_type: {self.layer_type}")
+        self.mlp = SplitQuantQwen3_5MoeSparseMoeBlock(args, ori_layer.mlp)
+        self.input_layernorm = ori_layer.input_layernorm
+        self.post_attention_layernorm = ori_layer.post_attention_layernorm
+        self.self_attn._parent_input_layernorm = self.input_layernorm
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values=None,
+        use_cache: bool | None = False,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        layer_device = get_module_device(self)
+        hidden_states = move_tensor_tree_to_device(hidden_states, layer_device)
+        attention_mask, position_ids, _cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            layer_device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            position_embeddings=position_embeddings,
+        )
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+
+        if self.layer_type == "linear_attention":
+            hidden_states = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )
+        else:
+            output_attentions = bool(kwargs.pop("output_attentions", False))
+            hidden_states, _attn_weights = self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                position_embeddings=position_embeddings,
+                output_attentions=output_attentions,
+                **kwargs,
+            )
+
+        hidden_states = residual + hidden_states.to(residual.device)
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states.to(residual.device)
+        return hidden_states
+
+
 class SplitQuantQwen3_5DecoderLayer(nn.Module):
     def __init__(self, args, ori_layer):
         super().__init__()
@@ -662,8 +1126,19 @@ class SplitQuantQwen3_5DecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
+        layer_device = get_module_device(self)
+        hidden_states = move_tensor_tree_to_device(hidden_states, layer_device)
+        position_ids = move_tensor_tree_to_device(position_ids, layer_device)
+        position_embeddings = move_tensor_tree_to_device(position_embeddings, layer_device)
+        attention_mask = move_tensor_tree_to_device(attention_mask, layer_device)
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
+        attention_mask, position_ids, _cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            layer_device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            position_embeddings=position_embeddings,
+        )
 
         if self.layer_type == "linear_attention":
             hidden_states = self.self_attn(
@@ -701,6 +1176,18 @@ def apply_splitquant_to_qwen3_5(args, model):
     decoder_root = _decoder_root(model)
     for layer_index in range(len(decoder_root.layers)):
         decoder_root.layers[layer_index] = SplitQuantQwen3_5DecoderLayer(
+            args,
+            decoder_root.layers[layer_index],
+        )
+    set_quantizer_state(model, enable=True)
+    return model
+
+
+def apply_splitquant_to_qwen3_5_moe(args, model):
+    skip_initialization()
+    decoder_root = _decoder_root(model)
+    for layer_index in range(len(decoder_root.layers)):
+        decoder_root.layers[layer_index] = SplitQuantQwen3_5MoeDecoderLayer(
             args,
             decoder_root.layers[layer_index],
         )

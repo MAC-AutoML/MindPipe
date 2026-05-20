@@ -3,12 +3,13 @@ import functools
 import torch
 import torch.nn as nn
 
+from algorithm.common.modeling import get_layer_device
 from algorithm.common.modeling import get_text_backbone
 
 
 def _build_calibration_forward_kwargs(model, input_ids):
     model_type = getattr(getattr(model, "config", None), "model_type", None)
-    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
         return {"attention_mask": torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)}
     return {}
 
@@ -26,6 +27,8 @@ def run_smoothquant_calibration_forward(model, input_ids):
 def get_act_scales(model, calibration_batches, device):
     model.eval()
     backbone = get_text_backbone(model)
+    input_device = getattr(getattr(backbone.root, "embed_tokens", None), "weight", None)
+    input_device = input_device.device if input_device is not None else get_layer_device(backbone, 0)
     act_scales: dict[str, torch.Tensor] = {}
 
     def stat_tensor(name, tensor):
@@ -48,8 +51,7 @@ def get_act_scales(model, calibration_batches, device):
             hooks.append(module.register_forward_hook(functools.partial(stat_input_hook, name=qualified_name)))
 
     for token_ids, _labels in calibration_batches:
-        # device_map 模式下输入数据放到模型所在设备
-        run_smoothquant_calibration_forward(model, token_ids.to(next(model.parameters()).device))
+        run_smoothquant_calibration_forward(model, token_ids.to(input_device))
 
     for hook in hooks:
         hook.remove()

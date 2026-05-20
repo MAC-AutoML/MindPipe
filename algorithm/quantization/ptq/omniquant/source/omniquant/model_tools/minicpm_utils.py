@@ -10,6 +10,18 @@ from omniquant.int_matmul import QuantMatMul
 from omniquant.omni_norm import OmniLlamaRMSNorm
 
 
+def _move_optional_tensor(value, device: torch.device):
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, tuple):
+        return tuple(_move_optional_tensor(item, device) for item in value)
+    if isinstance(value, list):
+        return [_move_optional_tensor(item, device) for item in value]
+    if isinstance(value, dict):
+        return {key: _move_optional_tensor(item, device) for key, item in value.items()}
+    return value
+
+
 class QuantMiniCPMMLP(nn.Module):
     def __init__(self, org_module: nn.Module, args):
         super().__init__()
@@ -115,6 +127,9 @@ class QuantMiniCPMAttention(nn.Module):
         query_states = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        attention_mask = _move_optional_tensor(attention_mask, query_states.device)
+        position_ids = _move_optional_tensor(position_ids, query_states.device)
+        past_key_value = _move_optional_tensor(past_key_value, query_states.device)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -207,11 +222,13 @@ class QuantMiniCPMDecoderLayer(nn.Module):
             use_cache=use_cache,
             **kwargs,
         )
+        hidden_states = hidden_states.to(residual.device)
         hidden_states = residual + hidden_states * (self.scale_depth / math.sqrt(self.num_hidden_layers))
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
+        hidden_states = hidden_states.to(residual.device)
         hidden_states = residual + hidden_states * (self.scale_depth / math.sqrt(self.num_hidden_layers))
 
         outputs = (hidden_states,)

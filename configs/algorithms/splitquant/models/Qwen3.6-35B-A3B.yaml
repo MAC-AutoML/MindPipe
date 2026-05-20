@@ -1,0 +1,46 @@
+schema: mindpipe/config/v1
+
+model:
+  name: Qwen3.6-35B-A3B
+  model_path: /mnt/82_store/LLM-weights/Qwen3.6-35B-A3B
+
+defaults:
+  attn_implementation: sdpa
+  eval_vlm: false
+  splitquant_calibration_batch_size: 16
+  zero_shot_batch_size: 4
+
+recipes:
+  w3a16:
+    weight_bits: 3
+    activation_bits: 16
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+  w4a16:
+    weight_bits: 4
+    activation_bits: 16
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+  w4a4:
+    weight_bits: 4
+    activation_bits: 4
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+  w8a8:
+    weight_bits: 8
+    activation_bits: 8
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+  smoke10:
+    weight_bits: 8
+    activation_bits: 8
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+    calibration_samples: 4
+    max_eval_chunks: 4
+    eval_zero_shot: false

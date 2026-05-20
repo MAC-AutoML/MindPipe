@@ -10,6 +10,7 @@ from splitquant.model_tools.qwen_split_utils import SplitQuantQwenMLP
 from splitquant.model_tools.qwen_split_utils import _build_group_trans
 from splitquant.model_tools.qwen_split_utils import _resolve_split_group_size
 from splitquant.model_tools.qwen_split_utils import _weight_device
+from splitquant.model_tools.device_utils import align_attention_auxiliary_tensors
 
 from transformers.models.qwen3.modeling_qwen3 import ALL_ATTENTION_FUNCTIONS as QWEN3_ATTENTION_FUNCTIONS
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
@@ -293,7 +294,7 @@ class SplitQuantQwen3Attention(_SplitQuantQwen3AttentionMixin, Qwen3Attention):
         position_embeddings=None,
         **kwargs,
     ):
-        del position_ids, use_cache, cache_position
+        del use_cache
         if position_embeddings is None:
             raise AttributeError("SplitQuantQwen3Attention requires `position_embeddings` from the parent decoder layer.")
 
@@ -309,6 +310,13 @@ class SplitQuantQwen3Attention(_SplitQuantQwen3AttentionMixin, Qwen3Attention):
         key_states = self.k_norm(key_states.view(hidden_shape)).transpose(1, 2)
         value_states = value_states.view(hidden_shape).transpose(1, 2)
 
+        attention_mask, position_ids, cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            query_states.device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+        )
         cos, sin = position_embeddings
         query_states, key_states = self.apply_rotary(query_states, key_states, cos, sin)
 
@@ -357,7 +365,7 @@ class SplitQuantQwen3VLTextAttention(_SplitQuantQwen3AttentionMixin, Qwen3VLText
         position_embeddings=None,
         **kwargs,
     ):
-        del position_ids, use_cache, cache_position
+        del use_cache
         if position_embeddings is None:
             raise AttributeError(
                 "SplitQuantQwen3VLTextAttention requires `position_embeddings` from the parent decoder layer."
@@ -375,6 +383,13 @@ class SplitQuantQwen3VLTextAttention(_SplitQuantQwen3AttentionMixin, Qwen3VLText
         key_states = self.k_norm(key_states.view(hidden_shape)).transpose(1, 2)
         value_states = value_states.view(hidden_shape).transpose(1, 2)
 
+        attention_mask, position_ids, cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            query_states.device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+        )
         cos, sin = position_embeddings
         query_states, key_states = self.apply_rotary(query_states, key_states, cos, sin)
 

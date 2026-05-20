@@ -10,6 +10,8 @@ from splitquant.function_utils import get_init_scale
 from splitquant.trans_utils import SVDSingleGroupTransMatrix
 from splitquant.trans_utils import SVDSingleTransMatrix
 from splitquant.split_linear import SplitQuantizedLinear
+from splitquant.model_tools.device_utils import align_attention_auxiliary_tensors
+from splitquant.model_tools.device_utils import build_cache_kwargs_on_device
 
 from transformers.models.llama.modeling_llama import ALL_ATTENTION_FUNCTIONS
 from transformers.models.llama.modeling_llama import LlamaMLP, LlamaAttention, \
@@ -321,6 +323,13 @@ class SplitQuantLlamaAttention(LlamaAttention):
         key_states = key_states.view(hidden_shape).transpose(1, 2)
         value_states = value_states.view(hidden_shape).transpose(1, 2)
 
+        attention_mask, position_ids, cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            query_states.device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+        )
         if position_embeddings is None:
             if not hasattr(self, "rotary_emb"):
                 raise AttributeError(
@@ -356,9 +365,7 @@ class SplitQuantLlamaAttention(LlamaAttention):
 
         cache_obj = past_key_value if past_key_value is not None else kwargs.get("past_key_values")
         if cache_obj is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}
-            if cache_position is not None:
-                cache_kwargs["cache_position"] = cache_position
+            cache_kwargs = build_cache_kwargs_on_device(query_states.device, sin=sin, cos=cos, cache_position=cache_position)
             key_states, value_states = cache_obj.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         attention_interface = eager_attention_forward

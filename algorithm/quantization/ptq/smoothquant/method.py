@@ -24,6 +24,8 @@ SUPPORTED_MODEL_TYPES = {
     "qwen3",
     "qwen3_vl",
     "qwen3_5",
+    "qwen3_5_moe",
+    "qwen3_5_moe_text",
     "minicpm",
     "minicpmv",
 }
@@ -73,7 +75,7 @@ class SmoothQuantMethod(BaseQuantizationMethod):
         model_type = getattr(model.config, "model_type", None)
         if model_type not in SUPPORTED_MODEL_TYPES:
             raise NotImplementedError(
-                "SmoothQuant currently supports LLaMA-, Qwen2/Qwen3/Qwen3.5-, and MiniCPM-style text decoders only; "
+                "SmoothQuant currently supports LLaMA-, Qwen2/Qwen3/Qwen3.5/Qwen3.5-MoE-, and MiniCPM-style text decoders only; "
                 f"got model_type={model_type!r}."
             )
         bit_config = (int(args.weight_bits), int(args.activation_bits))

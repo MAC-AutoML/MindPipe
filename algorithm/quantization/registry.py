@@ -12,6 +12,7 @@ from .ptq.spinquant.method import SpinQuantMethod
 from .qat.flatquant.method import FlatQuantMethod
 from .qat.qalora.method import QALoRAMethod
 from .qat.qlora.method import QLoRAMethod
+from .qat.sliderquant.method import SliderQuantMethod
 from .qat.splitquant.method import SplitQuantMethod
 
 
@@ -25,6 +26,7 @@ METHOD_REGISTRY = {
     "qlora": QLoRAMethod,
     "quarot": QuaRotMethod,
     "smoothquant": SmoothQuantMethod,
+    "sliderquant": SliderQuantMethod,
     "splitquant": SplitQuantMethod,
     "spinquant": SpinQuantMethod,
 }

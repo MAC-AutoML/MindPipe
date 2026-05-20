@@ -9,6 +9,7 @@ from algorithm.common.device import synchronize
 from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import move_tensors_to_device
 from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import create_causal_mask as create_qwen3_5_moe_causal_mask
 
 from flatquant.backbone_utils import get_decoder_config
 from flatquant.backbone_utils import get_decoder_layers
@@ -20,7 +21,7 @@ from flatquant.quant_utils import WeightQuantizer
 
 def _build_calibration_forward_kwargs(model, sample):
     model_type = getattr(model.config, "model_type", None)
-    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
         return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
     return {}
 
@@ -37,14 +38,19 @@ def _resolve_calibration_input_device(model):
     return next(model.parameters()).device
 
 
-def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs):
+def _build_qwen3_5_layer_kwargs(decoder_config, inputs, layer_kwargs, model_type):
     position_ids = layer_kwargs.get("position_ids")
     if position_ids is None:
         seq_len = inputs.shape[1]
         position_ids = torch.arange(seq_len, device=inputs.device).view(1, -1)
 
+    causal_mask_fn = (
+        create_qwen3_5_moe_causal_mask
+        if model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}
+        else create_qwen3_5_causal_mask
+    )
     full_attention_kwargs = dict(layer_kwargs)
-    full_attention_kwargs["attention_mask"] = create_qwen3_5_causal_mask(
+    full_attention_kwargs["attention_mask"] = causal_mask_fn(
         config=decoder_config,
         inputs_embeds=inputs[:1],
         attention_mask=torch.ones((1, inputs.shape[1]), dtype=torch.long, device=inputs.device),
@@ -68,6 +74,23 @@ def _select_layer_kwargs(layer, layer_kwargs, layer_kwargs_by_type):
 
 
 def _sequential_groups_for_layer(layer):
+    if hasattr(layer.mlp, "shared_expert"):
+        if getattr(layer, "layer_type", None) == "linear_attention":
+            return [
+                ["self_attn.in_proj_qkv.linear"],
+                ["self_attn.in_proj_z.linear", "self_attn.in_proj_a.linear", "self_attn.in_proj_b.linear"],
+                ["self_attn.out_proj.linear"],
+                ["mlp.shared_expert.up_proj.linear", "mlp.shared_expert.gate_proj.linear"],
+                ["mlp.shared_expert.down_proj.linear"],
+                ["mlp.shared_expert_gate.linear"],
+            ]
+        return [
+            ["self_attn.k_proj.linear", "self_attn.v_proj.linear", "self_attn.q_proj.linear"],
+            ["self_attn.o_proj.linear"],
+            ["mlp.shared_expert.up_proj.linear", "mlp.shared_expert.gate_proj.linear"],
+            ["mlp.shared_expert.down_proj.linear"],
+            ["mlp.shared_expert_gate.linear"],
+        ]
     if getattr(layer, "layer_type", None) == "linear_attention":
         return [
             ["self_attn.in_proj_qkv.linear"],
@@ -85,6 +108,29 @@ def _sequential_groups_for_layer(layer):
 
 
 def _quantizable_names_for_layer(layer):
+    if hasattr(layer.mlp, "shared_expert"):
+        if getattr(layer, "layer_type", None) == "linear_attention":
+            return {
+                "self_attn.in_proj_qkv.linear",
+                "self_attn.in_proj_z.linear",
+                "self_attn.in_proj_a.linear",
+                "self_attn.in_proj_b.linear",
+                "self_attn.out_proj.linear",
+                "mlp.shared_expert.up_proj.linear",
+                "mlp.shared_expert.gate_proj.linear",
+                "mlp.shared_expert.down_proj.linear",
+                "mlp.shared_expert_gate.linear",
+            }
+        return {
+            "self_attn.q_proj.linear",
+            "self_attn.k_proj.linear",
+            "self_attn.v_proj.linear",
+            "self_attn.o_proj.linear",
+            "mlp.shared_expert.up_proj.linear",
+            "mlp.shared_expert.gate_proj.linear",
+            "mlp.shared_expert.down_proj.linear",
+            "mlp.shared_expert_gate.linear",
+        }
     if getattr(layer, "layer_type", None) == "linear_attention":
         return {
             "self_attn.in_proj_qkv.linear",
@@ -314,8 +360,9 @@ def gptq_fwrd(model, dataloader, dev, args):
     outs = torch.zeros_like(inps)
     layer_kwargs = dict(cache['layer_kwargs'])
     layer_kwargs_by_type = None
-    if getattr(model.config, "model_type", None) == "qwen3_5":
-        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(decoder_config, inps, layer_kwargs)
+    model_type = getattr(model.config, "model_type", None)
+    if model_type in {"qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
+        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(decoder_config, inps, layer_kwargs, model_type)
 
     quantizers = {}
     for i in range(len(layers)):

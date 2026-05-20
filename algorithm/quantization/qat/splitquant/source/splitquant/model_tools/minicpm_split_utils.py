@@ -9,6 +9,8 @@ from splitquant.quant_utils import ActivationQuantizer
 from splitquant.trans_utils import SVDSingleGroupTransMatrix
 from splitquant.trans_utils import SVDSingleTransMatrix
 from splitquant.utils import skip_initialization
+from splitquant.model_tools.device_utils import align_attention_auxiliary_tensors
+from splitquant.model_tools.device_utils import build_cache_kwargs_on_device
 
 from tqdm import tqdm
 
@@ -332,6 +334,13 @@ class SplitQuantMiniCPMAttention(nn.Module):
         if past_key_value is not None:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        attention_mask, position_ids, _cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            query_states.device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            position_embeddings=(cos, sin),
+        )
+        cos, sin = position_embeddings
         query_states, key_states = self.apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         query_states, key_states = self.quant_kcache(query_states, key_states)
@@ -339,7 +348,7 @@ class SplitQuantMiniCPMAttention(nn.Module):
 
         present_key_value = None
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}
+            cache_kwargs = build_cache_kwargs_on_device(query_states.device, sin=sin, cos=cos)
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
             present_key_value = past_key_value
 

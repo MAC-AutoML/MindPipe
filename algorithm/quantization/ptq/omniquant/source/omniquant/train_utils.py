@@ -13,6 +13,7 @@ from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import unwrap_layer_output
 from algorithm.common.modeling import move_tensors_to_device
 from transformers.models.qwen3_5.modeling_qwen3_5 import create_causal_mask as create_qwen3_5_causal_mask
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import create_causal_mask as create_qwen3_5_moe_causal_mask
 
 from omniquant.calibration import run_omniquant_calibration_forward
 from omniquant.model_tools.llama_utils import QuantLlamaDecoderLayer
@@ -21,13 +22,16 @@ from omniquant.model_tools.minicpm_utils import QuantMiniCPMDecoderLayer
 from omniquant.model_tools.minicpm_utils import initialize_omni_parameters as initialize_minicpm_omni_parameters
 from omniquant.model_tools.qwen3_utils import QuantQwen3DecoderLayer
 from omniquant.model_tools.qwen3_utils import QuantQwen3_5DecoderLayer
+from omniquant.model_tools.qwen3_utils import QuantQwen3_5MoeDecoderLayer
 from omniquant.model_tools.qwen3_utils import initialize_qwen3_5_omni_parameters
+from omniquant.model_tools.qwen3_utils import initialize_qwen3_5_moe_omni_parameters
 from omniquant.model_tools.qwen3_utils import initialize_qwen3_omni_parameters
 from omniquant.model_tools.qwen_utils import QuantQwenDecoderLayer
 from omniquant.model_tools.qwen_utils import initialize_omni_parameters as initialize_qwen_omni_parameters
 from omniquant.utils import ampscaler_get_grad_norm
 from omniquant.utils import clear_temp_variable
 from omniquant.utils import get_named_linears
+from omniquant.utils import get_named_packed_moe_experts
 from omniquant.utils import get_omni_parameters
 from omniquant.utils import let_parameters
 from omniquant.utils import lwc_parameters
@@ -151,6 +155,8 @@ def _resolve_omniquant_impl(model_type: str):
         return QuantQwen3DecoderLayer, initialize_qwen3_omni_parameters
     if model_type == "qwen3_5":
         return QuantQwen3_5DecoderLayer, initialize_qwen3_5_omni_parameters
+    if model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}:
+        return QuantQwen3_5MoeDecoderLayer, initialize_qwen3_5_moe_omni_parameters
     if model_type in {"minicpm", "minicpmv"}:
         return QuantMiniCPMDecoderLayer, initialize_minicpm_omni_parameters
     raise NotImplementedError(
@@ -158,14 +164,25 @@ def _resolve_omniquant_impl(model_type: str):
     )
 
 
-def _build_qwen3_5_layer_kwargs(backbone, inputs: torch.Tensor, layer_kwargs: dict[str, object]) -> dict[str, dict[str, object]]:
+def _build_qwen3_5_layer_kwargs(
+    backbone,
+    inputs: torch.Tensor,
+    layer_kwargs: dict[str, object],
+    *,
+    model_type: str,
+) -> dict[str, dict[str, object]]:
     position_ids = layer_kwargs.get("position_ids")
     if position_ids is None:
         seq_len = inputs.shape[1]
         position_ids = torch.arange(seq_len, device=inputs.device).view(1, -1)
 
     full_attention_kwargs = dict(layer_kwargs)
-    full_attention_kwargs["attention_mask"] = create_qwen3_5_causal_mask(
+    create_causal_mask = (
+        create_qwen3_5_moe_causal_mask
+        if model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}
+        else create_qwen3_5_causal_mask
+    )
+    full_attention_kwargs["attention_mask"] = create_causal_mask(
         config=backbone.decoder_config,
         inputs_embeds=inputs[:1],
         attention_mask=torch.ones((1, inputs.shape[1]), dtype=torch.long, device=inputs.device),
@@ -331,8 +348,13 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
         device=device,
     )
     layer_kwargs_by_type = None
-    if model_type == "qwen3_5":
-        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(backbone, input_states, layer_kwargs)
+    if model_type in {"qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
+        layer_kwargs_by_type = _build_qwen3_5_layer_kwargs(
+            backbone,
+            input_states,
+            layer_kwargs,
+            model_type=model_type,
+        )
     if args.deactive_amp:
         input_states = input_states.float()
         layer_kwargs = _cast_fp_tensors(layer_kwargs, torch.float32)
@@ -624,6 +646,15 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                 "weight_symmetric": bool(args.weight_quant_params["symmetric"]),
                 "activation_symmetric": False,
             }
+        for name in get_named_packed_moe_experts(qlayer):
+            for weight_name in ("gate_up_proj", "down_proj"):
+                quantized_linear_artifacts[f"{backbone.prefix}.layers.{layer_index}.{name}.{weight_name}"] = {
+                    "weight_bits": args.wbits,
+                    "activation_bits": args.abits,
+                    "group_size": args.weight_group_size,
+                    "weight_symmetric": bool(args.weight_quant_params["symmetric"]),
+                    "activation_symmetric": False,
+                }
 
         backbone.layers[layer_index] = qlayer.to(dtype=model_dtype)
         del layer
