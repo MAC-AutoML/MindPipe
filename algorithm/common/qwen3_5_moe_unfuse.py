@@ -137,19 +137,22 @@ def _record_qwen3_5_attention_export_shapes(model: nn.Module) -> None:
         if not _is_full_attention_layer(layer):
             continue
         attn = layer.self_attn
+        hidden_size = int(getattr(text_config, "hidden_size"))
+        num_attention_heads = int(getattr(text_config, "num_attention_heads"))
+        num_key_value_heads = int(getattr(text_config, "num_key_value_heads", num_attention_heads))
+        head_dim = int(getattr(text_config, "head_dim", hidden_size // num_attention_heads))
         model._mindpipe_qwen35_attention_export_shapes = {
-            "num_attention_heads": int(getattr(text_config, "num_attention_heads")),
-            "num_key_value_heads": int(getattr(text_config, "num_key_value_heads")),
+            "num_attention_heads": num_attention_heads,
+            "num_key_value_heads": num_key_value_heads,
             "num_key_value_groups": int(
                 getattr(
                     text_config,
                     "num_key_value_groups",
-                    int(getattr(text_config, "num_attention_heads"))
-                    // int(getattr(text_config, "num_key_value_heads")),
+                    num_attention_heads // num_key_value_heads,
                 )
             ),
-            "head_dim": int(getattr(text_config, "head_dim")),
-            "hidden_size": int(getattr(text_config, "hidden_size")),
+            "head_dim": head_dim,
+            "hidden_size": hidden_size,
             "q_proj": tuple(attn.q_proj.weight.shape),
             "k_proj": tuple(attn.k_proj.weight.shape),
             "v_proj": tuple(attn.v_proj.weight.shape),
@@ -593,14 +596,19 @@ def unfuse_qwen3_5_moe_experts(
     calibrate_all_experts: bool = True,
 ) -> int:
     """原地拆分 Qwen3.5/3.6 MoE routed experts，返回替换模块数量。"""
-    _record_qwen3_5_attention_export_shapes(model)
     replacements = []
+    unfused_count = 0
     for name, module in model.named_modules():
         if isinstance(module, UnfusedQwen3_5MoeSparseMoeBlock):
             module.calibrate_all_experts = calibrate_all_experts
+            unfused_count += 1
         elif _is_qwen3_5_moe_block(module):
             replacements.append(name)
 
+    if not replacements and not unfused_count:
+        return 0
+
+    _record_qwen3_5_attention_export_shapes(model)
     for name in replacements:
         original = model.get_submodule(name)
         replacement = UnfusedQwen3_5MoeSparseMoeBlock(
@@ -657,7 +665,6 @@ def refuse_qwen3_5_moe_experts_for_hf_save(model: nn.Module) -> int:
     并对齐到 grouped MoE kernel 友好的宽度，保持 forward 等价，同时让
     `from_pretrained` 可以直接加载和生成。
     """
-    _restore_qwen3_5_attention_for_hf_save(model)
     target_names = [
         name
         for name, module in model.named_modules()
@@ -666,6 +673,7 @@ def refuse_qwen3_5_moe_experts_for_hf_save(model: nn.Module) -> int:
     if not target_names:
         return 0
 
+    _restore_qwen3_5_attention_for_hf_save(model)
     routed_widths: list[int] = []
     shared_widths: list[int] = []
     for name in target_names:
