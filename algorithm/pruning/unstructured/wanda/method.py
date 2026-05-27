@@ -10,7 +10,6 @@ from ...base import BasePruningMethod
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.device import resolve_device
 from ....common.runtime import prepend_python_path
-from ....common.runtime import purge_conflicting_modules
 
 
 class WandaMethod(BasePruningMethod):
@@ -34,7 +33,6 @@ class WandaMethod(BasePruningMethod):
 
         source_root = Path(__file__).resolve().parent / "source"
         with prepend_python_path(source_root):
-            purge_conflicting_modules("lib", allowed_root=source_root)
             from lib.prune import check_sparsity
             from lib.prune import prune_wanda
 
