@@ -17,7 +17,7 @@ def _check_sparsity(model) -> float:
     zero_count = 0
     total_count = 0
     for block in backbone.layers:
-        for linear in find_linear_layers(block).values():
+        for linear in find_prunable_linear_layers(block).values():
             weight = linear.weight.data
             zero_count += int((weight == 0).sum().item())
             total_count += int(weight.numel())
