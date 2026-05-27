@@ -10,7 +10,7 @@ from ....common.device import resolve_device
 from ....common.datasets import get_calibration_and_evaluation_data
 from ....common.modeling import build_decoder_layer_groups
 from ....common.modeling import capture_first_block_inputs
-from ....common.modeling import find_linear_layers
+from ....common.modeling import find_prunable_linear_layers
 from ....common.modeling import filter_moe_shared_expert
 from ....common.modeling import get_layer_device
 from ....common.modeling import get_text_backbone
@@ -35,7 +35,7 @@ def _check_sparsity(model) -> float:
     for layer_index, block in enumerate(backbone.layers):
         layer_zero_count = 0
         layer_total_count = 0
-        for linear in find_linear_layers(block).values():
+        for linear in find_prunable_linear_layers(block).values():
             weight = linear.weight.data
             layer_zero_count += int((weight == 0).sum().item())
             layer_total_count += int(weight.numel())
@@ -84,7 +84,7 @@ class SparseGPTMethod(BasePruningMethod):
                 input_states = input_states.to(target_device)
                 output_states = output_states.to(target_device)
                 layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
-                linear_layers = find_linear_layers(block)
+                linear_layers = find_prunable_linear_layers(block)
                 # MoE 层：过滤掉 shared_expert 相关的 linear 层
                 linear_layers = filter_moe_shared_expert(linear_layers, block)
                 layer_groups = build_decoder_layer_groups(block, set(linear_layers))
