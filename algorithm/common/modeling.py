@@ -792,7 +792,7 @@ def get_output_head(model: nn.Module) -> nn.Module | None:
     return None
 
 
-def find_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Linear]:
+def find_prunable_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Linear]:
     result: dict[str, nn.Linear] = {}
     for child_name, child in module.named_children():
         # FlatQuant-style rotation/transform helpers are named like `*_trans` and may
@@ -805,7 +805,7 @@ def find_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Line
         if isinstance(child, nn.Linear):
             result[qualified_name] = child
             continue
-        result.update(find_linear_layers(child, qualified_name))
+        result.update(find_prunable_linear_layers(child, qualified_name))
     return result
 
 
