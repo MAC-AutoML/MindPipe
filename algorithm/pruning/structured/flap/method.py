@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from ...base import BasePruningMethod
 from ....common.datasets import get_calibration_and_evaluation_data
-from ....common.modeling import find_prunable_linear_layers
+from ....common.modeling import find_linear_layers
 from ....common.modeling import get_text_backbone
 from ....common.runtime import prepend_python_path
 
@@ -17,7 +17,7 @@ def _check_sparsity(model) -> float:
     zero_count = 0
     total_count = 0
     for block in backbone.layers:
-        for linear in find_prunable_linear_layers(block).values():
+        for linear in find_linear_layers(block).values():
             weight = linear.weight.data
             zero_count += int((weight == 0).sum().item())
             total_count += int(weight.numel())
