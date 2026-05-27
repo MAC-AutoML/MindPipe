@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from ...base import BasePruningMethod
 from ....common.datasets import get_calibration_and_evaluation_data
-from ....common.modeling import find_linear_layers
+from ....common.modeling import find_prunable_linear_layers
 from ....common.modeling import get_text_backbone
 from ....common.runtime import prepend_python_path
 
