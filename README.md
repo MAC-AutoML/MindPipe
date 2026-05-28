@@ -91,6 +91,11 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
   --sparsity_ratio 0.5 \
   --eval_ppl true \
   --output_dir ./results/wanda
+
+# 4. Recover a FlatQuant + pruning workflow with Compression LoRA
+MODEL_PATH=/path/to/model \
+GPU_ID=0,1 \
+bash scripts/finetuning/flatquant_lora_auto_gpu.sh
 ```
 
 <details>
@@ -214,6 +219,16 @@ values are `qalora`, `llm_pruner`, and `wanda_sp`.
 | **Wanda** | `wanda` | Unstructured / n:m | `c4` | ✅ |
 | **Wanda-SP** | `wanda_sp` | Structured | `c4` | ✅ |
 
+### Finetuning
+
+| Method | CLI | Scope | NPU |
+|:------:|:---:|:------|:---:|
+| **Compression LoRA** | `compression_lora` | FlatQuant + fixed-mask pruning recovery | ⏳ |
+
+Compression LoRA currently supports FlatQuant combined with fixed-shape pruning
+masks, such as Wanda, SparseGPT, and ALPS. Structured pruning requires
+pseudo-pruning mode.
+
 > ✅ Ready &nbsp;|&nbsp; ⏳ In Progress &nbsp;|&nbsp; 🔶 CUDA Only
 
 ---
@@ -225,14 +240,14 @@ values are `qalora`, `llm_pruner`, and `wanda_sp`.
 │                         main.py (CLI)                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                    workflow/ (Config + Executor)                │
-├──────────────────┬──────────────────┬───────────────────────────┤
-│   Quantization   │     Pruning      │       Evaluation          │
-│  ┌────────────┐  │  ┌────────────┐  │  ┌─────────────────────┐  │
-│  │ PTQ  (7)   │  │  │Structured  │  │  │ PPL (wikitext2/c4)  │  │
-│  │ QAT  (4)   │  │  │Unstructured│  │  │ Zero-shot (lm-eval) │  │
-│  └────────────┘  │  │Layer Prune │  │  │ VLM (VLMEvalKit)    │  │
-│                  │  └────────────┘  │  └─────────────────────┘  │
-├──────────────────┴──────────────────┴───────────────────────────┤
+├──────────────┬──────────────┬──────────────┬────────────────────┤
+│ Quantization │   Pruning    │  Finetuning  │     Evaluation     │
+│ ┌──────────┐ │ ┌──────────┐ │ ┌──────────┐ │ ┌────────────────┐ │
+│ │ PTQ (7)  │ │ │Structured│ │ │Compress. │ │ │ PPL            │ │
+│ │ QAT (4)  │ │ │Unstruct. │ │ │LoRA      │ │ │ Zero-shot      │ │
+│ └──────────┘ │ │LayerPrune│ │ └──────────┘ │ │ VLM Eval       │ │
+│              │ └──────────┘ │              │ └────────────────┘ │
+├──────────────┴──────────────┴──────────────┴────────────────────┤
 │              algorithm/common/ (Shared Infrastructure)          │
 │     Model Loading · Data · Device (GPU/NPU) · IO · Metrics      │
 └─────────────────────────────────────────────────────────────────┘
@@ -248,6 +263,7 @@ MindPipe/
 │   ├── quantization/
 │   │   ├── ptq/                    # AWQ, GPTQ, MQuant, OmniQuant, QuaRot, SmoothQuant, SpinQuant
 │   │   └── qat/                    # FlatQuant, QLoRA, QA-LoRA, SplitQuant
+│   ├── finetuning/                 # Compression LoRA recovery finetuning
 │   └── pruning/
 │       ├── structured/             # FLAP, LLM-Pruner, ShortGPT, Wanda-SP
 │       └── unstructured/           # ALPS, SparseGPT, Wanda
@@ -270,7 +286,7 @@ MindPipe/
 | LLaMA-2 / LLaMA-3 | ✅ | — |
 | Qwen2.5 | ✅ | — |
 | Qwen3 | ✅ | — |
-| Qwen3.5 | ✅ | — |
+| Qwen3.5 / Qwen3.6 dense | ✅ | ✅ |
 
 </td><td>
 
@@ -286,6 +302,7 @@ MindPipe/
 </table>
 
 > **Note:** Model support is algorithm-dependent. Check `algorithm/quantization/*/*/method.py` or `algorithm/pruning/*/*/method.py` for exact coverage.
+> MoE variants are method-dependent and are not covered by Compression LoRA yet.
 
 ---
 
@@ -402,6 +419,13 @@ Available scripts include:
 - `run_qwen2_5_vl_gptq_vlm_suite.sh`
 - `run_qwen3_vl_2b_gptq_suite.sh`
 
+Compression LoRA finetuning launchers are grouped under `scripts/finetuning/`:
+
+- `flatquant_lora_auto_gpu.sh` automatically dispatches by model config.
+- `llm/flatquant_lora_llm_gpu.sh` is for text-only LLMs.
+- `vlm/flatquant_lora_vlm_gpu.sh` is for MiniCPM-V, Qwen2.5-VL, and Qwen3-VL.
+- `qwen3_5/flatquant_lora_qwen3_5_gpu.sh` is for dense Qwen3.5/Qwen3.6 VLMs.
+
 ---
 
 ## 📂 Output Structure
@@ -425,6 +449,8 @@ results/
 | MQuant GPU-only | ⏳ |
 | QA-LoRA CUDA-only, no AutoGPTQ export | 🔶 |
 | QLoRA W2/W3 use fake-quant fallback on NPU | ℹ️ |
+| Compression LoRA currently requires FlatQuant + fixed-mask pruning | ℹ️ |
+| Qwen3.5-MoE / Qwen3.6-35B-A3B Compression LoRA is not supported yet | ⏳ |
 | Custom runtime wrapper reload is method-dependent | ℹ️ |
 
 ---
