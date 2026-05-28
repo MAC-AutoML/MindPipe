@@ -1,8 +1,8 @@
 schema: mindpipe/config/v1
 
 model:
-  name: Qwen3.6-35B-A3B
-  model_path: /mnt/82_store/LLM-weights/Qwen3.6-35B-A3B
+  name: Qwen3-32B
+  model_path: /mnt/82_store/LLM-weights/Qwen3-32B
 
 defaults:
   attn_implementation: sdpa
@@ -20,7 +20,6 @@ recipes:
     omniquant_let_lr: 5.0e-3
     omniquant_lwc_lr: 1.0e-2
     omniquant_aug_loss: true
-    omniquant_deactive_amp: true
     omniquant_use_shift: false
 
   w3a16:
@@ -33,7 +32,6 @@ recipes:
     omniquant_let_lr: 5.0e-3
     omniquant_lwc_lr: 1.0e-2
     omniquant_aug_loss: false
-    omniquant_deactive_amp: true
     omniquant_use_shift: false
 
   w4a16:
@@ -98,7 +96,6 @@ recipes:
     omniquant_let_lr: 5.0e-3
     omniquant_lwc_lr: 1.0e-2
     omniquant_aug_loss: false
-    omniquant_deactive_amp: true
     omniquant_use_shift: false
 
   smoke10:

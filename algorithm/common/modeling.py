@@ -203,6 +203,27 @@ class TextModelAdapter(nn.Module):
     def forward(self, *args, **kwargs):
         return self.text_model(*args, **kwargs)
 
+    @property
+    def device(self):
+        if hasattr(self.text_model, "device"):
+            return self.text_model.device
+        embeddings = self.get_input_embeddings() if hasattr(self, "get_input_embeddings") else None
+        weight = getattr(embeddings, "weight", None) if embeddings is not None else None
+        if weight is not None:
+            return weight.device
+        try:
+            return next(self.parameters()).device
+        except StopIteration:
+            return torch.device("cpu")
+
+    @property
+    def hf_device_map(self):
+        for module in (self.text_model, self._source_model):
+            device_map = getattr(module, "hf_device_map", None)
+            if device_map:
+                return device_map
+        return None
+
     def save_pretrained(self, path: str, *args, **kwargs) -> None:
         self._source_model.save_pretrained(path, *args, **kwargs)
 

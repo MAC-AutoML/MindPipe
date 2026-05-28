@@ -1,3 +1,6 @@
+import functools
+import importlib
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,6 +20,53 @@ from tqdm import tqdm
 
 def _weight_device(module):
     return module.weight.device
+
+
+def _iter_unwrapped_forwards(module):
+    seen = set()
+    candidates = [
+        getattr(module, "_old_forward", None),
+        getattr(module, "forward", None),
+        getattr(type(module), "forward", None),
+    ]
+    while candidates:
+        fn = candidates.pop(0)
+        if fn is None:
+            continue
+        ident = id(fn)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        yield fn
+        if isinstance(fn, functools.partial):
+            candidates.append(fn.func)
+            continue
+        wrapped = getattr(fn, "__wrapped__", None)
+        if wrapped is not None:
+            candidates.append(wrapped)
+        func = getattr(fn, "__func__", None)
+        if func is not None:
+            candidates.append(func)
+
+
+def _resolve_forward_global(module, name):
+    for fn in _iter_unwrapped_forwards(module):
+        globals_dict = getattr(fn, "__globals__", None)
+        if globals_dict is not None and name in globals_dict:
+            return globals_dict[name]
+
+    module_name = getattr(type(module), "__module__", None)
+    if module_name:
+        try:
+            modeling_module = importlib.import_module(module_name)
+            if hasattr(modeling_module, name):
+                return getattr(modeling_module, name)
+        except Exception:
+            pass
+    raise AttributeError(
+        f"Cannot resolve MiniCPM helper {name!r} from {type(module).__name__}. "
+        "The attention forward may have been wrapped by device_map/accelerate."
+    )
 
 
 class FlatQuantMiniCPMMLP(nn.Module):
@@ -157,8 +207,8 @@ class FlatQuantMiniCPMAttention(nn.Module):
         self.is_causal = getattr(module, "is_causal", True)
         self.scale_depth = getattr(module, "scale_depth", None)
         self.rotary_emb = module.rotary_emb
-        self.apply_rotary_pos_emb = module.forward.__globals__["apply_rotary_pos_emb"]
-        self.repeat_kv = module.forward.__globals__["repeat_kv"]
+        self.apply_rotary_pos_emb = _resolve_forward_global(module, "apply_rotary_pos_emb")
+        self.repeat_kv = _resolve_forward_global(module, "repeat_kv")
 
         self.q_proj = FlatQuantizedLinear(args, module.q_proj)
         self.k_proj = FlatQuantizedLinear(args, module.k_proj)

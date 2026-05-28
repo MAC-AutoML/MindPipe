@@ -1,0 +1,20 @@
+schema: mindpipe/config/v1
+
+model:
+  name: Qwen3-32B
+  model_path: /mnt/82_store/LLM-weights/Qwen3-32B
+
+defaults:
+  eval_vlm: false
+  zero_shot_batch_size: 4
+
+recipes:
+  w8a8:
+    weight_bits: 8
+    activation_bits: 8
+  smoke10:
+    weight_bits: 8
+    activation_bits: 8
+    calibration_samples: 10
+    max_eval_chunks: 4
+    eval_zero_shot: false

@@ -29,6 +29,8 @@ def _build_result_payload(args, result) -> dict:
         payload["pruning_algorithm"] = args.pruning
     if args.quantization:
         payload["quantization_algorithm"] = args.quantization
+    if args.finetuning:
+        payload["finetuning_algorithm"] = args.finetuning
     return payload
 
 

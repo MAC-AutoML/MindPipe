@@ -9,7 +9,7 @@ import torch.nn as nn
 
 from ...base import BasePruningMethod
 from ....common.datasets import get_calibration_and_evaluation_data
-from ....common.modeling import find_linear_layers
+from ....common.modeling import find_prunable_linear_layers
 from ....common.modeling import get_text_backbone
 from ....common.runtime import prepend_python_path
 
@@ -161,7 +161,7 @@ class ShortGPTMethod(BasePruningMethod):
         zeroed_params = 0
         for layer_idx in layers_to_prune:
             block = backbone.layers[layer_idx]
-            for linear in find_linear_layers(block).values():
+            for linear in find_prunable_linear_layers(block).values():
                 linear.weight.data.zero_()
                 zeroed_params += linear.weight.data.numel()
                 if linear.bias is not None:
@@ -175,7 +175,7 @@ class ShortGPTMethod(BasePruningMethod):
         total_params = 0
         zero_params = 0
         for block in backbone.layers:
-            for linear in find_linear_layers(block).values():
+            for linear in find_prunable_linear_layers(block).values():
                 w = linear.weight.data
                 zero_params += int((w == 0).sum().item())
                 total_params += w.numel()

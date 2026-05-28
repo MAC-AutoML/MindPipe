@@ -15,6 +15,12 @@ from algorithm.common.io import ensure_dir
 from algorithm.common.io import write_json
 from algorithm.common.modeling import load_model_and_tokenizer
 from algorithm.common.modeling import normalize_dense_qwen3_mlp_intermediate_size_for_hf_save
+from algorithm.finetuning.registry import get_method as get_finetuning_method
+from algorithm.finetuning.compression_lora.mask_utils import extract_masks_from_pruned_model
+from algorithm.finetuning.compression_lora.mask_utils import mask_sparsity
+from algorithm.finetuning.compression_lora.mask_utils import restore_weights
+from algorithm.finetuning.compression_lora.mask_utils import save_masks
+from algorithm.finetuning.compression_lora.mask_utils import snapshot_weights
 from algorithm.common.qwen3_5_moe_unfuse import refuse_qwen3_5_moe_experts_for_hf_save
 from algorithm.common.qwen3_5_moe_unfuse import set_qwen3_5_moe_calibrate_all_experts
 from algorithm.common.qwen3_5_moe_unfuse import unfuse_qwen3_5_moe_experts
@@ -40,6 +46,8 @@ def _build_stage_args(common_args: dict[str, Any], stage: WorkflowStage) -> argp
 def _resolve_stage_method(stage: WorkflowStage):
     if stage.stage_type == "quantization":
         return get_quantization_method(stage.algorithm_name)
+    if stage.stage_type == "finetuning":
+        return get_finetuning_method(stage.algorithm_name)
     return get_pruning_method(stage.algorithm_name)
 
 
@@ -60,12 +68,36 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
     stage_output_dir = ensure_dir(stage_method.resolve_output_dir(stage_args))
     if stage.stage_type == "quantization":
         stage_result = stage_method.apply_fake_quantization(model, tokenizer_bundle, stage_args)
+    elif stage.stage_type == "finetuning":
+        stage_result = stage_method.apply_finetuning(model, tokenizer_bundle, stage_args)
     else:
+        weight_snapshot = None
+        if getattr(stage_args, "_capture_pruning_masks", False):
+            weight_snapshot = snapshot_weights(
+                model,
+                target_modules=getattr(stage_args, "compression_lora_target_modules", None),
+            )
         unfuse_qwen3_5_moe_experts(model, calibrate_all_experts=True)
         try:
             stage_result = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
         finally:
             set_qwen3_5_moe_calibrate_all_experts(model, False)
+        if weight_snapshot is not None:
+            masks = extract_masks_from_pruned_model(model, weight_snapshot)
+            restore_weights(model, weight_snapshot)
+            workflow_output_dir = ensure_dir(Path(stage_args._workflow_output_dir))
+            masks_path = save_masks(
+                workflow_output_dir / "pruning_masks.pth",
+                masks,
+                metadata={
+                    "pruning_algorithm": stage.algorithm_name,
+                    "sparsity_ratio": getattr(stage_args, "sparsity_ratio", None),
+                    "target_modules": getattr(stage_args, "compression_lora_target_modules", None),
+                    "source_stage_output_dir": str(stage_output_dir),
+                    **mask_sparsity(masks),
+                },
+            )
+            stage_result["pruning_masks_path"] = str(masks_path)
 
     if not isinstance(stage_result, dict):
         raise TypeError(
@@ -128,8 +160,23 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         stage_args.model_path = config.model_path
         if final_output_dir is None:
             final_output_dir = _resolve_final_output_dir(config, stage_method, stage_args)
+        stage_args._workflow_output_dir = str(final_output_dir)
+        if stage.stage_type == "pruning":
+            stage_index = len(stage_records)
+            stage_args._capture_pruning_masks = any(
+                following.stage_type == "finetuning" and following.algorithm_name == "compression_lora"
+                for following in config.stages[stage_index + 1:]
+            )
         stage_record, model, tokenizer_bundle = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
         stage_records.append(stage_record)
+        if stage.stage_type == "quantization" and stage.algorithm_name == "flatquant":
+            flat_path = stage_record["artifacts"].get("flat_parameters_path")
+            if flat_path and not common_args.get("compression_lora_flatquant_from"):
+                common_args["compression_lora_flatquant_from"] = str(Path(flat_path).parent)
+        if stage.stage_type == "pruning":
+            masks_path = stage_record["artifacts"].get("pruning_masks_path")
+            if masks_path and not common_args.get("compression_lora_masks_from"):
+                common_args["compression_lora_masks_from"] = masks_path
         gc.collect()
         empty_cache(common_args["device"])
 

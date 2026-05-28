@@ -54,9 +54,9 @@ def save_parametrized_checkpoint(model, args):
 
 def load_flat_parameters(args, model, path=None):
     if path is None:
-        flat_parameters = torch.load(os.path.join(args.exp_dir, f"flat_parameters.pth"))
+        flat_parameters = torch.load(os.path.join(args.exp_dir, f"flat_parameters.pth"), map_location="cpu")
     else:
-        flat_parameters = torch.load(os.path.join(path, f"flat_parameters.pth"))
+        flat_parameters = torch.load(os.path.join(path, f"flat_parameters.pth"), map_location="cpu")
     layers = get_decoder_layers(model)
     
     for i in range(len(flat_parameters.keys())):
@@ -84,9 +84,9 @@ def save_flat_matrices(args, model, rank=None):
 
 def load_flat_matrices(args, model, path=None):
     if path is None:
-        flat_parameters = torch.load(os.path.join(args.exp_dir, f"flat_matrices.pth"))
+        flat_parameters = torch.load(os.path.join(args.exp_dir, f"flat_matrices.pth"), map_location="cpu")
     else:
-        flat_parameters = torch.load(os.path.join(path, f"flat_matrices.pth"))
+        flat_parameters = torch.load(os.path.join(path, f"flat_matrices.pth"), map_location="cpu")
     layers = get_decoder_layers(model)
     
     for i in range(len(flat_parameters.keys())):

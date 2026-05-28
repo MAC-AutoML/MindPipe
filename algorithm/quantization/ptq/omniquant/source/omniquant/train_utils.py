@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -378,6 +379,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
     parameter_checkpoint_path = Path(args.output_dir) / "omni_parameters.pth"
 
     for layer_index, layer in enumerate(backbone.layers):
+        layer_start_time = time.perf_counter()
         logger.info("========= Layer %s =========", layer_index)
         active_layer_kwargs = layer_kwargs
         if layer_kwargs_by_type is not None:
@@ -478,6 +480,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
             grad_scaler = torch.cuda.amp.GradScaler(enabled=True) if use_grad_scaler else None
 
             for epoch in range(args.epochs):
+                iter_start_time = time.perf_counter()
                 loss_values = []
                 norm_values = []
                 for start in range(0, args.nsamples, args.batch_size):
@@ -555,11 +558,12 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
                     else ""
                 )
                 logger.info(
-                    "layer %s iter %s loss:%s norm:%s%s",
+                    "layer %s iter %s loss:%s norm:%s time:%.3fs%s",
                     layer_index,
                     epoch,
                     torch.stack(loss_values).mean().item(),
                     torch.stack(norm_values).mean().item(),
+                    time.perf_counter() - iter_start_time,
                     memory_fragment,
                 )
             if diagnostics_enabled and layer_diagnostics is not None and fp_outs is not None:
@@ -659,6 +663,7 @@ def cali_omni_quant(args, model, calibration_batches, device, act_scales, act_sh
         backbone.layers[layer_index] = qlayer.to(dtype=model_dtype)
         del layer
         empty_cache(device)
+        logger.info("layer %s done time:%.3fs", layer_index, time.perf_counter() - layer_start_time)
 
     return quantized_linear_artifacts
 # Synchronize quantization device_map support for multi-GPU execution.

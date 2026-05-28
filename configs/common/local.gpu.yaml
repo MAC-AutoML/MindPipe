@@ -13,9 +13,12 @@ model_paths:
   Qwen2.5-7B-Instruct: /mnt/82_store/LLM-weights/Qwen2.5-7B-Instruct
   Llama-2-7b-hf: /mnt/82_store/LLM-weights/Llama-2-7b-hf
   Meta-Llama-3.1-8B-Instruct: /mnt/82_store/LLM-weights/Meta-Llama-3.1-8B-Instruct
+  Meta-Llama-3.1-70B: /mnt/82_store/LLM-weights/Meta-Llama-3.1-70B
   MiniCPM-V: /mnt/82_store/LLM-weights/openbmb/MiniCPM-V
   Qwen3-VL-2B-Instruct: /mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct
   Qwen3-0.6B: /mnt/42_store/wxx/modelzoo/Qwen/Qwen3-0.6B
+  Qwen3-14B: /mnt/82_store/LLM-weights/Qwen3-14B
+  Qwen3-32B: /mnt/82_store/LLM-weights/Qwen3-32B
   Qwen3.5-4B: /mnt/82_store/LLM-weights/Qwen3.5-4B
   Qwen3.6-27B: /mnt/82_store/LLM-weights/Qwen3.6-27B
   Qwen3.6-35B-A3B: /mnt/82_store/LLM-weights/Qwen3.6-35B-A3B

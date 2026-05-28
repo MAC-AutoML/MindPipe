@@ -14,6 +14,8 @@ from algorithm.pruning.registry import get_method as get_pruning_method
 from algorithm.quantization.config import normalize_args as normalize_quantization_args
 from algorithm.quantization.registry import METHOD_REGISTRY as QUANTIZATION_METHOD_REGISTRY
 from algorithm.quantization.registry import get_method as get_quantization_method
+from algorithm.finetuning.registry import METHOD_REGISTRY as FINETUNING_METHOD_REGISTRY
+from algorithm.finetuning.registry import get_method as get_finetuning_method
 from evaluation.lm_eval import DEFAULT_ZERO_SHOT_TASKS
 from workflow.schema import WorkflowConfig
 from workflow.schema import WorkflowStage
@@ -38,7 +40,7 @@ EXECUTION_ORDER_CHOICES = (
     "pruning_then_quantization",
     "quantization_then_pruning",
 )
-VALID_STAGE_TYPES = {"quantization", "pruning"}
+VALID_STAGE_TYPES = {"quantization", "pruning", "finetuning"}
 DEFAULT_VLMEVALKIT_ROOT = os.environ.get(
     "VLMEVALKIT_ROOT",
     str(REPO_ROOT / "third_party" / "VLMEvalKit"),
@@ -884,6 +886,63 @@ def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--quantization_damp_percent", type=float, default=None)
 
 
+def _add_finetuning_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--finetuning", default=None, choices=sorted(FINETUNING_METHOD_REGISTRY))
+    parser.add_argument("--compression_lora_masks_from", default=None)
+    parser.add_argument("--compression_lora_flatquant_from", default=None)
+    parser.add_argument("--compression_lora_adapter_from", default=None)
+    parser.add_argument("--compression_lora_save_merged_model", type=_bool_flag, default=False)
+    parser.add_argument(
+        "--compression_lora_train_plan",
+        default="cpt,sft",
+        help="Comma-separated training stages. Supported stages: cpt,sft.",
+    )
+    parser.add_argument("--compression_lora_cpt_train_file", default=None)
+    parser.add_argument("--compression_lora_cpt_samples", type=int, default=10000)
+    parser.add_argument("--compression_lora_cpt_learning_rate", type=float, default=1e-4)
+    parser.add_argument("--compression_lora_cpt_num_train_epochs", type=float, default=1.0)
+    parser.add_argument("--compression_lora_cpt_max_steps", type=int, default=-1)
+    parser.add_argument("--compression_lora_sft_format", default="alpaca", choices=["alpaca", "llava"])
+    parser.add_argument("--compression_lora_sft_train_file", default=None)
+    parser.add_argument("--compression_lora_sft_samples", type=int, default=10000)
+    parser.add_argument("--compression_lora_sft_learning_rate", type=float, default=5e-5)
+    parser.add_argument("--compression_lora_sft_num_train_epochs", type=float, default=1.0)
+    parser.add_argument("--compression_lora_sft_max_steps", type=int, default=-1)
+    parser.add_argument(
+        "--compression_lora_vlm_image_max_pixels",
+        type=int,
+        default=262144,
+        help="Qwen-VL LLaVA SFT only: cap image pixels before processor tokenization to keep assistant labels inside sequence_length.",
+    )
+    parser.add_argument(
+        "--compression_lora_save_cpt_adapter",
+        type=_bool_flag,
+        default=True,
+        help="Save an intermediate adapter after the CPT stage when using a cpt,sft train plan.",
+    )
+    parser.add_argument("--compression_lora_rank", type=int, default=128)
+    parser.add_argument("--compression_lora_alpha", type=float, default=128.0)
+    parser.add_argument("--compression_lora_dropout", type=float, default=0.05)
+    parser.add_argument("--compression_lora_init", default="lora", choices=["lora", "pissa"])
+    parser.add_argument("--compression_lora_learning_rate", type=float, default=1e-4)
+    parser.add_argument("--compression_lora_weight_decay", type=float, default=0.0)
+    parser.add_argument("--compression_lora_num_train_epochs", type=float, default=1.0)
+    parser.add_argument("--compression_lora_max_steps", type=int, default=-1)
+    parser.add_argument("--compression_lora_per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--compression_lora_gradient_accumulation_steps", type=int, default=16)
+    parser.add_argument("--compression_lora_logging_steps", type=int, default=10)
+    parser.add_argument("--compression_lora_save_steps", type=int, default=250)
+    parser.add_argument("--compression_lora_save_total_limit", type=int, default=2)
+    parser.add_argument("--compression_lora_warmup_ratio", type=float, default=0.03)
+    parser.add_argument("--compression_lora_lr_scheduler_type", default="constant")
+    parser.add_argument("--compression_lora_gradient_checkpointing", type=_bool_flag, default=False)
+    parser.add_argument(
+        "--compression_lora_target_modules",
+        nargs="+",
+        default=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    )
+
+
 def _add_io_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--calibration_dataset", default=None, choices=["wikitext2", "c4", "pileval", "pg19", "bookcorpus"],
                         help="Calibration dataset. Each pruning/quantization method has its own default (e.g. shortgpt→pg19, flap→wikitext2).")
@@ -903,6 +962,7 @@ def build_run_parser() -> argparse.ArgumentParser:
     _add_vlm_eval_args(parser)
     _add_pruning_args(parser)
     _add_quantization_args(parser)
+    _add_finetuning_args(parser)
     _add_workflow_args(parser)
     return parser
 
@@ -912,10 +972,18 @@ def build_run_parser() -> argparse.ArgumentParser:
 def build_run_config(args) -> WorkflowConfig:
     has_pruning = args.pruning is not None
     has_quantization = args.quantization is not None
+    has_finetuning = args.finetuning is not None
 
     # 校验
-    if not has_pruning and not has_quantization and args.eval_ppl is False and args.eval_zero_shot is False and args.eval_vlm is False:
-        raise ValueError("At least one of --pruning, --quantization, or an evaluation flag must be specified.")
+    if (
+        not has_pruning
+        and not has_quantization
+        and not has_finetuning
+        and args.eval_ppl is False
+        and args.eval_zero_shot is False
+        and args.eval_vlm is False
+    ):
+        raise ValueError("At least one of --pruning, --quantization, --finetuning, or an evaluation flag must be specified.")
 
     # n:m 半结构化剪枝仅对 wanda / sparsegpt / alps 生效，仅支持 2:4 和 4:8，且稀疏率必须为 0.5（与原 repo 一致）
     _nm_methods = {"wanda", "sparsegpt", "pruning_aware_lora", "alps"}
@@ -1014,10 +1082,27 @@ def build_run_config(args) -> WorkflowConfig:
             stages.reverse()
         result_metadata["execution_order"] = args.execution_order
 
+    if has_finetuning:
+        stages.append(WorkflowStage(
+            stage_type="finetuning",
+            algorithm_name=args.finetuning,
+            parameters={
+                "output_root": args.output_dir,
+            },
+        ))
+        result_metadata["finetuning_algorithm"] = args.finetuning
+
     # 确定 output_dir
     if len(stages) == 1:
         # 单阶段：使用算法自己的 resolve_output_dir
-        first_method = (get_pruning_method if stages[0].stage_type == "pruning" else get_quantization_method)(stages[0].algorithm_name)
+        first_getter = (
+            get_pruning_method
+            if stages[0].stage_type == "pruning"
+            else get_quantization_method
+            if stages[0].stage_type == "quantization"
+            else get_finetuning_method
+        )
+        first_method = first_getter(stages[0].algorithm_name)
         first_stage_args = argparse.Namespace(**{**base_common_args, **stages[0].parameters, "model_path": args.model_path})
         output_dir = first_method.resolve_output_dir(first_stage_args)
     elif len(stages) > 1:
@@ -1027,6 +1112,8 @@ def build_run_config(args) -> WorkflowConfig:
         for s in stages:
             if s.stage_type == "pruning":
                 run_spec_parts.append(f"{s.algorithm_name}_s{args.sparsity_ratio}")
+            elif s.stage_type == "finetuning":
+                run_spec_parts.append(f"{s.algorithm_name}_r{args.compression_lora_rank}")
             else:
                 run_spec_parts.append(f"{s.algorithm_name}_w{args.weight_bits}a{args.activation_bits}")
         run_spec = "_".join(run_spec_parts) + f"_seq{args.sequence_length}"
@@ -1060,3 +1147,5 @@ def validate_workflow_config(config: WorkflowConfig) -> None:
             raise ValueError(f"Unknown quantization algorithm: {stage.algorithm_name}")
         if stage.stage_type == "pruning" and stage.algorithm_name not in PRUNING_METHOD_REGISTRY:
             raise ValueError(f"Unknown pruning algorithm: {stage.algorithm_name}")
+        if stage.stage_type == "finetuning" and stage.algorithm_name not in FINETUNING_METHOD_REGISTRY:
+            raise ValueError(f"Unknown finetuning algorithm: {stage.algorithm_name}")
