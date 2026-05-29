@@ -32,6 +32,20 @@ DEFAULT_VLMEVALKIT_ROOT = os.environ.get(
     str(REPO_ROOT / "third_party" / "VLMEvalKit"),
 )
 
+QWEN3_5_MODEL_TYPES = frozenset(
+    {
+        "qwen3_5",
+        "qwen3_5_moe",
+        "qwen3_5_text",
+        "qwen3_5_moe_text",
+    }
+)
+QWEN3_VL_MODEL_TYPES = frozenset({"qwen3_vl", *QWEN3_5_MODEL_TYPES})
+
+
+def _qwen3_disable_thinking(model_type: str) -> bool:
+    return model_type in QWEN3_5_MODEL_TYPES
+
 
 def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool, int)):
@@ -723,7 +737,7 @@ def _build_qwen3_wrapper(
         raise ValueError("Qwen3/Qwen3.5-VL evaluation requires TokenizerBundle.processor.")
     target_device = resolve_device(common_args.get("device", "auto"))
     model_type = getattr(getattr(source_model, "config", None), "model_type", "")
-    disable_thinking = model_type == "qwen3_5"
+    disable_thinking = _qwen3_disable_thinking(model_type)
     use_cache = bool(common_args.get("vlm_use_cache", False))
     max_new_tokens_override = common_args.get("vlm_max_new_tokens")
     max_new_tokens_override = (
@@ -1123,7 +1137,7 @@ def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules
             base_model_cls,
             dataset_type_resolver,
         )
-    if model_type in {"qwen3_vl", "qwen3_5"}:
+    if model_type in QWEN3_VL_MODEL_TYPES:
         return _build_qwen3_wrapper(
             model,
             tokenizer_bundle,
