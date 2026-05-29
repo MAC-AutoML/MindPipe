@@ -638,12 +638,23 @@ def load_model_and_tokenizer(
         if resolved_no_split is not None:
             model_kwargs["no_split_module_classes"] = resolved_no_split
     is_qwen3_5 = config.model_type == "qwen3_5" or "Qwen3_5ForConditionalGeneration" in architectures
+    is_qwen3_5_moe = config.model_type == "qwen3_5_moe" or "Qwen3_5MoeForConditionalGeneration" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
     is_qwen2_vl = config.model_type == "qwen2_vl" or "Qwen2VLForConditionalGeneration" in architectures
     is_llava = config.model_type == "llava" or "LlavaForConditionalGeneration" in architectures
 
-    if is_qwen3_5:
+    if is_qwen3_5_moe:
+        try:
+            from transformers import Qwen3_5MoeForConditionalGeneration
+
+            model = Qwen3_5MoeForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
+        except Exception:
+            model = _load_vision_text_model(model_path, **model_kwargs)
+        if hasattr(model, "language_model"):
+            ensure_generation_compat(model.language_model)
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif is_qwen3_5:
         try:
             from transformers import Qwen3_5ForConditionalGeneration
 

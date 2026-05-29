@@ -723,7 +723,12 @@ def _build_qwen3_wrapper(
         raise ValueError("Qwen3/Qwen3.5-VL evaluation requires TokenizerBundle.processor.")
     target_device = resolve_device(common_args.get("device", "auto"))
     model_type = getattr(getattr(source_model, "config", None), "model_type", "")
-    disable_thinking = model_type == "qwen3_5"
+    disable_thinking = model_type in {
+        "qwen3_5",
+        "qwen3_5_moe",
+        "qwen3_5_text",
+        "qwen3_5_moe_text",
+    }
     use_cache = bool(common_args.get("vlm_use_cache", False))
     max_new_tokens_override = common_args.get("vlm_max_new_tokens")
     max_new_tokens_override = (
@@ -1123,7 +1128,13 @@ def _build_wrapper(model, tokenizer_bundle, common_args: dict[str, Any], modules
             base_model_cls,
             dataset_type_resolver,
         )
-    if model_type in {"qwen3_vl", "qwen3_5"}:
+    if model_type in {
+        "qwen3_vl",
+        "qwen3_5",
+        "qwen3_5_moe",
+        "qwen3_5_text",
+        "qwen3_5_moe_text",
+    }:
         return _build_qwen3_wrapper(
             model,
             tokenizer_bundle,
