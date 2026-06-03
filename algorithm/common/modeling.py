@@ -136,6 +136,7 @@ def _parse_no_split_module_classes_arg(no_split_module_classes: Any):
 class TokenizerBundle:
     tokenizer: Any
     processor: Any | None = None
+    source_path: str | None = None
 
     def save_pretrained(self, path: str) -> None:
         self.tokenizer.save_pretrained(path)
@@ -742,7 +743,7 @@ def load_model_and_tokenizer(
         max_position_embeddings = getattr(model.config, "max_position_embeddings", 2048)
         model.seqlen = min(int(max_position_embeddings), 2048)
     model.eval()
-    return model, TokenizerBundle(tokenizer=tokenizer, processor=processor)
+    return model, TokenizerBundle(tokenizer=tokenizer, processor=processor, source_path=model_path)
 
 
 def get_text_backbone(model: nn.Module) -> TextBackbone:

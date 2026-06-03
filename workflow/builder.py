@@ -797,6 +797,23 @@ def _add_io_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--calibration_samples", type=int, default=128)
     parser.add_argument("--damp_percent", type=float, default=0.01)
     parser.add_argument("--save_model", type=_bool_flag, default=False)
+    parser.add_argument(
+        "--export_real_quant",
+        type=_bool_flag,
+        default=False,
+        help="Export a backend-loadable real quantized model after evaluation. MVP supports GPTQ W4A16 to vLLM.",
+    )
+    parser.add_argument(
+        "--export_backend",
+        default="vllm",
+        choices=["vllm"],
+        help="Backend format for --export_real_quant.",
+    )
+    parser.add_argument(
+        "--export_quantized_model_dir",
+        default=None,
+        help="Output directory for the real quantized model. Defaults to <run_output>/real_quant_vllm_model.",
+    )
 
 
 # ── 唯一 parser ──
@@ -843,6 +860,18 @@ def build_run_config(args) -> WorkflowConfig:
             raise ValueError(f"{args.quantization} v1 is text-only; set --eval_vlm false.")
         if args.weight_bits not in {2, 3, 4}:
             raise ValueError(f"{args.quantization} currently supports --weight_bits in {{2, 3, 4}}.")
+
+    if args.export_real_quant:
+        if not has_quantization or args.quantization != "gptq":
+            raise ValueError("--export_real_quant MVP currently requires --quantization gptq.")
+        if has_pruning:
+            raise ValueError("--export_real_quant MVP currently supports single-stage GPTQ only.")
+        if args.weight_bits != 4 or args.activation_bits != 16:
+            raise ValueError("--export_real_quant MVP requires W4A16: --weight_bits 4 --activation_bits 16.")
+        if not args.weight_symmetric:
+            raise ValueError("--export_real_quant MVP requires --weight_symmetric true.")
+        if args.use_activation_order:
+            raise ValueError("--export_real_quant MVP does not support --use_activation_order true yet.")
 
     model_name = model_slug(args.model_path)
     base_common_args = vars(args).copy()

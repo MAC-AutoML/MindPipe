@@ -57,7 +57,13 @@ class GPTQ:
         self.H += inp.matmul(inp.t())
 
     def fasterquant(
-        self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False
+        self,
+        blocksize=128,
+        percdamp=.01,
+        groupsize=-1,
+        actorder=False,
+        static_groups=False,
+        return_real_quant=False,
     ):
         W = self.layer.weight.data.clone()
         if isinstance(self.layer, nn.Conv2d):
@@ -94,6 +100,12 @@ class GPTQ:
 
         Losses = torch.zeros_like(W)
         Q = torch.zeros_like(W)
+        real_group_size = self.columns if groupsize == -1 else int(groupsize)
+        if return_real_quant:
+            num_groups = math.ceil(self.columns / real_group_size)
+            QInt = torch.zeros((self.rows, self.columns), dtype=torch.int16, device=self.dev)
+            QScale = torch.empty((self.rows, num_groups), dtype=torch.float32, device=self.dev)
+            QScale.fill_(float("nan"))
 
         damp = percdamp * torch.mean(torch.diag(H))
         diag = torch.arange(self.columns, device=H.device)
@@ -141,9 +153,19 @@ class GPTQ:
                             idx = perm[idx]
                         self.quantizer = groups[idx // groupsize]
 
-                q = quantize(
-                    w.unsqueeze(1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
-                ).flatten()
+                if return_real_quant:
+                    q, q_int = quantize_with_qint(
+                        w.unsqueeze(1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
+                    )
+                    q_signed = q_int.to(torch.float32) - self.quantizer.zero
+                    QInt[:, i1 + i] = q_signed.flatten().to(torch.int16)
+                    group_index = 0 if groupsize == -1 else (i1 + i) // groupsize
+                    QScale[:, group_index] = self.quantizer.scale.reshape(-1).float()
+                    q = q.flatten()
+                else:
+                    q = quantize(
+                        w.unsqueeze(1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
+                    ).flatten()
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d ** 2
 
@@ -171,12 +193,23 @@ class GPTQ:
 
         if actorder:
             Q = Q[:, invperm]
+            if return_real_quant:
+                QInt = QInt[:, invperm]
 
         if isinstance(self.layer, transformers.Conv1D):
             Q = Q.t()
+            if return_real_quant:
+                QInt = QInt.t()
         self.layer.weight.data = Q.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
         if DEBUG:
             print(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
+        if return_real_quant:
+            return {
+                "int_weight": QInt.reshape(self.layer.weight.shape).detach(),
+                "scale": torch.nan_to_num(QScale, nan=0.0).detach(),
+                "group_size": real_group_size,
+            }
+        return None
 
     def free(self):
         if DEBUG:
