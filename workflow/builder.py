@@ -159,32 +159,6 @@ def _add_pruning_args(parser: argparse.ArgumentParser) -> None:
                         help="LLM-Pruner: minimum attention groups to keep per layer.")
     parser.add_argument("--llmpruner_min_mlp_neurons", type=int, default=8,
                         help="LLM-Pruner: minimum MLP neurons to keep per layer.")
-    # Pruning-aware LoRA
-    parser.add_argument(
-        "--palora_backend",
-        default="sparsegpt",
-        choices=["sparsegpt", "alps", "wanda", "flap", "wanda_sp", "llm_pruner", "shortgpt"],
-    )
-    parser.add_argument("--palora_rank", type=int, default=8)
-    parser.add_argument("--palora_alpha", type=int, default=16)
-    parser.add_argument("--palora_dropout", type=float, default=0.0)
-    parser.add_argument("--palora_learning_rate", type=float, default=1e-4)
-    parser.add_argument("--palora_weight_decay", type=float, default=0.0)
-    parser.add_argument("--palora_num_train_epochs", type=float, default=1.0)
-    parser.add_argument("--palora_max_steps", type=int, default=-1)
-    parser.add_argument("--palora_train_samples", type=int, default=128)
-    parser.add_argument("--palora_per_device_train_batch_size", type=int, default=1)
-    parser.add_argument("--palora_gradient_accumulation_steps", type=int, default=16)
-    parser.add_argument("--palora_logging_steps", type=int, default=10)
-    parser.add_argument("--palora_target_modules", nargs="+", default=["all"])
-    parser.add_argument("--palora_gradient_checkpointing", type=_bool_flag, default=False)
-    parser.add_argument("--palora_mask_update", default="fixed", choices=["fixed", "dynamic"])
-    parser.add_argument("--palora_mask_score", default="backend", choices=["backend", "magnitude", "sparsegpt"])
-    parser.add_argument("--palora_base_init", default="dense", choices=["dense", "compressed"])
-    parser.add_argument("--palora_merge_mask", type=_bool_flag, default=True)
-    parser.add_argument("--palora_final_backend_compress", type=_bool_flag, default=False)
-    parser.add_argument("--palora_objective", default="lm", choices=["lm", "layer_mse"])
-    parser.add_argument("--palora_layer_steps", type=int, default=8)
 
 
 def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
@@ -986,10 +960,9 @@ def build_run_config(args) -> WorkflowConfig:
         raise ValueError("At least one of --pruning, --quantization, --finetuning, or an evaluation flag must be specified.")
 
     # n:m 半结构化剪枝仅对 wanda / sparsegpt / alps 生效，仅支持 2:4 和 4:8，且稀疏率必须为 0.5（与原 repo 一致）
-    _nm_methods = {"wanda", "sparsegpt", "pruning_aware_lora", "alps"}
+    _nm_methods = {"wanda", "sparsegpt", "alps"}
     _valid_nm_patterns = {"2:4", "4:8"}
-    _uses_nm_backend = args.pruning != "pruning_aware_lora" or args.palora_backend in {"wanda", "sparsegpt", "alps"}
-    if has_pruning and args.pruning in _nm_methods and _uses_nm_backend and args.structure_pattern != "unstructured":
+    if has_pruning and args.pruning in _nm_methods and args.structure_pattern != "unstructured":
         if args.structure_pattern not in _valid_nm_patterns:
             raise ValueError(
                 f"不支持的 n:m 模式: {args.structure_pattern}，"
@@ -1017,19 +990,7 @@ def build_run_config(args) -> WorkflowConfig:
 
     if has_pruning:
         pruning_method = get_pruning_method(args.pruning)
-        if args.pruning == "pruning_aware_lora" and args.pruning_calibration_dataset is None and args.calibration_dataset is None:
-            palora_defaults = {
-                "sparsegpt": "c4",
-                "alps": "c4",
-                "wanda": "c4",
-                "flap": "wikitext2",
-                "wanda_sp": "c4",
-                "llm_pruner": "c4",
-                "shortgpt": "pg19",
-            }
-            prune_calib = palora_defaults[args.palora_backend]
-        else:
-            prune_calib = args.pruning_calibration_dataset or args.calibration_dataset or pruning_method.default_calibration_dataset
+        prune_calib = args.pruning_calibration_dataset or args.calibration_dataset or pruning_method.default_calibration_dataset
         prune_samples = args.pruning_calibration_samples or args.calibration_samples
         prune_damp = args.pruning_damp_percent if args.pruning_damp_percent is not None else args.damp_percent
         pruning_args_dict = copy.deepcopy(base_common_args)

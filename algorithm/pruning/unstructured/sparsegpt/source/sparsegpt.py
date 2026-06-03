@@ -76,7 +76,6 @@ class SparseGPT:
         H = torch.cholesky_inverse(H)
         H = torch.linalg.cholesky(H, upper=True)
         Hinv = H
-        self.last_hessian_inv_diag = torch.diag(Hinv).detach().to("cpu", dtype=torch.float32)
 
         mask = None
 

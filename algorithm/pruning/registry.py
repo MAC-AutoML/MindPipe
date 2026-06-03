@@ -7,7 +7,6 @@ from .structured.llm_pruner.method import LLMPrunerMethod
 from .structured.shortgpt.method import ShortGPTMethod
 from .structured.wanda_sp.method import WandaSPMethod
 from .unstructured.alps.method import ALPSMethod
-from .pruning_aware_lora.method import PruningAwareLoRAMethod
 from .unstructured.sparsegpt.method import SparseGPTMethod
 from .unstructured.wanda.method import WandaMethod
 
@@ -16,7 +15,6 @@ METHOD_REGISTRY = {
     "alps": ALPSMethod,
     "flap": FLAPMethod,
     "llm_pruner": LLMPrunerMethod,
-    "pruning_aware_lora": PruningAwareLoRAMethod,
     "shortgpt": ShortGPTMethod,
     "sparsegpt": SparseGPTMethod,
     "wanda": WandaMethod,
