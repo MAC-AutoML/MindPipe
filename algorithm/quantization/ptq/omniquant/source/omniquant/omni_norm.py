@@ -22,6 +22,9 @@ class OmniLlamaRMSNorm(nn.Module):
         else:
             weight = self.weight
             bias = self.bias
+        weight = weight.to(device=hidden_states.device, dtype=hidden_states.dtype)
+        if bias is not None:
+            bias = bias.to(device=hidden_states.device, dtype=hidden_states.dtype)
         output = weight * hidden_states
         if bias is not None:
             output = output + bias

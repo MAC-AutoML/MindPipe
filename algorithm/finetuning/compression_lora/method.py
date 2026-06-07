@@ -33,6 +33,8 @@ from .flatquant_linear import LoRAConfig
 from .mask_utils import load_masks
 from .mask_utils import mask_sparsity
 from .mask_utils import validate_masks
+from .run_spec import compression_lora_run_spec
+from .run_spec import parse_compression_lora_train_plan
 from .sft_data import build_alpaca_sft_dataset
 from .sft_data import build_llava_sft_dataset
 
@@ -88,16 +90,7 @@ def _load_adapter_state(model: torch.nn.Module, adapter_state: dict[str, torch.T
 
 
 def _parse_train_plan(plan: str | None) -> list[str]:
-    if not plan:
-        return ["cpt", "sft"]
-    stages = [stage.strip().lower() for stage in plan.split(",") if stage.strip()]
-    if not stages:
-        return ["cpt", "sft"]
-    allowed = {"cpt", "sft"}
-    unknown = [stage for stage in stages if stage not in allowed]
-    if unknown:
-        raise ValueError(f"Unsupported compression_lora train stage(s): {unknown}. Allowed: {sorted(allowed)}")
-    return stages
+    return parse_compression_lora_train_plan(plan)
 
 
 def _save_adapter(
@@ -117,6 +110,7 @@ def _save_adapter(
                 "alpha": float(args.compression_lora_alpha),
                 "dropout": float(args.compression_lora_dropout),
                 "init": args.compression_lora_init,
+                "weight_checkpointing": bool(getattr(args, "compression_lora_weight_checkpointing", False)),
                 "quantization": args.quantization,
                 "pruning": args.pruning,
                 "masks_path": str(masks_path),
@@ -452,6 +446,9 @@ def _train_lora_manually(
     micro_step = 0
     loss_sum = 0.0
     loss_count = 0
+    log_loss_sum = 0.0
+    log_loss_count = 0
+    loss_history: list[dict[str, Any]] = []
     optimizer.zero_grad(set_to_none=True)
 
     while global_step < max_steps:
@@ -461,8 +458,11 @@ def _train_lora_manually(
             if not torch.isfinite(loss).item():
                 _raise_nonfinite_loss(model, batch, loss)
             (loss / grad_accum).backward()
-            loss_sum += float(loss.detach().cpu())
+            loss_value = float(loss.detach().cpu())
+            loss_sum += loss_value
             loss_count += 1
+            log_loss_sum += loss_value
+            log_loss_count += 1
             micro_step += 1
 
             if micro_step % grad_accum != 0:
@@ -495,19 +495,36 @@ def _train_lora_manually(
             adapter_state = _collect_adapter_state(model)
             _assert_finite_adapter_state(adapter_state)
 
-            if global_step == 1 or global_step % logging_steps == 0:
+            if global_step == 1 or global_step % logging_steps == 0 or global_step >= max_steps:
                 avg_loss = loss_sum / max(1, loss_count)
+                interval_loss = log_loss_sum / max(1, log_loss_count)
+                grad_norm_value = float(grad_norm.detach().cpu()) if torch.is_tensor(grad_norm) else float(grad_norm)
+                loss_history.append(
+                    {
+                        "stage": stage_name,
+                        "step": global_step,
+                        "max_steps": max_steps,
+                        "loss": avg_loss,
+                        "interval_loss": interval_loss,
+                        "grad_norm": grad_norm_value,
+                        "learning_rate": float(learning_rate),
+                        "step_time": step_elapsed,
+                        "elapsed": total_elapsed,
+                    }
+                )
                 LOGGER.info(
                     "compression_lora %s step %s/%s loss %.6f grad_norm %.6f lr %.6g time %.3fs elapsed %.3fs",
                     stage_name,
                     global_step,
                     max_steps,
                     avg_loss,
-                    float(grad_norm.detach().cpu()) if torch.is_tensor(grad_norm) else float(grad_norm),
+                    grad_norm_value,
                     float(learning_rate),
                     step_elapsed,
                     total_elapsed,
                 )
+                log_loss_sum = 0.0
+                log_loss_count = 0
             if global_step >= max_steps:
                 break
 
@@ -523,7 +540,26 @@ def _train_lora_manually(
         "learning_rate": float(learning_rate),
         "num_train_epochs": float(num_train_epochs),
         "trainer": "manual_pytorch",
+        "loss_history": loss_history,
     }
+
+
+def _write_stage_loss_history(output_dir: Path, stage: str, metrics: dict[str, Any]) -> Path | None:
+    history = metrics.get("loss_history")
+    if not history:
+        return None
+    path = write_json(
+        output_dir / f"compression_lora_{stage}_loss_history.json",
+        {
+            "stage": stage,
+            "learning_rate": metrics.get("learning_rate"),
+            "global_step": metrics.get("global_step"),
+            "train_loss": metrics.get("train_loss"),
+            "history": history,
+        },
+    )
+    metrics["loss_history_path"] = str(path)
+    return path
 
 
 def _replace_flatquant_linears_with_lora(
@@ -603,11 +639,7 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
 
     def resolve_output_dir(self, args) -> Path:
         model_name = model_slug(args.model_path)
-        run_spec = (
-            f"{self.name}_r{args.compression_lora_rank}"
-            f"_lr{args.compression_lora_learning_rate:g}"
-            f"_seq{args.sequence_length}"
-        )
+        run_spec = compression_lora_run_spec(args)
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
 
     def _validate_args(self, args) -> None:
@@ -707,6 +739,7 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             alpha=float(args.compression_lora_alpha),
             dropout=float(args.compression_lora_dropout),
             init=str(args.compression_lora_init),
+            weight_checkpointing=bool(getattr(args, "compression_lora_weight_checkpointing", False)),
         )
         adapter_layers = _replace_flatquant_linears_with_lora(model, masks, lora_config)
         if not adapter_layers:
@@ -761,6 +794,7 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
                         logging_steps=int(args.compression_lora_logging_steps),
                         gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
                     )
+                    _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
                     if bool(getattr(args, "compression_lora_save_cpt_adapter", True)):
                         _save_adapter(cpt_adapter_path, model, args, str(masks_path), stage, stage_metrics[stage])
                     continue
@@ -784,6 +818,7 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
                         logging_steps=int(args.compression_lora_logging_steps),
                         gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
                     )
+                    _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
                     continue
 
             train_metrics = {
@@ -837,6 +872,7 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             "train_metrics": train_metrics,
             "train_plan": train_plan,
             "save_merged_model": bool(args.compression_lora_save_merged_model),
+            "weight_checkpointing": bool(getattr(args, "compression_lora_weight_checkpointing", False)),
         }
         config_path = write_json(config_path, config_payload)
 

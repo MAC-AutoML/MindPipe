@@ -6,6 +6,7 @@ from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
+from torch.nn.utils import parametrize
 import transformers
 
 from algorithm.common.device import empty_cache
@@ -78,6 +79,11 @@ def _reset_square_linear_to_identity(linear):
 def _reset_transformation_module(module):
     if module is None:
         return
+    for attr_name in ("linear_u_raw", "linear_v_raw"):
+        if hasattr(module, attr_name):
+            weight = getattr(module, attr_name)
+            eye = torch.eye(weight.shape[-2], weight.shape[-1], device=weight.device, dtype=weight.dtype)
+            weight.data.copy_(eye.expand_as(weight))
     for attr_name in ("linear_u_list", "linear_v_list"):
         if hasattr(module, attr_name):
             for linear in getattr(module, attr_name):
@@ -300,7 +306,8 @@ def cali_split_quant(args, model, dataloader, dev, logger):
                 for j in range(args.nsamples // args.cali_bsz):
                     index = j * args.cali_bsz
                     try:
-                        quant_out = unwrap_layer_output(layer(fp_inps[index:index+args.cali_bsz,], **active_batched_layer_kwargs))
+                        with parametrize.cached():
+                            quant_out = unwrap_layer_output(layer(fp_inps[index:index+args.cali_bsz,], **active_batched_layer_kwargs))
                     except RuntimeError as error:
                         error_text = str(error).lower()
                         if "singular" in error_text or "linalg" in error_text or "inverse" in error_text:

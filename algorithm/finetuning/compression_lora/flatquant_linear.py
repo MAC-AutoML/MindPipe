@@ -16,6 +16,7 @@ class LoRAConfig:
     alpha: float
     dropout: float
     init: str = "lora"
+    weight_checkpointing: bool = False
 
 
 class CompressionLoRAFlatQuantLinear(nn.Module):
@@ -29,6 +30,7 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         self.rank = int(config.rank)
         self.alpha = float(config.alpha)
         self.scaling = self.alpha / float(self.rank)
+        self.weight_checkpointing = bool(config.weight_checkpointing)
         # Dropout is recorded for config compatibility. Weight-merged LoRA uses
         # a deterministic delta W, so applying dropout to hidden_states would
         # corrupt the frozen base branch.
@@ -95,13 +97,19 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         weight = self.base.linear.weight + self._lora_delta().to(self.base.linear.weight.dtype)
         return F.linear(hidden_states, weight, self.base.linear.bias)
 
-    def _compressed_weight(self, qa_trans=None, out_trans=None) -> torch.Tensor:
+    def _compressed_weight_from_lora(
+        self,
+        lora_A: torch.Tensor,
+        lora_B: torch.Tensor,
+        qa_trans=None,
+        out_trans=None,
+    ) -> torch.Tensor:
         # Match FlatQuantizedLinear._train_forward as closely as possible while
         # keeping gradients only through the LoRA delta. Some transform modules
         # are numerically sensitive to dtype changes, so do not upcast this path
         # to FP32 here.
         base_weight = self.base.linear.weight.detach()
-        delta = self._lora_delta()
+        delta = self.scaling * (lora_B @ lora_A)
         weight = base_weight + delta.to(base_weight.dtype)
         if qa_trans is not None:
             weight = self.base.apply_trans(weight, qa_trans)
@@ -112,6 +120,23 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         self.base.weight_quantizer.find_params(weight)
         weight = self.base.weight_quantizer(weight)
         return weight * self.pruning_mask.to(device=weight.device, dtype=weight.dtype)
+
+    def _compressed_weight(self, qa_trans=None, out_trans=None) -> torch.Tensor:
+        if self.weight_checkpointing and self.training and torch.is_grad_enabled():
+            from torch.utils.checkpoint import checkpoint
+
+            return checkpoint(
+                lambda lora_A, lora_B: self._compressed_weight_from_lora(
+                    lora_A,
+                    lora_B,
+                    qa_trans=qa_trans,
+                    out_trans=out_trans,
+                ),
+                self.lora_A,
+                self.lora_B,
+                use_reentrant=False,
+            )
+        return self._compressed_weight_from_lora(self.lora_A, self.lora_B, qa_trans=qa_trans, out_trans=out_trans)
 
     def forward(self, hidden_states: torch.Tensor, qa_trans=None, out_trans=None) -> torch.Tensor:
         weight_device = self.base.linear.weight.device

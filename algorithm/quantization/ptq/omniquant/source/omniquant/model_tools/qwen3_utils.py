@@ -52,6 +52,16 @@ def _quantizer_shape_for_packed_weight(weight: torch.Tensor) -> tuple[int, int]:
     return (int(weight.reshape(-1, weight.shape[-1]).shape[0]), int(weight.shape[-1]))
 
 
+def _module_device(module: nn.Module, fallback: torch.device) -> torch.device:
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        pass
+    for buffer in module.buffers():
+        return buffer.device
+    return fallback
+
+
 class _QuantQwen3AttentionMixin:
     attention_functions = QWEN3_ATTENTION_FUNCTIONS
     eager_attention_fn = staticmethod(qwen3_eager_attention_forward)
@@ -292,6 +302,12 @@ class QuantQwen3DecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
+        layer_device = _module_device(self, hidden_states.device)
+        hidden_states = hidden_states.to(layer_device)
+        attention_mask = _move_optional_tensor(attention_mask, layer_device)
+        position_ids = _move_optional_tensor(position_ids, layer_device)
+        position_embeddings = _move_optional_tensor(position_embeddings, layer_device)
+        kwargs = _move_optional_tensor(kwargs, layer_device)
         output_attentions = bool(kwargs.pop("output_attentions", False))
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -842,6 +858,12 @@ class QuantQwen3_5DecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
+        layer_device = _module_device(self, hidden_states.device)
+        hidden_states = hidden_states.to(layer_device)
+        attention_mask = _move_optional_tensor(attention_mask, layer_device)
+        position_ids = _move_optional_tensor(position_ids, layer_device)
+        position_embeddings = _move_optional_tensor(position_embeddings, layer_device)
+        kwargs = _move_optional_tensor(kwargs, layer_device)
         del use_cache
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -899,6 +921,12 @@ class QuantQwen3_5MoeDecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
+        layer_device = _module_device(self, hidden_states.device)
+        hidden_states = hidden_states.to(layer_device)
+        attention_mask = _move_optional_tensor(attention_mask, layer_device)
+        position_ids = _move_optional_tensor(position_ids, layer_device)
+        position_embeddings = _move_optional_tensor(position_embeddings, layer_device)
+        kwargs = _move_optional_tensor(kwargs, layer_device)
         del use_cache
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)

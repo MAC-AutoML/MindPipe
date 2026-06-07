@@ -16,6 +16,7 @@ from algorithm.quantization.registry import METHOD_REGISTRY as QUANTIZATION_METH
 from algorithm.quantization.registry import get_method as get_quantization_method
 from algorithm.finetuning.registry import METHOD_REGISTRY as FINETUNING_METHOD_REGISTRY
 from algorithm.finetuning.registry import get_method as get_finetuning_method
+from algorithm.finetuning.compression_lora.run_spec import compression_lora_run_spec
 from evaluation.lm_eval import DEFAULT_ZERO_SHOT_TASKS
 from workflow.schema import WorkflowConfig
 from workflow.schema import WorkflowStage
@@ -910,6 +911,7 @@ def _add_finetuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compression_lora_warmup_ratio", type=float, default=0.03)
     parser.add_argument("--compression_lora_lr_scheduler_type", default="constant")
     parser.add_argument("--compression_lora_gradient_checkpointing", type=_bool_flag, default=False)
+    parser.add_argument("--compression_lora_weight_checkpointing", type=_bool_flag, default=False)
     parser.add_argument(
         "--compression_lora_target_modules",
         nargs="+",
@@ -1074,7 +1076,10 @@ def build_run_config(args) -> WorkflowConfig:
             if s.stage_type == "pruning":
                 run_spec_parts.append(f"{s.algorithm_name}_s{args.sparsity_ratio}")
             elif s.stage_type == "finetuning":
-                run_spec_parts.append(f"{s.algorithm_name}_r{args.compression_lora_rank}")
+                if s.algorithm_name == "compression_lora":
+                    run_spec_parts.append(compression_lora_run_spec(args, include_sequence_length=False))
+                else:
+                    run_spec_parts.append(s.algorithm_name)
             else:
                 run_spec_parts.append(f"{s.algorithm_name}_w{args.weight_bits}a{args.activation_bits}")
         run_spec = "_".join(run_spec_parts) + f"_seq{args.sequence_length}"

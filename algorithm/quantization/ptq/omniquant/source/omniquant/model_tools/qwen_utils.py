@@ -47,6 +47,16 @@ def _move_optional_tensor(value, device: torch.device):
     return value
 
 
+def _module_device(module: nn.Module, fallback: torch.device) -> torch.device:
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        pass
+    for buffer in module.buffers():
+        return buffer.device
+    return fallback
+
+
 class QuantQwenMLP(nn.Module):
     def __init__(self, org_module: nn.Module, args):
         super().__init__()
@@ -328,6 +338,12 @@ class QuantQwenDecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
+        layer_device = _module_device(self, hidden_states.device)
+        hidden_states = hidden_states.to(layer_device)
+        attention_mask = _move_optional_tensor(attention_mask, layer_device)
+        position_ids = _move_optional_tensor(position_ids, layer_device)
+        position_embeddings = _move_optional_tensor(position_embeddings, layer_device)
+        kwargs = _move_optional_tensor(kwargs, layer_device)
         output_attentions = bool(kwargs.pop("output_attentions", False))
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)

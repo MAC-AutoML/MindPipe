@@ -1,8 +1,16 @@
 import os
+import re
 import torch
+from collections import OrderedDict
 from splitquant.backbone_utils import get_decoder_layers
 from splitquant.function_utils import get_paras_dict_by_name
 import logging
+
+
+_LEGACY_GROUP_PARAM_RE = re.compile(
+    r"^(?P<prefix>.+)\.linear_(?P<kind>[uv])_list\.(?P<index>\d+)\.parametrizations\.weight\.original$"
+)
+_LEGACY_GROUP_DIAG_RE = re.compile(r"^(?P<prefix>.+)\.linear_diag_list\.(?P<index>\d+)$")
 
 def kronecker_matmul(x, hadL, hadR):
     """equivalent to
@@ -52,11 +60,64 @@ def save_parametrized_checkpoint(model, args):
     logging.info("saved paramaters at {}".format(os.path.join(args.exp_dir, f"parametrized_paras.pth")))
 
 
+def convert_legacy_splitquant_group_parameters(state_dict):
+    converted = OrderedDict()
+    grouped = {}
+    changed = False
+
+    for key, value in state_dict.items():
+        match = _LEGACY_GROUP_PARAM_RE.match(key)
+        if match:
+            prefix = match.group("prefix")
+            kind = match.group("kind")
+            index = int(match.group("index"))
+            grouped.setdefault(prefix, {"u": {}, "v": {}, "diag": {}})[kind][index] = value
+            changed = True
+            continue
+
+        match = _LEGACY_GROUP_DIAG_RE.match(key)
+        if match:
+            prefix = match.group("prefix")
+            index = int(match.group("index"))
+            grouped.setdefault(prefix, {"u": {}, "v": {}, "diag": {}})["diag"][index] = value
+            changed = True
+            continue
+
+        converted[key] = value
+
+    if not changed:
+        return state_dict
+
+    for prefix, parts in grouped.items():
+        indices = sorted(parts["u"])
+        if not indices or indices != sorted(parts["v"]) or indices != sorted(parts["diag"]):
+            raise ValueError(f"Incomplete legacy SplitQuant group parameters for {prefix}")
+        expected = list(range(indices[-1] + 1))
+        if indices != expected:
+            raise ValueError(f"Non-contiguous legacy SplitQuant group indices for {prefix}: {indices[:3]}...{indices[-3:]}")
+        converted[f"{prefix}.linear_u_raw"] = torch.stack([parts["u"][idx] for idx in indices], dim=0)
+        converted[f"{prefix}.linear_v_raw"] = torch.stack([parts["v"][idx] for idx in indices], dim=0)
+        converted[f"{prefix}.linear_diag"] = torch.stack([parts["diag"][idx] for idx in indices], dim=0)
+
+    return converted
+
+
+def convert_legacy_splitquant_checkpoint(splitquant_parameters):
+    converted = {}
+    changed = False
+    for layer_idx, layer_params in splitquant_parameters.items():
+        converted_layer = convert_legacy_splitquant_group_parameters(layer_params)
+        converted[layer_idx] = converted_layer
+        changed = changed or converted_layer is not layer_params
+    return converted if changed else splitquant_parameters
+
+
 def load_splitquant_parameters(args, model, path=None):
     if path is None:
         splitquant_parameters = torch.load(os.path.join(args.exp_dir, "splitquant_parameters.pth"))
     else:
         splitquant_parameters = torch.load(os.path.join(path, "splitquant_parameters.pth"))
+    splitquant_parameters = convert_legacy_splitquant_checkpoint(splitquant_parameters)
     layers = get_decoder_layers(model)
     
     for i in range(len(splitquant_parameters.keys())):

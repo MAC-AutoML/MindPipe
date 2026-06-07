@@ -22,6 +22,16 @@ def _move_optional_tensor(value, device: torch.device):
     return value
 
 
+def _module_device(module: nn.Module, fallback: torch.device) -> torch.device:
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        pass
+    for buffer in module.buffers():
+        return buffer.device
+    return fallback
+
+
 class QuantMiniCPMMLP(nn.Module):
     def __init__(self, org_module: nn.Module, args):
         super().__init__()
@@ -210,6 +220,11 @@ class QuantMiniCPMDecoderLayer(nn.Module):
         use_cache: bool = False,
         **kwargs,
     ):
+        layer_device = _module_device(self, hidden_states.device)
+        hidden_states = hidden_states.to(layer_device)
+        attention_mask = _move_optional_tensor(attention_mask, layer_device)
+        position_ids = _move_optional_tensor(position_ids, layer_device)
+        kwargs = _move_optional_tensor(kwargs, layer_device)
         cache_obj = past_key_value if past_key_value is not None else past_key_values
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)

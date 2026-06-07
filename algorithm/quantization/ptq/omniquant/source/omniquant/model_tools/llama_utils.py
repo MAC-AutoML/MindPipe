@@ -28,6 +28,16 @@ def _move_optional_tensor(value, device: torch.device):
     return value
 
 
+def _module_device(module: nn.Module, fallback: torch.device) -> torch.device:
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        pass
+    for buffer in module.buffers():
+        return buffer.device
+    return fallback
+
+
 def _apply_llama_rotary_pos_emb(query_states, key_states, cos, sin, position_ids):
     if _LLAMA_APPLY_ROTARY_HAS_POSITION_IDS:
         return apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
@@ -223,6 +233,12 @@ class QuantLlamaDecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
+        layer_device = _module_device(self, hidden_states.device)
+        hidden_states = hidden_states.to(layer_device)
+        attention_mask = _move_optional_tensor(attention_mask, layer_device)
+        position_ids = _move_optional_tensor(position_ids, layer_device)
+        position_embeddings = _move_optional_tensor(position_embeddings, layer_device)
+        kwargs = _move_optional_tensor(kwargs, layer_device)
         output_attentions = bool(kwargs.pop("output_attentions", False))
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)

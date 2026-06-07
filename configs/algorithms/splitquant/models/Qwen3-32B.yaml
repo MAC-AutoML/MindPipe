@@ -5,6 +5,7 @@ model:
   model_path: /mnt/82_store/LLM-weights/Qwen3-32B
 
 defaults:
+  dtype: bfloat16
   eval_vlm: false
   splitquant_calibration_batch_size: 4
   zero_shot_batch_size: 4

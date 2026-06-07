@@ -5,6 +5,7 @@ model:
   model_path: /mnt/82_store/LLM-weights/Qwen3-32B
 
 defaults:
+  dtype: bfloat16
   attn_implementation: sdpa
   eval_vlm: false
   zero_shot_batch_size: 4

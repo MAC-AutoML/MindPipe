@@ -65,7 +65,14 @@ def _resolve_final_output_dir(
 
 def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stage_args: argparse.Namespace):
     stage_start = time.perf_counter()
-    stage_output_dir = ensure_dir(stage_method.resolve_output_dir(stage_args))
+    if (
+        stage.stage_type == "finetuning"
+        and stage.algorithm_name == "compression_lora"
+        and getattr(stage_args, "_workflow_output_dir", None)
+    ):
+        stage_output_dir = ensure_dir(Path(stage_args._workflow_output_dir))
+    else:
+        stage_output_dir = ensure_dir(stage_method.resolve_output_dir(stage_args))
     if stage.stage_type == "quantization":
         stage_result = stage_method.apply_fake_quantization(model, tokenizer_bundle, stage_args)
     elif stage.stage_type == "finetuning":
