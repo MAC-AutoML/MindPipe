@@ -51,6 +51,10 @@ def _resolve_stage_method(stage: WorkflowStage):
     return get_pruning_method(stage.algorithm_name)
 
 
+def _stage_reloads_model(stage: WorkflowStage) -> bool:
+    return stage.stage_type == "finetuning" and stage.algorithm_name == "compression_lora"
+
+
 def _resolve_final_output_dir(
     config: WorkflowConfig,
     stage_method,
@@ -174,7 +178,18 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
                 following.stage_type == "finetuning" and following.algorithm_name == "compression_lora"
                 for following in config.stages[stage_index + 1:]
             )
+        if _stage_reloads_model(stage):
+            # compression_lora 会从 FP 权重重新加载模型。先释放前序压缩阶段模型，
+            # 避免旧模型和新加载的 W_fp 在显存中短时间共存。
+            model = None
+            tokenizer_bundle = None
+            gc.collect()
+            empty_cache(common_args["device"])
         stage_record, model, tokenizer_bundle = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
+        if _stage_reloads_model(stage) and (model is None or tokenizer_bundle is None):
+            raise RuntimeError(
+                "compression_lora must return _updated_model and _updated_tokenizer_bundle after reloading model."
+            )
         stage_records.append(stage_record)
         if stage.stage_type == "quantization" and stage.algorithm_name == "flatquant":
             flat_path = stage_record["artifacts"].get("flat_parameters_path")

@@ -20,6 +20,9 @@ def parse_compression_lora_train_plan(plan: str | None) -> list[str]:
 
 def compression_lora_run_spec(args: Any, *, include_sequence_length: bool = True) -> str:
     parts = [f"compression_lora_r{args.compression_lora_rank}", f"init{args.compression_lora_init}"]
+    adapter_type = getattr(args, "compression_lora_adapter_type", "lora")
+    if adapter_type != "lora":
+        parts.append(f"adapter{adapter_type}")
     train_plan = parse_compression_lora_train_plan(getattr(args, "compression_lora_train_plan", None))
     if "cpt" in train_plan:
         parts.append(f"cptn{args.compression_lora_cpt_samples}")

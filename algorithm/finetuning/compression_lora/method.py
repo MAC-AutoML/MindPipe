@@ -61,6 +61,8 @@ def _collect_adapter_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
             continue
         state[f"{name}.lora_A"] = module.lora_A.detach().cpu()
         state[f"{name}.lora_B"] = module.lora_B.detach().cpu()
+        if module.adapter_type == "dora":
+            state[f"{name}.dora_magnitude"] = module.dora_magnitude.detach().cpu()
     return state
 
 
@@ -80,13 +82,38 @@ def _assert_finite_adapter_state(adapter_state: dict[str, torch.Tensor]) -> None
 
 def _load_adapter_state(model: torch.nn.Module, adapter_state: dict[str, torch.Tensor]) -> None:
     module_map = dict(model.named_modules())
+    loaded_keys = set(adapter_state)
     for key, tensor in adapter_state.items():
         module_name, param_name = key.rsplit(".", maxsplit=1)
         module = module_map.get(module_name)
         if not isinstance(module, CompressionLoRAFlatQuantLinear):
             raise KeyError(f"Adapter target {module_name!r} is not a compression LoRA wrapper.")
+        if param_name == "dora_magnitude" and module.adapter_type != "dora":
+            raise ValueError(f"Adapter contains DoRA magnitude for non-DoRA module {module_name!r}.")
         param = getattr(module, param_name)
         param.data.copy_(tensor.to(device=param.device, dtype=param.dtype))
+    missing = []
+    for name, module in model.named_modules():
+        if not isinstance(module, CompressionLoRAFlatQuantLinear):
+            continue
+        for param_name in ("lora_A", "lora_B"):
+            key = f"{name}.{param_name}"
+            if key not in loaded_keys:
+                missing.append(key)
+        if module.adapter_type == "dora":
+            key = f"{name}.dora_magnitude"
+            if key not in loaded_keys:
+                missing.append(key)
+    if missing:
+        preview = ", ".join(missing[:8])
+        raise KeyError(f"Adapter checkpoint is missing required parameter(s): {preview}")
+
+
+def _iter_adapter_parameters(module: CompressionLoRAFlatQuantLinear):
+    yield module.lora_A
+    yield module.lora_B
+    if module.adapter_type == "dora":
+        yield module.dora_magnitude
 
 
 def _parse_train_plan(plan: str | None) -> list[str]:
@@ -111,6 +138,11 @@ def _save_adapter(
                 "dropout": float(args.compression_lora_dropout),
                 "init": args.compression_lora_init,
                 "weight_checkpointing": bool(getattr(args, "compression_lora_weight_checkpointing", False)),
+                "adapter_type": getattr(args, "compression_lora_adapter_type", "lora"),
+                "dora_simple": bool(getattr(args, "compression_lora_dora_simple", True)),
+                "dora_eps": float(getattr(args, "compression_lora_dora_eps", 1e-6)),
+                "lr_scheduler_type": getattr(args, "compression_lora_lr_scheduler_type", "cosine"),
+                "warmup_ratio": float(getattr(args, "compression_lora_warmup_ratio", 0.03)),
                 "quantization": args.quantization,
                 "pruning": args.pruning,
                 "masks_path": str(masks_path),
@@ -389,12 +421,14 @@ def _train_lora_manually(
     max_steps: int,
     logging_steps: int,
     gradient_checkpointing: bool,
+    lr_scheduler_type: str,
+    warmup_ratio: float,
 ) -> dict[str, Any]:
     trainable_params = [
         param
         for module in model.modules()
         if isinstance(module, CompressionLoRAFlatQuantLinear)
-        for param in (module.lora_A, module.lora_B)
+        for param in _iter_adapter_parameters(module)
         if param.requires_grad
     ]
     if not trainable_params:
@@ -418,18 +452,29 @@ def _train_lora_manually(
     max_steps = int(max_steps)
     if max_steps <= 0:
         max_steps = max(1, math.ceil(len(dataloader) * float(num_train_epochs) / grad_accum))
+    from transformers import get_scheduler
+
+    warmup_steps = int(max_steps * max(0.0, float(warmup_ratio)))
+    lr_scheduler = get_scheduler(
+        name=str(lr_scheduler_type),
+        optimizer=optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=max_steps,
+    )
     logging_steps = max(1, int(logging_steps))
     input_device = _infer_input_device(model)
     visual_device = _infer_visual_device(model)
     trainable_devices = _trainable_param_devices(trainable_params)
     hf_device_summary = _summarize_hf_device_map(model)
     LOGGER.info(
-        "compression_lora %s training: samples=%s batch_size=%s grad_accum=%s max_steps=%s gradient_checkpointing=%s",
+        "compression_lora %s training: samples=%s batch_size=%s grad_accum=%s max_steps=%s lr_scheduler=%s warmup_steps=%s gradient_checkpointing=%s",
         stage_name,
         len(train_dataset),
         batch_size,
         grad_accum,
         max_steps,
+        str(lr_scheduler_type),
+        warmup_steps,
         bool(gradient_checkpointing),
     )
     LOGGER.info(
@@ -481,8 +526,10 @@ def _train_lora_manually(
 
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             optimizer.step()
+            lr_scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             global_step += 1
+            current_lr = float(optimizer.param_groups[0]["lr"])
             if torch.cuda.is_available():
                 for sync_device in trainable_devices:
                     if sync_device.type == "cuda":
@@ -507,7 +554,7 @@ def _train_lora_manually(
                         "loss": avg_loss,
                         "interval_loss": interval_loss,
                         "grad_norm": grad_norm_value,
-                        "learning_rate": float(learning_rate),
+                        "learning_rate": current_lr,
                         "step_time": step_elapsed,
                         "elapsed": total_elapsed,
                     }
@@ -519,7 +566,7 @@ def _train_lora_manually(
                     max_steps,
                     avg_loss,
                     grad_norm_value,
-                    float(learning_rate),
+                    current_lr,
                     step_elapsed,
                     total_elapsed,
                 )
@@ -538,6 +585,9 @@ def _train_lora_manually(
         "train_examples": len(train_dataset),
         "stage": stage_name,
         "learning_rate": float(learning_rate),
+        "lr_scheduler_type": str(lr_scheduler_type),
+        "warmup_ratio": float(warmup_ratio),
+        "warmup_steps": warmup_steps,
         "num_train_epochs": float(num_train_epochs),
         "trainer": "manual_pytorch",
         "loss_history": loss_history,
@@ -588,6 +638,7 @@ def _replace_flatquant_linears_with_lora(
             "rank": int(config.rank),
             "alpha": float(config.alpha),
             "dropout": float(config.dropout),
+            "adapter_type": config.adapter_type,
         }
     return replaced
 
@@ -740,6 +791,9 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             dropout=float(args.compression_lora_dropout),
             init=str(args.compression_lora_init),
             weight_checkpointing=bool(getattr(args, "compression_lora_weight_checkpointing", False)),
+            adapter_type=str(getattr(args, "compression_lora_adapter_type", "lora")),
+            dora_simple=bool(getattr(args, "compression_lora_dora_simple", True)),
+            dora_eps=float(getattr(args, "compression_lora_dora_eps", 1e-6)),
         )
         adapter_layers = _replace_flatquant_linears_with_lora(model, masks, lora_config)
         if not adapter_layers:
@@ -748,6 +802,13 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
         adapter_from = getattr(args, "compression_lora_adapter_from", None)
         if adapter_from:
             payload = torch.load(adapter_from, map_location="cpu")
+            if isinstance(payload, dict) and "metadata" in payload:
+                checkpoint_adapter_type = payload["metadata"].get("adapter_type", "lora")
+                if checkpoint_adapter_type != lora_config.adapter_type:
+                    raise ValueError(
+                        "compression_lora_adapter_from adapter_type mismatch: "
+                        f"checkpoint={checkpoint_adapter_type!r}, requested={lora_config.adapter_type!r}."
+                    )
             _load_adapter_state(model, payload["state_dict"] if "state_dict" in payload else payload)
             train_metrics = {"skipped_training": True, "adapter_from": adapter_from}
             train_plan = ["adapter_from"]
@@ -758,6 +819,8 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
                 if isinstance(module, CompressionLoRAFlatQuantLinear):
                     module.lora_A.requires_grad = True
                     module.lora_B.requires_grad = True
+                    if module.adapter_type == "dora":
+                        module.dora_magnitude.requires_grad = True
             if bool(args.compression_lora_gradient_checkpointing):
                 if hasattr(model, "enable_input_require_grads"):
                     model.enable_input_require_grads()
@@ -793,6 +856,8 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
                         max_steps=int(args.compression_lora_cpt_max_steps),
                         logging_steps=int(args.compression_lora_logging_steps),
                         gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
+                        lr_scheduler_type=str(args.compression_lora_lr_scheduler_type),
+                        warmup_ratio=float(args.compression_lora_warmup_ratio),
                     )
                     _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
                     if bool(getattr(args, "compression_lora_save_cpt_adapter", True)):
@@ -817,6 +882,8 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
                         max_steps=int(args.compression_lora_sft_max_steps),
                         logging_steps=int(args.compression_lora_logging_steps),
                         gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
+                        lr_scheduler_type=str(args.compression_lora_lr_scheduler_type),
+                        warmup_ratio=float(args.compression_lora_warmup_ratio),
                     )
                     _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
                     continue
@@ -873,6 +940,11 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             "train_plan": train_plan,
             "save_merged_model": bool(args.compression_lora_save_merged_model),
             "weight_checkpointing": bool(getattr(args, "compression_lora_weight_checkpointing", False)),
+            "adapter_type": getattr(args, "compression_lora_adapter_type", "lora"),
+            "dora_simple": bool(getattr(args, "compression_lora_dora_simple", True)),
+            "dora_eps": float(getattr(args, "compression_lora_dora_eps", 1e-6)),
+            "lr_scheduler_type": getattr(args, "compression_lora_lr_scheduler_type", "cosine"),
+            "warmup_ratio": float(getattr(args, "compression_lora_warmup_ratio", 0.03)),
         }
         config_path = write_json(config_path, config_payload)
 

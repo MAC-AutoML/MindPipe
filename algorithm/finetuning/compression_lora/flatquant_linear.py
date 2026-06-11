@@ -17,6 +17,9 @@ class LoRAConfig:
     dropout: float
     init: str = "lora"
     weight_checkpointing: bool = False
+    adapter_type: str = "lora"
+    dora_simple: bool = True
+    dora_eps: float = 1e-6
 
 
 class CompressionLoRAFlatQuantLinear(nn.Module):
@@ -31,6 +34,13 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         self.alpha = float(config.alpha)
         self.scaling = self.alpha / float(self.rank)
         self.weight_checkpointing = bool(config.weight_checkpointing)
+        self.adapter_type = str(config.adapter_type).lower()
+        if self.adapter_type not in {"lora", "dora"}:
+            raise ValueError(f"Unsupported compression adapter type: {config.adapter_type!r}.")
+        if self.adapter_type == "dora" and config.init != "lora":
+            raise ValueError("compression DoRA currently supports only init='lora'.")
+        self.dora_simple = bool(config.dora_simple)
+        self.dora_eps = float(config.dora_eps)
         # Dropout is recorded for config compatibility. Weight-merged LoRA uses
         # a deterministic delta W, so applying dropout to hidden_states would
         # corrupt the frozen base branch.
@@ -42,6 +52,9 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         # before entering the FlatQuant path.
         self.lora_A = nn.Parameter(torch.empty(self.rank, in_features, device=weight.device, dtype=torch.float32))
         self.lora_B = nn.Parameter(torch.empty(out_features, self.rank, device=weight.device, dtype=torch.float32))
+        if self.adapter_type == "dora":
+            dora_magnitude = weight.detach().to(torch.float32).norm(dim=1, keepdim=True)
+            self.dora_magnitude = nn.Parameter(dora_magnitude.to(device=weight.device, dtype=torch.float32))
         self.register_buffer("pruning_mask", mask.detach().to(device=weight.device).bool(), persistent=True)
         self.reset_lora_parameters(config.init)
 
@@ -93,8 +106,20 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
     def _lora_delta(self) -> torch.Tensor:
         return self.scaling * (self.lora_B @ self.lora_A)
 
+    def _adapted_weight(self, base_weight: torch.Tensor, lora_A: torch.Tensor, lora_B: torch.Tensor) -> torch.Tensor:
+        delta = self.scaling * (lora_B @ lora_A)
+        direction = base_weight + delta.to(base_weight.dtype)
+        if self.adapter_type == "lora":
+            return direction
+
+        row_norm = direction.to(torch.float32).norm(dim=1, keepdim=True).clamp_min(self.dora_eps)
+        if self.dora_simple:
+            row_norm = row_norm.detach()
+        norm_scale = self.dora_magnitude.to(torch.float32) / row_norm
+        return direction * norm_scale.to(device=direction.device, dtype=direction.dtype)
+
     def _ori_forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        weight = self.base.linear.weight + self._lora_delta().to(self.base.linear.weight.dtype)
+        weight = self._adapted_weight(self.base.linear.weight.detach(), self.lora_A, self.lora_B)
         return F.linear(hidden_states, weight, self.base.linear.bias)
 
     def _compressed_weight_from_lora(
@@ -109,8 +134,7 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         # are numerically sensitive to dtype changes, so do not upcast this path
         # to FP32 here.
         base_weight = self.base.linear.weight.detach()
-        delta = self.scaling * (lora_B @ lora_A)
-        weight = base_weight + delta.to(base_weight.dtype)
+        weight = self._adapted_weight(base_weight, lora_A, lora_B)
         if qa_trans is not None:
             weight = self.base.apply_trans(weight, qa_trans)
         if getattr(self.base, "lwc", False):
@@ -154,16 +178,25 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
 
     @torch.no_grad()
     def merge_and_apply_fixed_compression(self, qa_trans=None, out_trans=None) -> nn.Module:
-        merged = self.base.linear.weight + self._lora_delta().to(self.base.linear.weight.dtype)
-        self.base.linear.weight.data.copy_(merged)
-        final_weight = self._compressed_weight(qa_trans=qa_trans, out_trans=out_trans)
+        merged = self._adapted_weight(self.base.linear.weight.detach(), self.lora_A, self.lora_B)
+        original_weight = self.base.linear.weight.data.clone()
+        try:
+            self.base.linear.weight.data.copy_(merged)
+            final_weight = self._compressed_weight_from_lora(
+                torch.zeros_like(self.lora_A),
+                torch.zeros_like(self.lora_B),
+                qa_trans=qa_trans,
+                out_trans=out_trans,
+            )
+        finally:
+            self.base.linear.weight.data.copy_(original_weight)
         self.base.linear.weight.data.copy_(final_weight.to(self.base.linear.weight.dtype))
         self.base._eval_mode = True
         return self.base
 
     @torch.no_grad()
     def merge_into_base(self) -> nn.Module:
-        merged = self.base.linear.weight + self._lora_delta().to(self.base.linear.weight.dtype)
+        merged = self._adapted_weight(self.base.linear.weight.detach(), self.lora_A, self.lora_B)
         self.base.linear.weight.data.copy_(merged)
         return self.base
 

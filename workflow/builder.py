@@ -899,6 +899,9 @@ def _add_finetuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compression_lora_alpha", type=float, default=128.0)
     parser.add_argument("--compression_lora_dropout", type=float, default=0.05)
     parser.add_argument("--compression_lora_init", default="lora", choices=["lora", "pissa"])
+    parser.add_argument("--compression_lora_adapter_type", default="lora", choices=["lora", "dora"])
+    parser.add_argument("--compression_lora_dora_simple", type=_bool_flag, default=True)
+    parser.add_argument("--compression_lora_dora_eps", type=float, default=1e-6)
     parser.add_argument("--compression_lora_learning_rate", type=float, default=1e-4)
     parser.add_argument("--compression_lora_weight_decay", type=float, default=0.0)
     parser.add_argument("--compression_lora_num_train_epochs", type=float, default=1.0)
@@ -909,7 +912,7 @@ def _add_finetuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compression_lora_save_steps", type=int, default=250)
     parser.add_argument("--compression_lora_save_total_limit", type=int, default=2)
     parser.add_argument("--compression_lora_warmup_ratio", type=float, default=0.03)
-    parser.add_argument("--compression_lora_lr_scheduler_type", default="constant")
+    parser.add_argument("--compression_lora_lr_scheduler_type", default="cosine")
     parser.add_argument("--compression_lora_gradient_checkpointing", type=_bool_flag, default=False)
     parser.add_argument("--compression_lora_weight_checkpointing", type=_bool_flag, default=False)
     parser.add_argument(
