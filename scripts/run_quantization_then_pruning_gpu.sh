@@ -143,11 +143,11 @@ MODELS=(
   #  "/mnt/82_store/zy/model/Qwen3.6-27B" \
   #  "/mnt/82_store/huggingface/datasets/Qwen/Qwen3.6-27B")"
   "$(pick_first_existing_path \
-    "/mnt/82_store/LLM-weights/Qwen3.6-35B-A3B" \
-    "/mnt/82_store/LLM-weights/Qwen/Qwen3.6-35B-A3B" \
-    "/mnt/42_store/wxx/modelzoo/Qwen/Qwen3.6-35B-A3B" \
-    "/mnt/82_store/zy/model/Qwen3.6-35B-A3B" \
-    "/mnt/82_store/huggingface/datasets/Qwen/Qwen3.6-35B-A3B")"
+    "/mnt/82_store/LLM-weights/Qwen3-30B-A3B" \
+    "/mnt/82_store/LLM-weights/Qwen/Qwen3-30B-A3B" \
+    "/mnt/42_store/wxx/modelzoo/Qwen/Qwen3-30B-A3B" \
+    "/mnt/82_store/zy/model/Qwen3-30B-A3B" \
+    "/mnt/82_store/huggingface/datasets/Qwen/Qwen3-30B-A3B")"
   #"$(pick_first_existing_path \
   #  "/mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct" \
   #  "/mnt/82_store/LLM-weights/Qwen3-VL-2B" \

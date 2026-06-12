@@ -8,6 +8,10 @@ from transformers.models.qwen3.modeling_qwen3 import ALL_ATTENTION_FUNCTIONS as 
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb as qwen3_apply_rotary_pos_emb
 from transformers.models.qwen3.modeling_qwen3 import eager_attention_forward as qwen3_eager_attention_forward
+from transformers.models.qwen3_moe.modeling_qwen3_moe import ALL_ATTENTION_FUNCTIONS as QWEN3_MOE_ATTENTION_FUNCTIONS
+from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeAttention
+from transformers.models.qwen3_moe.modeling_qwen3_moe import apply_rotary_pos_emb as qwen3_moe_apply_rotary_pos_emb
+from transformers.models.qwen3_moe.modeling_qwen3_moe import eager_attention_forward as qwen3_moe_eager_attention_forward
 from transformers.models.qwen3_5.modeling_qwen3_5 import ALL_ATTENTION_FUNCTIONS as QWEN3_5_ATTENTION_FUNCTIONS
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Attention
 from transformers.models.qwen3_5.modeling_qwen3_5 import apply_mask_to_padding_states
@@ -269,6 +273,80 @@ class QuantQwen3VLTextAttention(_QuantQwen3AttentionMixin, Qwen3VLTextAttention)
         return attn_output, attn_weights
 
 
+class QuantQwen3MoeAttention(_QuantQwen3AttentionMixin, Qwen3MoeAttention):
+    attention_functions = QWEN3_MOE_ATTENTION_FUNCTIONS
+    eager_attention_fn = staticmethod(qwen3_moe_eager_attention_forward)
+    apply_rotary = staticmethod(qwen3_moe_apply_rotary_pos_emb)
+
+    def __init__(self, org_module: Qwen3MoeAttention, args):
+        super().__init__(org_module.config, org_module.layer_idx)
+        self._init_quant_attention(org_module, args)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values=None,
+        output_attentions: bool = False,
+        use_cache: bool | None = False,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        del use_cache, position_ids
+        if past_key_values is None:
+            past_key_values = kwargs.pop("past_key_value", None)
+        else:
+            kwargs.pop("past_key_value", None)
+        if position_embeddings is None:
+            raise AttributeError("QuantQwen3MoeAttention requires `position_embeddings` from the parent decoder layer.")
+
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+
+        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+        position_embeddings = _move_optional_tensor(position_embeddings, query_states.device)
+        attention_mask = _move_optional_tensor(attention_mask, query_states.device)
+        past_key_values = _move_optional_tensor(past_key_values, query_states.device)
+        cos, sin = position_embeddings
+        query_states, key_states = self.apply_rotary(query_states, key_states, cos, sin)
+
+        if past_key_values is not None:
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            try:
+                key_states, value_states = past_key_values.update(
+                    key_states,
+                    value_states,
+                    self.layer_idx,
+                    cache_kwargs,
+                )
+            except TypeError:
+                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+
+        query_states = self.qkt_matmul.quant_x1(query_states)
+        key_states = self.qkt_matmul.quant_x2(key_states)
+        value_states = self.pv_matmul.quant_x2(value_states)
+
+        attn_output, attn_weights = self._attention_forward(
+            query_states=query_states,
+            key_states=key_states,
+            value_states=value_states,
+            attention_mask=attention_mask,
+            output_attentions=output_attentions,
+            **kwargs,
+        )
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = self.o_proj(attn_output)
+
+        if not output_attentions:
+            attn_weights = None
+        return attn_output, attn_weights
+
+
 class QuantQwen3DecoderLayer(nn.Module):
     def __init__(self, ori_layer, args):
         super().__init__()
@@ -330,6 +408,78 @@ class QuantQwen3DecoderLayer(nn.Module):
         hidden_states = hidden_states.to(residual.device)
         hidden_states = residual + hidden_states
         return hidden_states
+
+
+class QuantQwen3MoeDecoderLayer(nn.Module):
+    def __init__(self, ori_layer, args):
+        super().__init__()
+        self.hidden_size = getattr(
+            ori_layer,
+            "hidden_size",
+            getattr(getattr(ori_layer.self_attn, "config", None), "hidden_size", None),
+        )
+        self.self_attn = QuantQwen3MoeAttention(ori_layer.self_attn, args)
+        if hasattr(ori_layer.mlp, "experts"):
+            self.mlp = QuantQwen3MoeSparseMoeBlock(ori_layer.mlp, args)
+        else:
+            self.mlp = QuantQwenMLP(ori_layer.mlp, args)
+        self.input_layernorm = OmniLlamaRMSNorm(
+            ori_layer.input_layernorm,
+            eps=_resolve_rms_eps(ori_layer.input_layernorm),
+        )
+        self.post_attention_layernorm = OmniLlamaRMSNorm(
+            ori_layer.post_attention_layernorm,
+            eps=_resolve_rms_eps(ori_layer.post_attention_layernorm),
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values=None,
+        use_cache: bool | None = False,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        layer_device = _module_device(self, hidden_states.device)
+        hidden_states = hidden_states.to(layer_device)
+        attention_mask = _move_optional_tensor(attention_mask, layer_device)
+        position_ids = _move_optional_tensor(position_ids, layer_device)
+        position_embeddings = _move_optional_tensor(position_embeddings, layer_device)
+        kwargs = _move_optional_tensor(kwargs, layer_device)
+        output_attentions = bool(kwargs.pop("output_attentions", False))
+        output_router_logits = bool(kwargs.pop("output_router_logits", False))
+        past_key_values = kwargs.pop("past_key_value", past_key_values)
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states, _attn_weights = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            position_embeddings=position_embeddings,
+            output_attentions=output_attentions,
+            **kwargs,
+        )
+        hidden_states = hidden_states.to(residual.device)
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        router_logits = None
+        if isinstance(hidden_states, tuple):
+            hidden_states, router_logits = hidden_states
+        hidden_states = hidden_states.to(residual.device)
+        hidden_states = residual + hidden_states
+        outputs = (hidden_states,)
+        if output_attentions:
+            outputs += (_attn_weights,)
+        if output_router_logits:
+            outputs += (router_logits,)
+        return outputs
 
 
 class QuantQwen3_5Attention(Qwen3_5Attention):
@@ -831,6 +981,56 @@ class QuantQwen3_5MoeSparseMoeBlock(nn.Module):
         expert_output = expert_output + shared_expert_output
         expert_output = expert_output.reshape(batch_size, sequence_length, hidden_dim)
         return expert_output
+
+
+class QuantQwen3MoeSparseMoeBlock(nn.Module):
+    def __init__(self, org_module: nn.Module, args):
+        super().__init__()
+        self.gate = org_module.gate
+        self.top_k = int(getattr(org_module, "top_k", getattr(org_module.gate, "top_k", 1)))
+        self.num_experts = int(getattr(org_module, "num_experts", getattr(org_module.gate, "num_experts", len(org_module.experts) if isinstance(org_module.experts, nn.ModuleList) else org_module.experts.num_experts)))
+        self.norm_topk_prob = bool(getattr(org_module, "norm_topk_prob", getattr(org_module.gate, "norm_topk_prob", True)))
+        self.experts_are_packed = hasattr(org_module.experts, "gate_up_proj")
+        if self.experts_are_packed:
+            self.experts = QuantQwen3_5MoePackedExperts(org_module.experts, args)
+        else:
+            self.experts = nn.ModuleList([QuantQwen3_5MoeMLP(expert, args) for expert in org_module.experts])
+        self.calibrate_all_experts = False
+        self.use_weight_quant = False
+        self.use_act_quant = False
+
+    def _route(self, hidden_states: torch.Tensor):
+        gate_output = self.gate(hidden_states)
+        if isinstance(gate_output, tuple):
+            return gate_output
+        router_logits = gate_output
+        router_probs = torch.nn.functional.softmax(router_logits, dtype=torch.float, dim=-1)
+        routing_weights, selected_experts = torch.topk(router_probs, self.top_k, dim=-1)
+        if self.norm_topk_prob:
+            routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
+        return router_logits, routing_weights.to(hidden_states.dtype), selected_experts
+
+    def forward(self, hidden_states: torch.Tensor):
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+        router_logits, routing_weights, selected_experts = self._route(hidden_states_reshaped)
+        if self.experts_are_packed:
+            expert_output = self.experts(hidden_states_reshaped, selected_experts, routing_weights)
+        else:
+            expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+            expert_output = torch.zeros_like(hidden_states_reshaped)
+            for expert_idx, expert_layer in enumerate(self.experts):
+                top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+                if not self.calibrate_all_experts and token_idx.numel() == 0:
+                    continue
+                if self.calibrate_all_experts:
+                    current_hidden_states = expert_layer(hidden_states_reshaped)[token_idx]
+                else:
+                    current_hidden_states = expert_layer(hidden_states_reshaped[token_idx])
+                if token_idx.numel() > 0:
+                    current_hidden_states = current_hidden_states * routing_weights[token_idx, top_k_pos, None]
+                    expert_output.index_add_(0, token_idx, current_hidden_states.to(expert_output.dtype))
+        return expert_output.reshape(batch_size, sequence_length, hidden_dim), router_logits
 
 
 class QuantQwen3_5DecoderLayer(nn.Module):

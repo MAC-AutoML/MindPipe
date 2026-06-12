@@ -235,6 +235,10 @@ class SplitQuantMethod(BaseQuantizationMethod):
                 apply_wrapper = apply_splitquant_to_qwen
             elif model_type in {"qwen3", "qwen3_vl"}:
                 apply_wrapper = apply_splitquant_to_qwen3
+            elif model_type == "qwen3_moe":
+                from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3_moe
+
+                apply_wrapper = apply_splitquant_to_qwen3_moe
             elif model_type == "qwen3_5":
                 from splitquant.model_tools.qwen3_5_split_utils import apply_splitquant_to_qwen3_5
 

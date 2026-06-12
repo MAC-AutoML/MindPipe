@@ -25,7 +25,7 @@ from flatquant.quant_utils import set_quantizer_state
 
 def _build_calibration_forward_kwargs(model, sample):
     model_type = getattr(model.config, "model_type", None)
-    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_moe", "qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
         # Keep an explicit all-ones mask during capture so Qwen3.5-family models
         # stay on the expected masking path before the first decoder block.
         return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}

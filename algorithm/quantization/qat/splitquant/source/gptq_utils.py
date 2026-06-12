@@ -20,7 +20,7 @@ from splitquant.quant_utils import WeightQuantizer
 
 def _build_calibration_forward_kwargs(model, sample):
     model_type = getattr(model.config, "model_type", None)
-    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_moe", "qwen3_5", "qwen3_5_moe", "qwen3_5_moe_text"}:
         return {"attention_mask": torch.ones_like(sample, dtype=torch.long, device=sample.device)}
     return {}
 
@@ -78,6 +78,20 @@ def _sequential_groups_for_layer(layer):
             ["mlp.shared_expert.down_proj.linear"],
             ["mlp.shared_expert_gate.linear"],
         ]
+    if isinstance(getattr(layer.mlp, "experts", None), nn.ModuleList):
+        groups = [
+            ["self_attn.k_proj.linear", "self_attn.v_proj.linear", "self_attn.q_proj.linear"],
+            ["self_attn.o_proj.linear"],
+        ]
+        for expert_index in range(len(layer.mlp.experts)):
+            groups.append(
+                [
+                    f"mlp.experts.{expert_index}.up_proj.linear",
+                    f"mlp.experts.{expert_index}.gate_proj.linear",
+                ]
+            )
+            groups.append([f"mlp.experts.{expert_index}.down_proj.linear"])
+        return groups
     if getattr(layer, "layer_type", None) == "linear_attention":
         return [
             ["self_attn.in_proj_qkv.linear"],
@@ -118,6 +132,22 @@ def _quantizable_names_for_layer(layer):
             "mlp.shared_expert.down_proj.linear",
             "mlp.shared_expert_gate.linear",
         }
+    if isinstance(getattr(layer.mlp, "experts", None), nn.ModuleList):
+        names = {
+            "self_attn.q_proj.linear",
+            "self_attn.k_proj.linear",
+            "self_attn.v_proj.linear",
+            "self_attn.o_proj.linear",
+        }
+        for expert_index in range(len(layer.mlp.experts)):
+            names.update(
+                {
+                    f"mlp.experts.{expert_index}.up_proj.linear",
+                    f"mlp.experts.{expert_index}.gate_proj.linear",
+                    f"mlp.experts.{expert_index}.down_proj.linear",
+                }
+            )
+        return names
     if getattr(layer, "layer_type", None) == "linear_attention":
         return {
             "self_attn.in_proj_qkv.linear",

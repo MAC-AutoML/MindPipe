@@ -311,9 +311,9 @@ class MLPProjectionGroup:
     """一组必须共享 neuron mask 的 MLP 投影层。"""
 
     name: str
-    up_proj: nn.Linear
-    gate_proj: nn.Linear
-    down_proj: nn.Linear
+    up_proj: nn.Module
+    gate_proj: nn.Module
+    down_proj: nn.Module
     owner: nn.Module
 
 
@@ -680,12 +680,21 @@ def load_model_and_tokenizer(
         config.model_type == "qwen3_5_moe"
         or "Qwen3_5MoeForConditionalGeneration" in architectures
     )
+    is_qwen3_moe = config.model_type == "qwen3_moe" or "Qwen3MoeForCausalLM" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
     is_qwen2_vl = config.model_type == "qwen2_vl" or "Qwen2VLForConditionalGeneration" in architectures
     is_llava = config.model_type == "llava" or "LlavaForConditionalGeneration" in architectures
 
-    if is_qwen3_5_moe:
+    if is_qwen3_moe:
+        try:
+            from transformers import Qwen3MoeForCausalLM
+        except ImportError:
+            from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeForCausalLM
+
+        model = Qwen3MoeForCausalLM.from_pretrained(model_path, **model_kwargs)
+        processor = None
+    elif is_qwen3_5_moe:
         try:
             from transformers import Qwen3_5MoeForConditionalGeneration
 
@@ -836,12 +845,40 @@ def get_output_head(model: nn.Module) -> nn.Module | None:
     return None
 
 
-def find_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Linear]:
-    result: dict[str, nn.Linear] = {}
+def _is_linear_like_module(module: nn.Module | None) -> bool:
+    if module is None:
+        return False
+    weight = getattr(module, "weight", None)
+    if not torch.is_tensor(weight) or weight.ndim != 2:
+        return False
+    if not hasattr(module, "in_features") or not hasattr(module, "out_features"):
+        return False
+    bias = getattr(module, "bias", None)
+    return bias is None or torch.is_tensor(bias)
+
+
+def resolve_linear_module(module: nn.Module | None, layers=(nn.Linear,)) -> nn.Module | None:
+    layer_types = tuple(layers)
+    if isinstance(module, layer_types):
+        return module
+    for attr_name in ("linear", "module"):
+        child = getattr(module, attr_name, None)
+        if isinstance(child, layer_types):
+            return child
+        if nn.Linear in layer_types and _is_linear_like_module(child):
+            return child
+    if nn.Linear in layer_types and _is_linear_like_module(module):
+        return module
+    return None
+
+
+def find_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Module]:
+    result: dict[str, nn.Module] = {}
     for child_name, child in module.named_children():
         qualified_name = f"{prefix}.{child_name}" if prefix else child_name
-        if isinstance(child, nn.Linear):
-            result[qualified_name] = child
+        linear = resolve_linear_module(child)
+        if linear is not None:
+            result[qualified_name] = linear
             continue
         result.update(find_linear_layers(child, qualified_name))
     return result
@@ -884,7 +921,7 @@ def _is_pruning_ignored_linear(name: str) -> bool:
     return any(name == prefix or name.startswith(prefix) for prefix in ignored_prefix_parts)
 
 
-def find_prunable_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Linear]:
+def find_prunable_linear_layers(module: nn.Module, prefix: str = "") -> dict[str, nn.Module]:
     """查找剪枝可处理的 Linear，排除 MoE router、head 和旋转矩阵。"""
     return {
         name: linear
@@ -893,14 +930,8 @@ def find_prunable_linear_layers(module: nn.Module, prefix: str = "") -> dict[str
     }
 
 
-def _as_linear(module: nn.Module | None) -> nn.Linear | None:
-    if isinstance(module, nn.Linear):
-        return module
-    for attr_name in ("linear", "module"):
-        child = getattr(module, attr_name, None)
-        if isinstance(child, nn.Linear):
-            return child
-    return None
+def _as_linear(module: nn.Module | None) -> nn.Module | None:
+    return resolve_linear_module(module)
 
 
 def _make_mlp_group(name: str, owner: nn.Module) -> MLPProjectionGroup | None:
@@ -952,6 +983,16 @@ def _is_dense_qwen3_config(config: Any | None) -> bool:
         return True
     architectures = getattr(config, "architectures", []) or []
     return any(str(name) == "Qwen3ForCausalLM" for name in architectures)
+
+
+def _is_qwen3_moe_config(config: Any | None) -> bool:
+    if config is None:
+        return False
+    model_type = str(getattr(config, "model_type", "") or "")
+    if model_type == "qwen3_moe":
+        return True
+    architectures = getattr(config, "architectures", []) or []
+    return any(str(name) == "Qwen3MoeForCausalLM" for name in architectures)
 
 
 def _copy_or_pad_2d(weight: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
@@ -1007,6 +1048,29 @@ def _set_intermediate_size_on_configs(
         seen.add(id(config))
         if hasattr(config, "intermediate_size"):
             setattr(config, "intermediate_size", int(intermediate_size))
+
+
+def _set_moe_intermediate_size_on_configs(
+    model: nn.Module,
+    backbone: TextBackbone,
+    moe_intermediate_size: int,
+) -> None:
+    seen: set[int] = set()
+    candidates = [
+        getattr(model, "config", None),
+        getattr(backbone.root, "config", None),
+    ]
+    for config in list(candidates):
+        text_config = getattr(config, "text_config", None)
+        if text_config is not None:
+            candidates.append(text_config)
+
+    for config in candidates:
+        if config is None or id(config) in seen:
+            continue
+        seen.add(id(config))
+        if hasattr(config, "moe_intermediate_size"):
+            setattr(config, "moe_intermediate_size", int(moe_intermediate_size))
 
 
 def _dense_mlp_width(group: MLPProjectionGroup) -> int:
@@ -1086,6 +1150,66 @@ def normalize_dense_qwen3_mlp_intermediate_size_for_hf_save(model: nn.Module) ->
         LOGGER.info(
             "Normalized %d dense Qwen3 MLP block(s) for HF save "
             "(intermediate_size=%d, padded_layers=%d).",
+            len(groups),
+            target_width,
+            changed,
+        )
+    return changed
+
+
+@torch.no_grad()
+def normalize_qwen3_moe_expert_intermediate_size_for_hf_save(model: nn.Module) -> int:
+    """Pad Qwen3-MoE routed experts to one global moe_intermediate_size before HF save."""
+    config = getattr(model, "config", None)
+    text_config = getattr(config, "text_config", config)
+    if not (_is_qwen3_moe_config(config) or _is_qwen3_moe_config(text_config)):
+        return 0
+
+    try:
+        backbone = get_text_backbone(model)
+    except NotImplementedError:
+        return 0
+
+    groups: list[MLPProjectionGroup] = []
+    widths: list[int] = []
+    for layer in backbone.layers:
+        for group in iter_mlp_projection_groups(layer):
+            if group.name.startswith("mlp.experts."):
+                groups.append(group)
+                widths.append(_dense_mlp_width(group))
+
+    if not groups:
+        return 0
+
+    target_width = max(widths)
+    hidden_sizes = {
+        int(group.gate_proj.weight.shape[1])
+        for group in groups
+    }
+    if len(hidden_sizes) != 1:
+        raise ValueError(f"Qwen3-MoE expert hidden sizes differ across layers: {sorted(hidden_sizes)}")
+    hidden_size = hidden_sizes.pop()
+
+    changed = 0
+    for group, current_width in zip(groups, widths, strict=True):
+        if current_width != target_width:
+            changed += 1
+        _resize_linear_for_hf_save(group.gate_proj, target_width, hidden_size)
+        _resize_linear_for_hf_save(group.up_proj, target_width, hidden_size)
+        _resize_linear_for_hf_save(
+            group.down_proj,
+            int(group.down_proj.weight.shape[0]),
+            target_width,
+        )
+        if hasattr(group.owner, "intermediate_size"):
+            group.owner.intermediate_size = int(target_width)
+
+    _set_moe_intermediate_size_on_configs(model, backbone, target_width)
+    config_width = getattr(text_config, "moe_intermediate_size", None)
+    if changed or config_width != target_width:
+        LOGGER.info(
+            "Normalized %d Qwen3-MoE expert MLP block(s) for HF save "
+            "(moe_intermediate_size=%d, padded_experts=%d).",
             len(groups),
             target_width,
             changed,
@@ -1282,10 +1406,26 @@ def capture_first_block_inputs(
             raise ValueError
 
     blocks[0] = Catcher(blocks[0])
+    model_type = str(getattr(getattr(model, "config", None), "model_type", "") or "")
     for token_ids, _labels in calibration_batches:
         try:
             with torch.no_grad():
-                model(input_ids=token_ids.to(capture_device), use_cache=False)
+                input_ids = token_ids.to(capture_device)
+                forward_kwargs: dict[str, Any] = {"input_ids": input_ids, "use_cache": False}
+                if model_type in {
+                    "qwen2_5_vl",
+                    "qwen3_vl",
+                    "qwen3_moe",
+                    "qwen3_5",
+                    "qwen3_5_moe",
+                    "qwen3_5_moe_text",
+                }:
+                    forward_kwargs["attention_mask"] = torch.ones_like(
+                        input_ids,
+                        dtype=torch.long,
+                        device=input_ids.device,
+                    )
+                model(**forward_kwargs)
         except ValueError:
             pass
 

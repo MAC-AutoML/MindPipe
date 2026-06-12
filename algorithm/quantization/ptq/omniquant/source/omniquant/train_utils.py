@@ -22,6 +22,7 @@ from omniquant.model_tools.llama_utils import initialize_omni_parameters as init
 from omniquant.model_tools.minicpm_utils import QuantMiniCPMDecoderLayer
 from omniquant.model_tools.minicpm_utils import initialize_omni_parameters as initialize_minicpm_omni_parameters
 from omniquant.model_tools.qwen3_utils import QuantQwen3DecoderLayer
+from omniquant.model_tools.qwen3_utils import QuantQwen3MoeDecoderLayer
 from omniquant.model_tools.qwen3_utils import QuantQwen3_5DecoderLayer
 from omniquant.model_tools.qwen3_utils import QuantQwen3_5MoeDecoderLayer
 from omniquant.model_tools.qwen3_utils import initialize_qwen3_5_omni_parameters
@@ -154,6 +155,8 @@ def _resolve_omniquant_impl(model_type: str):
         return QuantQwenDecoderLayer, initialize_qwen_omni_parameters
     if model_type in {"qwen3", "qwen3_vl"}:
         return QuantQwen3DecoderLayer, initialize_qwen3_omni_parameters
+    if model_type == "qwen3_moe":
+        return QuantQwen3MoeDecoderLayer, initialize_qwen3_5_moe_omni_parameters
     if model_type == "qwen3_5":
         return QuantQwen3_5DecoderLayer, initialize_qwen3_5_omni_parameters
     if model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}:

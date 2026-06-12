@@ -582,12 +582,163 @@ class RefusedQwen3_5MoeSparseMoeBlock(nn.Module):
         return expert_output.reshape(batch_size, sequence_length, hidden_dim)
 
 
+class UnfusedQwen3MoeSparseMoeBlock(nn.Module):
+    """Qwen3MoeSparseMoeBlock 的本地 unfused 版本。"""
+
+    def __init__(
+        self,
+        original: nn.Module,
+        config: Any,
+        calibrate_all_experts: bool = True,
+    ):
+        super().__init__()
+        text_config = getattr(config, "text_config", config)
+        self.calibrate_all_experts = calibrate_all_experts
+        self.gate = original.gate
+        self.top_k = int(_get_first_attr((text_config, "num_experts_per_tok"), (original, "top_k")))
+        self.num_experts = int(_get_first_attr((text_config, "num_experts"), (original, "num_experts")))
+        self.hidden_dim = int(_get_first_attr((text_config, "hidden_size"), (original, "hidden_dim")))
+        self.hidden_size = self.hidden_dim
+        self.norm_topk_prob = bool(getattr(original, "norm_topk_prob", getattr(text_config, "norm_topk_prob", True)))
+        self.was_packed = hasattr(original.experts, "gate_up_proj") and hasattr(original.experts, "down_proj")
+        if self.was_packed:
+            self.experts = SequentialQwen3_5MoeExperts(text_config, original.experts)
+        else:
+            self.experts = original.experts
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+
+        gate_output = self.gate(hidden_states_reshaped)
+        if isinstance(gate_output, tuple):
+            router_logits, routing_weights, selected_experts = gate_output
+            routing_weights = routing_weights.to(hidden_states.dtype)
+        else:
+            router_logits = gate_output
+            router_probs = F.softmax(router_logits, dtype=torch.float, dim=-1)
+            routing_weights, selected_experts = torch.topk(
+                router_probs,
+                self.top_k,
+                dim=-1,
+            )
+            if self.norm_topk_prob:
+                routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
+            routing_weights = routing_weights.to(hidden_states.dtype)
+
+        expert_mask = F.one_hot(
+            selected_experts,
+            num_classes=self.num_experts,
+        ).permute(2, 1, 0)
+
+        final_hidden_states = torch.zeros(
+            (batch_size * sequence_length, hidden_dim),
+            dtype=hidden_states.dtype,
+            device=hidden_states.device,
+        )
+
+        for expert_index, expert_layer in enumerate(self.experts):
+            top_k_pos, token_index = torch.where(expert_mask[expert_index])
+            if not self.calibrate_all_experts and token_index.numel() == 0:
+                continue
+            if self.calibrate_all_experts:
+                expert_output = expert_layer(hidden_states_reshaped)[token_index]
+            else:
+                expert_output = expert_layer(hidden_states_reshaped[token_index])
+
+            if token_index.numel() > 0:
+                current_hidden_states = expert_output * routing_weights[token_index, top_k_pos, None]
+                final_hidden_states.index_add_(
+                    0,
+                    token_index,
+                    current_hidden_states.to(hidden_states.dtype),
+                )
+
+        return final_hidden_states.reshape(batch_size, sequence_length, hidden_dim), router_logits
+
+
+class RefusedQwen3MoeSparseMoeBlock(nn.Module):
+    """保存前合回 HF packed Qwen3MoeSparseMoeBlock 参数布局。"""
+
+    def __init__(
+        self,
+        original: UnfusedQwen3MoeSparseMoeBlock,
+        intermediate_size: int,
+        expert_parameter_device: str | torch.device | None = None,
+    ):
+        super().__init__()
+        self.gate = original.gate
+        self.top_k = original.top_k
+        self.num_experts = original.num_experts
+        self.hidden_dim = original.hidden_dim
+        self.hidden_size = original.hidden_size
+        self.norm_topk_prob = original.norm_topk_prob
+
+        act_fn = getattr(original.experts[0], "act_fn", None)
+        self.experts = RefusedQwen3_5MoeExperts(
+            original.experts,
+            intermediate_size=int(intermediate_size),
+            hidden_size=int(self.hidden_dim),
+            act_fn=act_fn,
+            parameter_device=expert_parameter_device,
+        )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+
+        gate_output = self.gate(hidden_states_reshaped)
+        if isinstance(gate_output, tuple):
+            router_logits, routing_weights, selected_experts = gate_output
+        else:
+            router_logits = gate_output
+            router_probs = F.softmax(gate_output, dtype=torch.float, dim=-1)
+            routing_weights, selected_experts = torch.topk(
+                router_probs,
+                self.top_k,
+                dim=-1,
+            )
+            if self.norm_topk_prob:
+                routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
+            routing_weights = routing_weights.to(hidden_states.dtype)
+
+        expert_output = self.experts(
+            hidden_states_reshaped,
+            selected_experts,
+            routing_weights,
+        )
+        return expert_output.reshape(batch_size, sequence_length, hidden_dim), router_logits
+
+
 def _is_qwen3_5_moe_block(module: nn.Module) -> bool:
     return (
         module.__class__.__name__ == "Qwen3_5MoeSparseMoeBlock"
         and hasattr(module, "experts")
         and hasattr(module.experts, "gate_up_proj")
         and hasattr(module.experts, "down_proj")
+    )
+
+
+def _is_qwen3_moe_block(module: nn.Module) -> bool:
+    experts = getattr(module, "experts", None)
+    return (
+        module.__class__.__name__ == "Qwen3MoeSparseMoeBlock"
+        and hasattr(module, "gate")
+        and (
+            isinstance(experts, nn.ModuleList)
+            or (hasattr(experts, "gate_up_proj") and hasattr(experts, "down_proj"))
+        )
+    )
+
+
+def _is_qwen3_moe_calibratable_wrapper(module: nn.Module) -> bool:
+    return (
+        module.__class__.__name__ in {
+            "FlatQuantQwen3MoeSparseMoeBlock",
+            "SplitQuantQwen3MoeSparseMoeBlock",
+            "QuantQwen3MoeSparseMoeBlock",
+        }
+        and hasattr(module, "calibrate_all_experts")
     )
 
 
@@ -621,6 +772,41 @@ def unfuse_qwen3_5_moe_experts(
 
     if replacements:
         LOGGER.info("Unfused %d Qwen3.5/3.6 MoE block(s) for pruning.", len(replacements))
+    return len(replacements)
+
+
+def unfuse_qwen3_moe_experts(
+    model: nn.Module,
+    calibrate_all_experts: bool = True,
+) -> int:
+    """原地拆分 Qwen3 MoE routed experts，返回替换模块数量。"""
+    replacements = []
+    unfused_count = 0
+    for name, module in model.named_modules():
+        if isinstance(module, UnfusedQwen3MoeSparseMoeBlock):
+            module.calibrate_all_experts = calibrate_all_experts
+            unfused_count += 1
+        elif _is_qwen3_moe_calibratable_wrapper(module):
+            module.calibrate_all_experts = calibrate_all_experts
+            unfused_count += 1
+        elif _is_qwen3_moe_block(module):
+            replacements.append(name)
+
+    if not replacements and not unfused_count:
+        return 0
+
+    for name in replacements:
+        original = model.get_submodule(name)
+        replacement = UnfusedQwen3MoeSparseMoeBlock(
+            original=original,
+            config=getattr(model, "config", getattr(original, "config", None)),
+            calibrate_all_experts=calibrate_all_experts,
+        )
+        model.set_submodule(name, replacement)
+        del original
+
+    if replacements:
+        LOGGER.info("Unfused %d Qwen3 MoE block(s) for pruning.", len(replacements))
     return len(replacements)
 
 
@@ -718,6 +904,59 @@ def refuse_qwen3_5_moe_experts_for_hf_save(model: nn.Module) -> int:
     return len(target_names)
 
 
+def refuse_qwen3_moe_experts_for_hf_save(model: nn.Module) -> int:
+    """保存前把 Qwen3-MoE routed experts 整理成 HF 可加载形态。"""
+    target_names = [
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, UnfusedQwen3MoeSparseMoeBlock)
+    ]
+    if not target_names:
+        return 0
+
+    routed_widths: list[int] = []
+    for name in target_names:
+        block = model.get_submodule(name)
+        for expert in block.experts:
+            routed_widths.append(_get_mlp_width(expert))
+
+    target_routed_width = _ceil_to_multiple(max(routed_widths), 8)
+    text_config = _get_text_config(model)
+    _set_config_attr_if_present(text_config, "moe_intermediate_size", target_routed_width)
+
+    expert_parameter_device = (
+        "cpu" if _env_enabled("MINDPIPE_QWEN35_HF_SAVE_EXPERTS_ON_CPU", True) else None
+    )
+    if expert_parameter_device == "cpu":
+        LOGGER.info("Building refused Qwen3 routed expert tensors on CPU for HF save.")
+
+    refused = 0
+    for name in target_names:
+        block = model.get_submodule(name)
+        if block.was_packed:
+            replacement = RefusedQwen3MoeSparseMoeBlock(
+                original=block,
+                intermediate_size=target_routed_width,
+                expert_parameter_device=expert_parameter_device,
+            )
+            model.set_submodule(name, replacement)
+            refused += 1
+        else:
+            for expert in block.experts:
+                _resize_mlp_to_intermediate_size(expert, target_routed_width)
+        del block
+        _empty_accelerator_cache()
+
+    LOGGER.info(
+        "Prepared %d Qwen3 MoE block(s) for HF save "
+        "(moe_intermediate_size=%d, refused_packed_blocks=%d).",
+        len(target_names),
+        target_routed_width,
+        refused,
+    )
+    return len(target_names)
+
+
 def set_qwen3_5_moe_calibrate_all_experts(
     model: nn.Module,
     enabled: bool,
@@ -726,6 +965,19 @@ def set_qwen3_5_moe_calibrate_all_experts(
     updated = 0
     for module in model.modules():
         if isinstance(module, UnfusedQwen3_5MoeSparseMoeBlock):
+            module.calibrate_all_experts = enabled
+            updated += 1
+    return updated
+
+
+def set_qwen3_moe_calibrate_all_experts(
+    model: nn.Module,
+    enabled: bool,
+) -> int:
+    """切换 Qwen3-MoE unfused forward 是否在校准时跑所有 routed experts。"""
+    updated = 0
+    for module in model.modules():
+        if isinstance(module, UnfusedQwen3MoeSparseMoeBlock) or _is_qwen3_moe_calibratable_wrapper(module):
             module.calibrate_all_experts = enabled
             updated += 1
     return updated

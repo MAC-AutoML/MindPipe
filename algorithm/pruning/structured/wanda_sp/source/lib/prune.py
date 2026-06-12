@@ -11,20 +11,14 @@ from algorithm.common.modeling import (
     iter_mlp_projection_groups,
     get_mlp_projections as _get_mlp_projections,
     get_q_stride,
+    resolve_linear_module as _resolve_linear_module,
     supports_head_pruning,
 )
 from .layerwrapper import WrappedGPT
 
 
 def resolve_linear_module(module, layers=(nn.Linear,)):
-    layer_types = tuple(layers)
-    if isinstance(module, layer_types):
-        return module
-    for attr_name in ("linear", "module"):
-        child = getattr(module, attr_name, None)
-        if isinstance(child, layer_types):
-            return child
-    return None
+    return _resolve_linear_module(module, layers=layers)
 
 
 def find_layers(module, layers=[nn.Linear], name=""):

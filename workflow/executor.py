@@ -15,6 +15,7 @@ from algorithm.common.io import ensure_dir
 from algorithm.common.io import write_json
 from algorithm.common.modeling import load_model_and_tokenizer
 from algorithm.common.modeling import normalize_dense_qwen3_mlp_intermediate_size_for_hf_save
+from algorithm.common.modeling import normalize_qwen3_moe_expert_intermediate_size_for_hf_save
 from algorithm.finetuning.registry import get_method as get_finetuning_method
 from algorithm.finetuning.compression_lora.mask_utils import extract_masks_from_pruned_model
 from algorithm.finetuning.compression_lora.mask_utils import mask_sparsity
@@ -22,8 +23,11 @@ from algorithm.finetuning.compression_lora.mask_utils import restore_weights
 from algorithm.finetuning.compression_lora.mask_utils import save_masks
 from algorithm.finetuning.compression_lora.mask_utils import snapshot_weights
 from algorithm.common.qwen3_5_moe_unfuse import refuse_qwen3_5_moe_experts_for_hf_save
+from algorithm.common.qwen3_5_moe_unfuse import refuse_qwen3_moe_experts_for_hf_save
 from algorithm.common.qwen3_5_moe_unfuse import set_qwen3_5_moe_calibrate_all_experts
+from algorithm.common.qwen3_5_moe_unfuse import set_qwen3_moe_calibrate_all_experts
 from algorithm.common.qwen3_5_moe_unfuse import unfuse_qwen3_5_moe_experts
+from algorithm.common.qwen3_5_moe_unfuse import unfuse_qwen3_moe_experts
 from algorithm.pruning.registry import get_method as get_pruning_method
 from algorithm.quantization.config import normalize_args as normalize_quantization_args
 from algorithm.quantization.registry import get_method as get_quantization_method
@@ -89,10 +93,12 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
                 target_modules=getattr(stage_args, "compression_lora_target_modules", None),
             )
         unfuse_qwen3_5_moe_experts(model, calibrate_all_experts=True)
+        unfuse_qwen3_moe_experts(model, calibrate_all_experts=True)
         try:
             stage_result = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
         finally:
             set_qwen3_5_moe_calibrate_all_experts(model, False)
+            set_qwen3_moe_calibrate_all_experts(model, False)
         if weight_snapshot is not None:
             masks = extract_masks_from_pruned_model(model, weight_snapshot)
             restore_weights(model, weight_snapshot)
@@ -246,6 +252,8 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     if config.save_model:
         model_dir = ensure_dir(final_output_dir / "saved_model")
         refuse_qwen3_5_moe_experts_for_hf_save(model)
+        refuse_qwen3_moe_experts_for_hf_save(model)
+        normalize_qwen3_moe_expert_intermediate_size_for_hf_save(model)
         normalize_dense_qwen3_mlp_intermediate_size_for_hf_save(model)
         model.save_pretrained(model_dir)
         tokenizer_bundle.save_pretrained(str(model_dir))

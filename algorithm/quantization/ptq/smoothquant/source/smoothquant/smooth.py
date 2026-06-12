@@ -57,6 +57,37 @@ def _compute_qwen3_5_moe_ffn_scales(mlp, act_scales, alpha=0.5):
     return scales
 
 
+def _compute_qwen3_moe_ffn_scales(mlp, act_scales, alpha=0.5):
+    fcs = [mlp.gate]
+    experts = mlp.experts
+    if isinstance(experts, nn.ModuleList):
+        for expert in experts:
+            fcs.extend([expert.gate_proj, expert.up_proj])
+    else:
+        assert experts.gate_up_proj.shape[-1] == act_scales.numel()
+    for fc in fcs:
+        if not hasattr(fc, "weight"):
+            raise TypeError(f"SmoothQuant requires modules with weight tensors; got {type(fc)}")
+        assert fc.weight.shape[-1] == act_scales.numel()
+
+    device = fcs[0].weight.device
+    dtype = fcs[0].weight.dtype
+    act_scales = act_scales.to(device=device, dtype=dtype)
+    weight_scales = [
+        fc.weight.to(device=device).abs().reshape(-1, act_scales.numel()).max(dim=0, keepdim=True)[0]
+        for fc in fcs
+    ]
+    if not isinstance(experts, nn.ModuleList):
+        weight_scales.append(
+            experts.gate_up_proj.to(device=device).abs().reshape(-1, act_scales.numel()).max(dim=0, keepdim=True)[0]
+        )
+    weight_scales = torch.cat(weight_scales, dim=0).max(dim=0)[0].clamp(min=1e-5)
+    scales = (
+        act_scales.pow(alpha) / weight_scales.pow(1 - alpha)
+    ).clamp(min=1e-5).to(device=device, dtype=dtype)
+    return scales
+
+
 @torch.no_grad()
 def smooth_ln_fcs_llama_like(ln, fcs, act_scales, alpha=0.5):
     if not hasattr(ln, "weight") or ln.weight is None:
@@ -113,12 +144,36 @@ def smooth_qwen3_5_moe_ffn(ln, mlp, act_scales, alpha=0.5):
 
 
 @torch.no_grad()
+def smooth_qwen3_moe_ffn(ln, mlp, act_scales, alpha=0.5):
+    if not hasattr(ln, "weight") or ln.weight is None:
+        raise TypeError(f"SmoothQuant requires a norm module with a learnable weight; got {type(ln)}")
+    assert ln.weight.numel() == act_scales.numel()
+    scales = _compute_qwen3_moe_ffn_scales(mlp, act_scales, alpha)
+
+    ln.weight.div_(scales)
+    router_scale = scales.to(device=mlp.gate.weight.device, dtype=mlp.gate.weight.dtype)
+    mlp.gate.weight.mul_(router_scale.view(1, -1))
+
+    if isinstance(mlp.experts, nn.ModuleList):
+        for expert in mlp.experts:
+            for weight in (expert.gate_proj.weight, expert.up_proj.weight):
+                weight.mul_(scales.to(device=weight.device, dtype=weight.dtype).view(1, -1))
+    else:
+        expert_scales = scales.to(
+            device=mlp.experts.gate_up_proj.device,
+            dtype=mlp.experts.gate_up_proj.dtype,
+        )
+        mlp.experts.gate_up_proj.mul_(expert_scales.view(1, 1, -1))
+
+
+@torch.no_grad()
 def smooth_lm(model, scales, alpha=0.5):
     supported_model_types = {
         "llama",
         "qwen2",
         "qwen2_5_vl",
         "qwen3",
+        "qwen3_moe",
         "qwen3_vl",
         "qwen3_5",
         "qwen3_5_moe",
@@ -173,6 +228,17 @@ def smooth_lm(model, scales, alpha=0.5):
             ffn_ln = layer.post_attention_layernorm
             ffn_input_scales = scales[layer_name + ".mlp.shared_expert.gate_proj"]
             smooth_qwen3_5_moe_ffn(ffn_ln, layer.mlp, ffn_input_scales, alpha)
+            continue
+
+        if model_type == "qwen3_moe" and hasattr(layer.mlp, "experts"):
+            attn_ln = layer.input_layernorm
+            qkv = [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj]
+            qkv_input_scales = scales[layer_name + ".self_attn.q_proj"]
+            smooth_ln_fcs_llama_like(attn_ln, qkv, qkv_input_scales, alpha)
+
+            ffn_ln = layer.post_attention_layernorm
+            ffn_input_scales = scales[layer_name + ".mlp.gate"]
+            smooth_qwen3_moe_ffn(ffn_ln, layer.mlp, ffn_input_scales, alpha)
             continue
 
         attn_ln = layer.input_layernorm

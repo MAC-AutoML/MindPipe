@@ -229,6 +229,7 @@ def quantize_llama_like(model, weight_bits=8, activation_bits=8, act_quant="per_
         "qwen2",
         "qwen2_5_vl",
         "qwen3",
+        "qwen3_moe",
         "qwen3_vl",
         "qwen3_5",
         "qwen3_5_moe",
@@ -361,6 +362,48 @@ def quantize_llama_like(model, weight_bits=8, activation_bits=8, act_quant="per_
             )
             quantized_linear_names.append(f"{layer_prefix}.mlp.experts.gate_up_proj")
             quantized_linear_names.append(f"{layer_prefix}.mlp.experts.down_proj")
+        elif model_type == "qwen3_moe" and hasattr(layer.mlp, "experts"):
+            for proj_name in ("q_proj", "k_proj", "v_proj"):
+                _replace_linear_with_smoothquant(
+                    layer.self_attn,
+                    proj_name,
+                    quantized_linear_names,
+                    f"{layer_prefix}.self_attn.{proj_name}",
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                    act_quant=act_quant,
+                    quantize_output=quantize_bmm_input,
+                )
+            _replace_linear_with_smoothquant(
+                layer.self_attn,
+                "o_proj",
+                quantized_linear_names,
+                f"{layer_prefix}.self_attn.o_proj",
+                weight_bits=weight_bits,
+                activation_bits=activation_bits,
+                act_quant=act_quant,
+            )
+
+            if isinstance(layer.mlp.experts, nn.ModuleList):
+                for expert_index, expert in enumerate(layer.mlp.experts):
+                    for proj_name in ("gate_proj", "up_proj", "down_proj"):
+                        _replace_linear_with_smoothquant(
+                            expert,
+                            proj_name,
+                            quantized_linear_names,
+                            f"{layer_prefix}.mlp.experts.{expert_index}.{proj_name}",
+                            weight_bits=weight_bits,
+                            activation_bits=activation_bits,
+                            act_quant=act_quant,
+                        )
+            else:
+                layer.mlp.experts = SmoothQuantPackedMoeExperts.from_float(
+                    layer.mlp.experts,
+                    weight_bits=weight_bits,
+                    activation_bits=activation_bits,
+                )
+                quantized_linear_names.append(f"{layer_prefix}.mlp.experts.gate_up_proj")
+                quantized_linear_names.append(f"{layer_prefix}.mlp.experts.down_proj")
         else:
             for proj_name in ("q_proj", "k_proj", "v_proj"):
                 _replace_linear_with_smoothquant(

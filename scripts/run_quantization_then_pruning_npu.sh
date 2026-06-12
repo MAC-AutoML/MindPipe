@@ -175,9 +175,9 @@ MODELS=(
   #   "/mnt/82_store/LLM-weights/Qwen3.6-27B" \
   #   "/mnt/82_store/LLM-weights/Qwen/Qwen3.6-27B")"
   "$(pick_first_existing_path \
-    "${MODELZOO_ROOT}/Qwen/Qwen3.6-35B-A3B" \
-    "/mnt/82_store/LLM-weights/Qwen3.6-35B-A3B" \
-    "/mnt/82_store/LLM-weights/Qwen/Qwen3.6-35B-A3B")"
+    "${MODELZOO_ROOT}/Qwen/Qwen3-30B-A3B" \
+    "/mnt/82_store/LLM-weights/Qwen3-30B-A3B" \
+    "/mnt/82_store/LLM-weights/Qwen/Qwen3-30B-A3B")"
   # "$(pick_first_existing_path \
   #   "/home/ma-user/work/modelzoo/Qwen/Qwen3-VL-2B-Instruct" \
   #   "/mnt/82_store/LLM-weights/Qwen3-VL-2B-Instruct" \

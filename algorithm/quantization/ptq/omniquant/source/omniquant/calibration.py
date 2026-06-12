@@ -24,7 +24,7 @@ def _model_input_device(model: nn.Module, backbone) -> torch.device:
 
 def _build_calibration_forward_kwargs(model: nn.Module, input_ids: torch.Tensor) -> dict[str, torch.Tensor]:
     model_type = getattr(getattr(model, "config", None), "model_type", None)
-    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_5"}:
+    if model_type in {"qwen2_5_vl", "qwen3_vl", "qwen3_moe", "qwen3_5"}:
         return {"attention_mask": torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)}
     return {}
 
