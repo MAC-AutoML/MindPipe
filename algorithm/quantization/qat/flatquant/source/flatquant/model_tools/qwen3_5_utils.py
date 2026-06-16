@@ -795,6 +795,12 @@ class FlatQuantQwen3_5MoeMLP(nn.Module):
         self.gate_proj.reparameterize(qa_trans=input_trans)
         self.up_proj.reparameterize(qa_trans=input_trans)
         self.down_proj.reparameterize(qa_trans=self._down_trans)
+        if self._down_trans is not None and self._down_trans.add_diag:
+            up_weight = self.up_proj.linear.weight
+            ori_dtype = up_weight.dtype
+            up_weight = up_weight.to(torch.float64).T.mul(self._down_trans.diag_scale.to(torch.float64)).T
+            self.up_proj.linear.weight.data = up_weight.to(ori_dtype)
+            self._down_trans.use_diag = False
 
     def init_diag_scale(self, alpha=0.5):
         del alpha
@@ -819,6 +825,7 @@ class FlatQuantQwen3_5MoePackedExperts(nn.Module):
         self.weight_quantizer.configure(args.w_bits, perchannel=True, sym=not(args.w_asym), mse=False)
         self.act_quantizer = ActivationQuantizer(bits=args.a_bits, sym=not(args.a_asym), lac=args.lac, groupsize=args.a_groupsize)
         self._ori_mode = False
+        self._eval_mode = False
         self.add_fq_trans()
 
     def add_fq_trans(self):
@@ -836,7 +843,7 @@ class FlatQuantQwen3_5MoePackedExperts(nn.Module):
         return self.weight_quantizer.quantize(flat_weight).reshape(original_shape).to(weight.dtype)
 
     def _weights(self, input_trans=None):
-        if self._ori_mode:
+        if self._ori_mode or self._eval_mode:
             return self.gate_up_proj, self.down_proj
         gate_up_weight = self.gate_up_proj
         down_weight = self.down_proj
@@ -845,6 +852,16 @@ class FlatQuantQwen3_5MoePackedExperts(nn.Module):
         if self._down_trans is not None:
             down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
         return self._quantize_weight(gate_up_weight), self._quantize_weight(down_weight)
+
+    def _fuse_down_diag_into_gate_up(self, gate_up_weight: torch.Tensor) -> torch.Tensor:
+        if self._down_trans is None or not self._down_trans.add_diag:
+            return gate_up_weight
+        gate_size = gate_up_weight.shape[1] // 2
+        scale = self._down_trans.diag_scale.to(dtype=torch.float64, device=gate_up_weight.device)
+        fused_weight = gate_up_weight.to(torch.float64).clone()
+        fused_weight[:, gate_size:, :] = fused_weight[:, gate_size:, :] * scale.view(1, -1, 1)
+        self._down_trans.use_diag = False
+        return fused_weight.to(gate_up_weight.dtype)
 
     def forward(
         self,
@@ -888,8 +905,10 @@ class FlatQuantQwen3_5MoePackedExperts(nn.Module):
         if self._down_trans is not None:
             self._down_trans.to_eval_mode()
             down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
+            gate_up_weight = self._fuse_down_diag_into_gate_up(gate_up_weight)
         self.gate_up_proj.data = self._quantize_weight(gate_up_weight)
         self.down_proj.data = self._quantize_weight(down_weight)
+        self._eval_mode = True
 
     def init_diag_scale(self, alpha=0.5):
         del alpha
@@ -909,6 +928,7 @@ class FlatQuantQwen3_5MoeSparseMoeBlock(nn.Module):
         self.shared_expert_gate = FlatQuantizedLinear(args, module.shared_expert_gate)
         self._parent_post_attention_layernorm = None
         self._ori_mode = False
+        self._eval_mode = False
         self.add_fq_trans()
 
     def add_fq_trans(self):
@@ -924,7 +944,7 @@ class FlatQuantQwen3_5MoeSparseMoeBlock(nn.Module):
         self.shared_expert._ori_mode = enabled
 
     def _route(self, hidden_states: torch.Tensor, input_trans=None):
-        if self._ori_mode or input_trans is None:
+        if self._ori_mode or self._eval_mode or input_trans is None:
             return self.gate(hidden_states)
         router_weight = _apply_trans_to_weight(self.gate.weight, input_trans)
         router_logits = F.linear(hidden_states, router_weight)
@@ -961,6 +981,11 @@ class FlatQuantQwen3_5MoeSparseMoeBlock(nn.Module):
         self.shared_expert.reparameterize(input_trans=self._moe_in_trans)
         self.shared_expert_gate.reparameterize(qa_trans=self._moe_in_trans)
         self.experts.reparameterize(input_trans=self._moe_in_trans)
+        if self._moe_in_trans is not None and self._moe_in_trans.add_diag:
+            if self._parent_post_attention_layernorm is None:
+                raise RuntimeError("FlatQuant Qwen3.5-MoE MLP is missing parent post_attention_layernorm for diag fusion.")
+            _reparameterize_qwen3_5_rmsnorm(self._parent_post_attention_layernorm, self._moe_in_trans)
+        self._eval_mode = True
 
     def init_diag_scale(self, alpha=0.5):
         self.shared_expert.init_diag_scale(alpha=alpha)

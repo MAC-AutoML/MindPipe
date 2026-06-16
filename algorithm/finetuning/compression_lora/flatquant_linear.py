@@ -37,8 +37,6 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         self.adapter_type = str(config.adapter_type).lower()
         if self.adapter_type not in {"lora", "dora"}:
             raise ValueError(f"Unsupported compression adapter type: {config.adapter_type!r}.")
-        if self.adapter_type == "dora" and config.init != "lora":
-            raise ValueError("compression DoRA currently supports only init='lora'.")
         self.dora_simple = bool(config.dora_simple)
         self.dora_eps = float(config.dora_eps)
         # Dropout is recorded for config compatibility. Weight-merged LoRA uses
@@ -93,6 +91,7 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         if init == "pissa":
             with torch.no_grad():
                 weight = self.base.linear.weight.detach().to(torch.float32)
+                # For DoRA, dora_magnitude intentionally keeps the original pre-PiSSA row norm.
                 u, s, v = torch.svd_lowrank(weight, q=self.rank, niter=16)
                 s = s / self.scaling
                 sqrt_s = torch.sqrt(s)

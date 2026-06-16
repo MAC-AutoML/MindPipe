@@ -866,6 +866,13 @@ def _add_finetuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compression_lora_masks_from", default=None)
     parser.add_argument("--compression_lora_flatquant_from", default=None)
     parser.add_argument("--compression_lora_adapter_from", default=None)
+    parser.add_argument(
+        "--compression_lora_adapter_from_mode",
+        default="merge_only",
+        choices=["merge_only", "merge_and_train"],
+        help="How to use --compression_lora_adapter_from: merge_only keeps the old eval/merge behavior; "
+        "merge_and_train merges it into the base weight, creates a fresh adapter, then trains.",
+    )
     parser.add_argument("--compression_lora_save_merged_model", type=_bool_flag, default=False)
     parser.add_argument(
         "--compression_lora_train_plan",
@@ -883,6 +890,7 @@ def _add_finetuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compression_lora_sft_learning_rate", type=float, default=5e-5)
     parser.add_argument("--compression_lora_sft_num_train_epochs", type=float, default=1.0)
     parser.add_argument("--compression_lora_sft_max_steps", type=int, default=-1)
+    parser.add_argument("--compression_lora_sft_min_response_tokens", type=int, default=8)
     parser.add_argument(
         "--compression_lora_vlm_image_max_pixels",
         type=int,

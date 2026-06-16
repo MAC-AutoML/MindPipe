@@ -1,9 +1,13 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from flatquant.flat_linear import FlatQuantizedLinear
+from flatquant.flat_utils import reparameterize_ln
 from flatquant.function_utils import get_decompose_dim
 from flatquant.function_utils import get_init_scale
 from flatquant.quant_utils import ActivationQuantizer
+from flatquant.quant_utils import WeightQuantizer
 from flatquant.trans_utils import InvDecomposeTransMatrix
 from flatquant.trans_utils import InvSingleTransMatrix
 from flatquant.trans_utils import SVDDecomposeTransMatrix
@@ -12,6 +16,9 @@ from flatquant.utils import skip_initialization
 
 from flatquant.model_tools.qwen_utils import FlatQuantQwen2MLP
 from flatquant.model_tools.qwen_utils import _weight_device
+from flatquant.model_tools.device_utils import align_attention_auxiliary_tensors
+from flatquant.model_tools.device_utils import get_module_device
+from flatquant.model_tools.device_utils import move_tensor_tree_to_device
 
 from transformers.models.qwen3.modeling_qwen3 import ALL_ATTENTION_FUNCTIONS as QWEN3_ATTENTION_FUNCTIONS
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
@@ -39,6 +46,29 @@ def _resolve_attention_interface(attention_functions, implementation, eager_atte
     if implementation == "eager":
         return eager_attention_fn
     return attention_functions[implementation]
+
+
+def _decompose_trans_cls(args):
+    if args.direct_inv:
+        return InvDecomposeTransMatrix
+    return SVDDecomposeTransMatrix
+
+
+def _build_group_trans(args, hidden_size):
+    trans_cls = _decompose_trans_cls(args)
+    dim_left, dim_right = get_decompose_dim(hidden_size)
+    return trans_cls(dim_left, dim_right, add_diag=args.add_diag)
+
+
+def _apply_trans_to_weight(weight: torch.Tensor, trans: nn.Module) -> torch.Tensor:
+    if isinstance(trans, list):
+        raise NotImplementedError("Qwen3-MoE FlatQuant does not use list-based transforms.")
+    return trans(weight, inv_t=True)
+
+
+def _apply_trans_to_packed_weight(weight: torch.Tensor, trans: nn.Module) -> torch.Tensor:
+    original_shape = weight.shape
+    return _apply_trans_to_weight(weight.reshape(-1, original_shape[-1]), trans).reshape(original_shape)
 
 
 class _FlatQuantQwen3AttentionMixin:
@@ -408,6 +438,233 @@ class FlatQuantQwen3VLTextAttention(_FlatQuantQwen3AttentionMixin, Qwen3VLTextAt
         return attn_output, attn_weights
 
 
+class FlatQuantQwen3MoePackedExperts(nn.Module):
+    def __init__(self, args, module: nn.Module):
+        super().__init__()
+        self.args = args
+        self.num_experts = module.num_experts
+        self.intermediate_size = getattr(module, "intermediate_size", getattr(module, "intermediate_dim", None))
+        self.act_fn = module.act_fn
+        self.gate_up_proj = nn.Parameter(module.gate_up_proj.detach().clone())
+        self.down_proj = nn.Parameter(module.down_proj.detach().clone())
+        self.weight_quantizer = WeightQuantizer()
+        self.weight_quantizer.configure(args.w_bits, perchannel=True, sym=not args.w_asym, mse=False)
+        self.act_quantizer = ActivationQuantizer(
+            bits=args.a_bits,
+            sym=not args.a_asym,
+            lac=args.lac,
+            groupsize=args.a_groupsize,
+        )
+        self._ori_mode = False
+        self._eval_mode = False
+        self.add_fq_trans()
+
+    def add_fq_trans(self):
+        if self.args.w_bits < 16 or self.args.a_bits < 16:
+            self._down_trans = _build_group_trans(self.args, self.down_proj.shape[-1])
+        else:
+            self._down_trans = None
+
+    def _quantize_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        if self.args.w_bits >= 16:
+            return weight
+        original_shape = weight.shape
+        flat_weight = weight.reshape(-1, original_shape[-1])
+        self.weight_quantizer.find_params(flat_weight)
+        return self.weight_quantizer.quantize(flat_weight).reshape(original_shape).to(weight.dtype)
+
+    def _weights(self, input_trans=None):
+        if self._ori_mode or self._eval_mode:
+            return self.gate_up_proj, self.down_proj
+        gate_up_weight = self.gate_up_proj
+        down_weight = self.down_proj
+        if input_trans is not None:
+            gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
+        if self._down_trans is not None:
+            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
+        return self._quantize_weight(gate_up_weight), self._quantize_weight(down_weight)
+
+    def _fuse_down_diag_into_gate_up(self, gate_up_weight: torch.Tensor) -> torch.Tensor:
+        if self._down_trans is None or not self._down_trans.add_diag:
+            return gate_up_weight
+        gate_size = gate_up_weight.shape[1] // 2
+        scale = self._down_trans.diag_scale.to(dtype=torch.float64, device=gate_up_weight.device)
+        fused_weight = gate_up_weight.to(torch.float64).clone()
+        fused_weight[:, gate_size:, :] = fused_weight[:, gate_size:, :] * scale.view(1, -1, 1)
+        self._down_trans.use_diag = False
+        return fused_weight.to(gate_up_weight.dtype)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+        input_trans=None,
+    ) -> torch.Tensor:
+        final_hidden_states = torch.zeros_like(hidden_states)
+        gate_up_proj, down_proj = self._weights(input_trans=input_trans)
+        with torch.no_grad():
+            expert_mask = F.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        for expert_idx in expert_hit:
+            expert_idx = expert_idx[0]
+            if expert_idx == self.num_experts:
+                continue
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            if not self._ori_mode:
+                current_state = self.act_quantizer(current_state)
+            gate, up = F.linear(current_state, gate_up_proj[expert_idx]).chunk(2, dim=-1)
+            current_hidden_states = self.act_fn(gate) * up
+            if not self._ori_mode:
+                current_hidden_states = self.act_quantizer(current_hidden_states)
+            if not self._ori_mode and self._down_trans is not None:
+                current_hidden_states = self._down_trans(current_hidden_states)
+            current_hidden_states = F.linear(current_hidden_states, down_proj[expert_idx])
+            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+        return final_hidden_states
+
+    def reparameterize(self, input_trans=None):
+        gate_up_weight = self.gate_up_proj.data
+        down_weight = self.down_proj.data
+        if input_trans is not None:
+            gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
+        if self._down_trans is not None:
+            self._down_trans.to_eval_mode()
+            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
+            gate_up_weight = self._fuse_down_diag_into_gate_up(gate_up_weight)
+        self.gate_up_proj.data = self._quantize_weight(gate_up_weight)
+        self.down_proj.data = self._quantize_weight(down_weight)
+        self._eval_mode = True
+
+    def init_diag_scale(self, alpha=0.5):
+        del alpha
+
+    def rep_matrix_only(self):
+        if self._down_trans is not None:
+            self._down_trans.to_eval_mode()
+
+
+class FlatQuantQwen3MoeSparseMoeBlock(nn.Module):
+    def __init__(self, args, module: nn.Module):
+        super().__init__()
+        self.args = args
+        self.gate = module.gate
+        self.experts = FlatQuantQwen3MoePackedExperts(args, module.experts)
+        self._parent_post_attention_layernorm = None
+        self._ori_mode = False
+        self._eval_mode = False
+        self.add_fq_trans()
+
+    def add_fq_trans(self):
+        if self.args.w_bits < 16 or self.args.a_bits < 16:
+            self._moe_in_trans = _build_group_trans(self.args, self.gate.weight.shape[1])
+        else:
+            self._moe_in_trans = None
+
+    def _set_ori_mode(self, enabled: bool):
+        self._ori_mode = enabled
+        self.experts._ori_mode = enabled
+
+    def _route(self, hidden_states: torch.Tensor, input_trans=None):
+        if self._ori_mode or self._eval_mode or input_trans is None:
+            return self.gate(hidden_states)
+        router_weight = _apply_trans_to_weight(self.gate.weight, input_trans)
+        router_logits = F.linear(hidden_states, router_weight)
+        router_logits = F.softmax(router_logits, dtype=torch.float, dim=-1)
+        router_top_value, router_indices = torch.topk(router_logits, self.gate.top_k, dim=-1)
+        router_top_value /= router_top_value.sum(dim=-1, keepdim=True)
+        router_scores = router_top_value.to(router_logits.dtype)
+        return router_logits, router_scores, router_indices
+
+    def forward(self, hidden_states: torch.Tensor):
+        self.experts._ori_mode = self._ori_mode
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
+        input_trans = None
+        if not self._ori_mode and self._moe_in_trans is not None:
+            hidden_states_reshaped = self._moe_in_trans(hidden_states_reshaped)
+            input_trans = self._moe_in_trans
+        _, routing_weights, selected_experts = self._route(hidden_states_reshaped, input_trans=input_trans)
+        final_hidden_states = self.experts(
+            hidden_states_reshaped,
+            selected_experts,
+            routing_weights,
+            input_trans=input_trans,
+        )
+        return final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+
+    def reparameterize(self):
+        if self._moe_in_trans is not None:
+            self._moe_in_trans.to_eval_mode()
+            self.gate.weight.data = _apply_trans_to_weight(self.gate.weight.data, self._moe_in_trans)
+        self.experts.reparameterize(input_trans=self._moe_in_trans)
+        if self._moe_in_trans is not None and self._moe_in_trans.add_diag:
+            if self._parent_post_attention_layernorm is None:
+                raise RuntimeError("FlatQuant Qwen3-MoE MLP is missing parent post_attention_layernorm for diag fusion.")
+            reparameterize_ln(self._parent_post_attention_layernorm, self._moe_in_trans)
+        self._eval_mode = True
+
+    def init_diag_scale(self, alpha=0.5):
+        del alpha
+
+    def rep_matrix_only(self):
+        if self._moe_in_trans is not None:
+            self._moe_in_trans.to_eval_mode()
+        self.experts.rep_matrix_only()
+
+
+class FlatQuantQwen3MoeDecoderLayer(nn.Module):
+    def __init__(self, args, ori_layer):
+        super().__init__()
+        self.hidden_size = ori_layer.hidden_size
+        self.self_attn = FlatQuantQwen3Attention(args, ori_layer.self_attn)
+        self.mlp = FlatQuantQwen3MoeSparseMoeBlock(args, ori_layer.mlp)
+        self.input_layernorm = ori_layer.input_layernorm
+        self.post_attention_layernorm = ori_layer.post_attention_layernorm
+        self.mlp._parent_post_attention_layernorm = self.post_attention_layernorm
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values=None,
+        use_cache: bool | None = False,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        layer_device = get_module_device(self)
+        hidden_states = move_tensor_tree_to_device(hidden_states, layer_device)
+        attention_mask, position_ids, _cache_position, position_embeddings = align_attention_auxiliary_tensors(
+            layer_device,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            position_embeddings=position_embeddings,
+        )
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states, _attn_weights = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            position_embeddings=position_embeddings,
+            **kwargs,
+        )
+        hidden_states = residual + hidden_states.to(residual.device)
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states.to(residual.device)
+        return hidden_states
+
+
 def apply_flatquant_to_qwen3(args, model):
     skip_initialization()
     decoder_root = _decoder_root(model)
@@ -422,6 +679,17 @@ def apply_flatquant_to_qwen3(args, model):
         decoder_root.layers[layer_index].mlp = FlatQuantQwen2MLP(
             args,
             decoder_root.layers[layer_index].mlp,
+        )
+    return model
+
+
+def apply_flatquant_to_qwen3_moe(args, model):
+    skip_initialization()
+    decoder_root = _decoder_root(model)
+    for layer_index in range(len(decoder_root.layers)):
+        decoder_root.layers[layer_index] = FlatQuantQwen3MoeDecoderLayer(
+            args,
+            decoder_root.layers[layer_index],
         )
     return model
 # Adapt FlatQuant to new models and address SplitQuant degradation on Qwen3.5.

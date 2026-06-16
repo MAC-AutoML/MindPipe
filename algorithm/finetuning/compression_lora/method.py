@@ -143,6 +143,9 @@ def _save_adapter(
                 "dora_eps": float(getattr(args, "compression_lora_dora_eps", 1e-6)),
                 "lr_scheduler_type": getattr(args, "compression_lora_lr_scheduler_type", "cosine"),
                 "warmup_ratio": float(getattr(args, "compression_lora_warmup_ratio", 0.03)),
+                "adapter_from": getattr(args, "compression_lora_adapter_from", None),
+                "adapter_from_mode": getattr(args, "compression_lora_adapter_from_mode", "merge_only"),
+                "sft_min_response_tokens": int(getattr(args, "compression_lora_sft_min_response_tokens", 8)),
                 "quantization": args.quantization,
                 "pruning": args.pruning,
                 "masks_path": str(masks_path),
@@ -197,8 +200,15 @@ def _build_sft_dataset_and_collator(model, tokenizer_bundle, args):
             train_file=args.compression_lora_sft_train_file,
             sample_count=int(args.compression_lora_sft_samples),
             seed=int(args.seed),
+            tokenizer=tokenizer,
+            max_length=int(args.sequence_length),
+            min_response_tokens=int(getattr(args, "compression_lora_sft_min_response_tokens", 8)),
         )
-        return dataset, TextSFTCollator(tokenizer, max_length=int(args.sequence_length)), _default_causal_lm_loss
+        return dataset, TextSFTCollator(
+            tokenizer,
+            max_length=int(args.sequence_length),
+            min_response_tokens=int(getattr(args, "compression_lora_sft_min_response_tokens", 8)),
+        ), _default_causal_lm_loss
 
     if sft_format == "llava":
         dataset = build_llava_sft_dataset(
@@ -655,6 +665,105 @@ def _unwrap_lora_wrappers(model: torch.nn.Module) -> list[str]:
     return merged
 
 
+def _prepare_lora_training(model: torch.nn.Module, args) -> None:
+    for param in model.parameters():
+        param.requires_grad = False
+    for module in model.modules():
+        if isinstance(module, CompressionLoRAFlatQuantLinear):
+            module.lora_A.requires_grad = True
+            module.lora_B.requires_grad = True
+            if module.adapter_type == "dora":
+                module.dora_magnitude.requires_grad = True
+    if bool(args.compression_lora_gradient_checkpointing):
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
+    model.config.use_cache = False
+    model.train()
+
+
+def _run_lora_train_plan(
+    *,
+    model: torch.nn.Module,
+    tokenizer_bundle,
+    tokenizer,
+    args,
+    output_dir: Path,
+    masks_path: str,
+    cpt_adapter_path: Path,
+) -> tuple[list[str], dict[str, Any], dict[str, Any]]:
+    _prepare_lora_training(model, args)
+    train_plan = _parse_train_plan(getattr(args, "compression_lora_train_plan", None))
+    stage_metrics: dict[str, Any] = {}
+    for stage in train_plan:
+        if stage == "cpt":
+            if not getattr(args, "compression_lora_cpt_train_file", None):
+                raise ValueError("compression_lora cpt stage requires --compression_lora_cpt_train_file.")
+            train_dataset = build_raw_text_jsonl_dataset(
+                tokenizer=tokenizer,
+                train_file=args.compression_lora_cpt_train_file,
+                sequence_length=int(args.sequence_length),
+                sample_count=int(args.compression_lora_cpt_samples),
+                seed=int(args.seed),
+            )
+            stage_metrics[stage] = _train_lora_manually(
+                model=model,
+                train_dataset=train_dataset,
+                collate_fn=RawTextCPTCollator(tokenizer),
+                loss_fn=_default_causal_lm_loss,
+                stage_name=stage,
+                learning_rate=float(args.compression_lora_cpt_learning_rate),
+                weight_decay=float(args.compression_lora_weight_decay),
+                batch_size=int(args.compression_lora_per_device_train_batch_size),
+                grad_accum=int(args.compression_lora_gradient_accumulation_steps),
+                num_train_epochs=float(args.compression_lora_cpt_num_train_epochs),
+                max_steps=int(args.compression_lora_cpt_max_steps),
+                logging_steps=int(args.compression_lora_logging_steps),
+                gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
+                lr_scheduler_type=str(args.compression_lora_lr_scheduler_type),
+                warmup_ratio=float(args.compression_lora_warmup_ratio),
+            )
+            _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
+            if bool(getattr(args, "compression_lora_save_cpt_adapter", True)):
+                _save_adapter(cpt_adapter_path, model, args, str(masks_path), stage, stage_metrics[stage])
+            continue
+
+        if stage == "sft":
+            if not getattr(args, "compression_lora_sft_train_file", None):
+                raise ValueError("compression_lora sft stage requires --compression_lora_sft_train_file.")
+            train_dataset, sft_collator, sft_loss_fn = _build_sft_dataset_and_collator(model, tokenizer_bundle, args)
+            stage_metrics[stage] = _train_lora_manually(
+                model=model,
+                train_dataset=train_dataset,
+                collate_fn=sft_collator,
+                loss_fn=sft_loss_fn,
+                stage_name=stage,
+                learning_rate=float(args.compression_lora_sft_learning_rate),
+                weight_decay=float(args.compression_lora_weight_decay),
+                batch_size=int(args.compression_lora_per_device_train_batch_size),
+                grad_accum=int(args.compression_lora_gradient_accumulation_steps),
+                num_train_epochs=float(args.compression_lora_sft_num_train_epochs),
+                max_steps=int(args.compression_lora_sft_max_steps),
+                logging_steps=int(args.compression_lora_logging_steps),
+                gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
+                lr_scheduler_type=str(args.compression_lora_lr_scheduler_type),
+                warmup_ratio=float(args.compression_lora_warmup_ratio),
+            )
+            _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
+            continue
+
+    train_metrics = {
+        "train_plan": train_plan,
+        "stages": stage_metrics,
+        "cpt_train_file": getattr(args, "compression_lora_cpt_train_file", None),
+        "sft_train_file": getattr(args, "compression_lora_sft_train_file", None),
+        "sft_format": getattr(args, "compression_lora_sft_format", None),
+        "sft_min_response_tokens": int(getattr(args, "compression_lora_sft_min_response_tokens", 8)),
+    }
+    return train_plan, stage_metrics, train_metrics
+
+
 def _select_flatquant_apply_wrapper(model, source_root: Path):
     from flatquant.model_tools.llama31_utils import apply_flatquant_to_llama_31
     from flatquant.model_tools.llama_utils import apply_flatquant_to_llama
@@ -800,6 +909,7 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             raise RuntimeError("No FlatQuantizedLinear layers were wrapped for compression_lora.")
 
         adapter_from = getattr(args, "compression_lora_adapter_from", None)
+        adapter_from_mode = str(getattr(args, "compression_lora_adapter_from_mode", "merge_only"))
         if adapter_from:
             payload = torch.load(adapter_from, map_location="cpu")
             if isinstance(payload, dict) and "metadata" in payload:
@@ -810,91 +920,43 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
                         f"checkpoint={checkpoint_adapter_type!r}, requested={lora_config.adapter_type!r}."
                     )
             _load_adapter_state(model, payload["state_dict"] if "state_dict" in payload else payload)
-            train_metrics = {"skipped_training": True, "adapter_from": adapter_from}
-            train_plan = ["adapter_from"]
+            if adapter_from_mode == "merge_only":
+                train_metrics = {
+                    "skipped_training": True,
+                    "adapter_from": adapter_from,
+                    "adapter_from_mode": adapter_from_mode,
+                }
+                train_plan = ["adapter_from"]
+            elif adapter_from_mode == "merge_and_train":
+                merged_from_layers = _unwrap_lora_wrappers(model)
+                adapter_layers = _replace_flatquant_linears_with_lora(model, masks, lora_config)
+                if not adapter_layers:
+                    raise RuntimeError("No fresh compression LoRA layers were wrapped after merging adapter_from.")
+                train_plan, _stage_metrics, train_metrics = _run_lora_train_plan(
+                    model=model,
+                    tokenizer_bundle=tokenizer_bundle,
+                    tokenizer=tokenizer,
+                    args=args,
+                    output_dir=output_dir,
+                    masks_path=str(masks_path),
+                    cpt_adapter_path=cpt_adapter_path,
+                )
+                train_metrics["adapter_from"] = adapter_from
+                train_metrics["adapter_from_mode"] = adapter_from_mode
+                train_metrics["adapter_from_merged_layers"] = merged_from_layers
+                _save_adapter(adapter_path, model, args, str(masks_path), "final", train_metrics)
+            else:
+                raise ValueError(f"Unsupported compression_lora_adapter_from_mode: {adapter_from_mode!r}")
         else:
-            for param in model.parameters():
-                param.requires_grad = False
-            for module in model.modules():
-                if isinstance(module, CompressionLoRAFlatQuantLinear):
-                    module.lora_A.requires_grad = True
-                    module.lora_B.requires_grad = True
-                    if module.adapter_type == "dora":
-                        module.dora_magnitude.requires_grad = True
-            if bool(args.compression_lora_gradient_checkpointing):
-                if hasattr(model, "enable_input_require_grads"):
-                    model.enable_input_require_grads()
-                if hasattr(model, "gradient_checkpointing_enable"):
-                    model.gradient_checkpointing_enable()
-            model.config.use_cache = False
-            model.train()
-
-            train_plan = _parse_train_plan(getattr(args, "compression_lora_train_plan", None))
-            stage_metrics: dict[str, Any] = {}
-            for stage in train_plan:
-                if stage == "cpt":
-                    if not getattr(args, "compression_lora_cpt_train_file", None):
-                        raise ValueError("compression_lora cpt stage requires --compression_lora_cpt_train_file.")
-                    train_dataset = build_raw_text_jsonl_dataset(
-                        tokenizer=tokenizer,
-                        train_file=args.compression_lora_cpt_train_file,
-                        sequence_length=int(args.sequence_length),
-                        sample_count=int(args.compression_lora_cpt_samples),
-                        seed=int(args.seed),
-                    )
-                    stage_metrics[stage] = _train_lora_manually(
-                        model=model,
-                        train_dataset=train_dataset,
-                        collate_fn=RawTextCPTCollator(tokenizer),
-                        loss_fn=_default_causal_lm_loss,
-                        stage_name=stage,
-                        learning_rate=float(args.compression_lora_cpt_learning_rate),
-                        weight_decay=float(args.compression_lora_weight_decay),
-                        batch_size=int(args.compression_lora_per_device_train_batch_size),
-                        grad_accum=int(args.compression_lora_gradient_accumulation_steps),
-                        num_train_epochs=float(args.compression_lora_cpt_num_train_epochs),
-                        max_steps=int(args.compression_lora_cpt_max_steps),
-                        logging_steps=int(args.compression_lora_logging_steps),
-                        gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
-                        lr_scheduler_type=str(args.compression_lora_lr_scheduler_type),
-                        warmup_ratio=float(args.compression_lora_warmup_ratio),
-                    )
-                    _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
-                    if bool(getattr(args, "compression_lora_save_cpt_adapter", True)):
-                        _save_adapter(cpt_adapter_path, model, args, str(masks_path), stage, stage_metrics[stage])
-                    continue
-
-                if stage == "sft":
-                    if not getattr(args, "compression_lora_sft_train_file", None):
-                        raise ValueError("compression_lora sft stage requires --compression_lora_sft_train_file.")
-                    train_dataset, sft_collator, sft_loss_fn = _build_sft_dataset_and_collator(model, tokenizer_bundle, args)
-                    stage_metrics[stage] = _train_lora_manually(
-                        model=model,
-                        train_dataset=train_dataset,
-                        collate_fn=sft_collator,
-                        loss_fn=sft_loss_fn,
-                        stage_name=stage,
-                        learning_rate=float(args.compression_lora_sft_learning_rate),
-                        weight_decay=float(args.compression_lora_weight_decay),
-                        batch_size=int(args.compression_lora_per_device_train_batch_size),
-                        grad_accum=int(args.compression_lora_gradient_accumulation_steps),
-                        num_train_epochs=float(args.compression_lora_sft_num_train_epochs),
-                        max_steps=int(args.compression_lora_sft_max_steps),
-                        logging_steps=int(args.compression_lora_logging_steps),
-                        gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
-                        lr_scheduler_type=str(args.compression_lora_lr_scheduler_type),
-                        warmup_ratio=float(args.compression_lora_warmup_ratio),
-                    )
-                    _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
-                    continue
-
-            train_metrics = {
-                "train_plan": train_plan,
-                "stages": stage_metrics,
-                "cpt_train_file": getattr(args, "compression_lora_cpt_train_file", None),
-                "sft_train_file": getattr(args, "compression_lora_sft_train_file", None),
-                "sft_format": getattr(args, "compression_lora_sft_format", None),
-            }
+            train_plan, _stage_metrics, train_metrics = _run_lora_train_plan(
+                model=model,
+                tokenizer_bundle=tokenizer_bundle,
+                tokenizer=tokenizer,
+                args=args,
+                output_dir=output_dir,
+                masks_path=str(masks_path),
+                cpt_adapter_path=cpt_adapter_path,
+            )
             _save_adapter(adapter_path, model, args, str(masks_path), "final", train_metrics)
 
         merged_layers = _unwrap_lora_wrappers(model)
@@ -945,6 +1007,9 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             "dora_eps": float(getattr(args, "compression_lora_dora_eps", 1e-6)),
             "lr_scheduler_type": getattr(args, "compression_lora_lr_scheduler_type", "cosine"),
             "warmup_ratio": float(getattr(args, "compression_lora_warmup_ratio", 0.03)),
+            "adapter_from": adapter_from,
+            "adapter_from_mode": adapter_from_mode,
+            "sft_min_response_tokens": int(getattr(args, "compression_lora_sft_min_response_tokens", 8)),
         }
         config_path = write_json(config_path, config_payload)
 

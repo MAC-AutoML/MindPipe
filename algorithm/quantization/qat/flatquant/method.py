@@ -235,6 +235,10 @@ class FlatQuantMethod(BaseQuantizationMethod):
                 apply_wrapper = apply_flatquant_to_qwen
             elif model_type in {"qwen3", "qwen3_vl"}:
                 apply_wrapper = apply_flatquant_to_qwen3
+            elif model_type == "qwen3_moe":
+                from flatquant.model_tools.qwen3_utils import apply_flatquant_to_qwen3_moe
+
+                apply_wrapper = apply_flatquant_to_qwen3_moe
             elif model_type == "qwen3_5":
                 from flatquant.model_tools.qwen3_5_utils import apply_flatquant_to_qwen3_5
 

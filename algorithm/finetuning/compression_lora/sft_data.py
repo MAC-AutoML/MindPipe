@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 from pathlib import Path
 from typing import Any
 
 from datasets import Dataset
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _load_json_or_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -47,36 +51,106 @@ def _format_alpaca_prompt(instruction: str, input_text: str) -> str:
     )
 
 
+def _response_token_count_after_truncation(
+    prompt: str,
+    response: str,
+    tokenizer: Any,
+    max_length: int,
+) -> tuple[str, int]:
+    eos = tokenizer.eos_token or ""
+    prompt_ids = tokenizer(prompt, add_special_tokens=True, truncation=False)["input_ids"]
+    response_ids = tokenizer(str(response) + eos, add_special_tokens=False, truncation=False)["input_ids"]
+    if not response_ids:
+        return "dropped_empty_response_tokens", 0
+    if len(prompt_ids) + len(response_ids) <= max_length:
+        return "full", len(response_ids)
+    available_response_tokens = max(0, int(max_length) - len(prompt_ids))
+    if available_response_tokens <= 0:
+        return "dropped_no_response_after_truncation", 0
+    return "truncated_answer", min(len(response_ids), available_response_tokens)
+
+
 def build_alpaca_sft_dataset(
     train_file: str | Path,
     sample_count: int,
     seed: int,
+    tokenizer: Any | None = None,
+    max_length: int | None = None,
+    min_response_tokens: int = 8,
 ):
     rows = _load_json_or_jsonl(train_file)
-    examples: list[dict[str, Any]] = []
+    full_examples: list[dict[str, Any]] = []
+    truncated_examples: list[dict[str, Any]] = []
+    dropped_empty = 0
+    dropped_short_response = 0
+    dropped_no_response_after_truncation = 0
+    dropped_empty_response_tokens = 0
     for row in rows:
         instruction = str(row.get("instruction") or "").strip()
         input_text = str(row.get("input") or "").strip()
         output = str(row.get("output") or "").strip()
         if not instruction or not output:
+            dropped_empty += 1
             continue
-        examples.append(
-            {
-                "prompt": _format_alpaca_prompt(instruction, input_text),
-                "response": output,
-                "messages": [
-                    {"role": "user", "content": f"{instruction}\n{input_text}".strip()},
-                    {"role": "assistant", "content": output},
-                ],
-                "images": [],
-            }
-        )
+        prompt = _format_alpaca_prompt(instruction, input_text)
+        bucket = "full"
+        response_tokens = 0
+        if tokenizer is not None and max_length is not None and int(max_length) > 0:
+            bucket, response_tokens = _response_token_count_after_truncation(prompt, output, tokenizer, int(max_length))
+            if bucket == "dropped_no_response_after_truncation":
+                dropped_no_response_after_truncation += 1
+                continue
+            if bucket == "dropped_empty_response_tokens":
+                dropped_empty_response_tokens += 1
+                continue
+            if response_tokens < int(min_response_tokens):
+                dropped_short_response += 1
+                continue
+        example = {
+            "prompt": prompt,
+            "response": output,
+            "messages": [
+                {"role": "user", "content": f"{instruction}\n{input_text}".strip()},
+                {"role": "assistant", "content": output},
+            ],
+            "images": [],
+            "sft_length_bucket": bucket,
+            "sft_response_tokens_after_truncation": response_tokens,
+        }
+        if bucket == "truncated_answer":
+            truncated_examples.append(example)
+        else:
+            full_examples.append(example)
 
-    if sample_count > 0 and len(examples) > sample_count:
-        rng = random.Random(seed)
-        examples = rng.sample(examples, sample_count)
+    rng = random.Random(seed)
+    rng.shuffle(full_examples)
+    rng.shuffle(truncated_examples)
+    if sample_count > 0:
+        examples = full_examples[:sample_count]
+        if len(examples) < sample_count:
+            examples.extend(truncated_examples[: sample_count - len(examples)])
+    else:
+        examples = full_examples + truncated_examples
     if not examples:
         raise ValueError(f"No Alpaca SFT examples were built from {train_file}.")
+    selected_full = sum(1 for example in examples if example["sft_length_bucket"] == "full")
+    selected_truncated = sum(1 for example in examples if example["sft_length_bucket"] == "truncated_answer")
+    LOGGER.info(
+        "Alpaca SFT length filter: selected=%s full=%s truncated_answer=%s available_full=%s available_truncated_answer=%s "
+        "dropped_empty=%s dropped_no_response_after_truncation=%s dropped_empty_response_tokens=%s dropped_short_response=%s "
+        "min_response_tokens=%s max_length=%s",
+        len(examples),
+        selected_full,
+        selected_truncated,
+        len(full_examples),
+        len(truncated_examples),
+        dropped_empty,
+        dropped_no_response_after_truncation,
+        dropped_empty_response_tokens,
+        dropped_short_response,
+        int(min_response_tokens),
+        max_length,
+    )
     return Dataset.from_list(examples)
 
 

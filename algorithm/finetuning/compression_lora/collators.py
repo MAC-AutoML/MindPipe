@@ -48,6 +48,7 @@ class RawTextCPTCollator:
 class TextSFTCollator:
     tokenizer: Any
     max_length: int
+    min_response_tokens: int = 8
 
     def __call__(self, instances: Sequence[dict[str, Any]]) -> dict[str, torch.Tensor]:
         pad_token_id = self.tokenizer.pad_token_id
@@ -70,10 +71,14 @@ class TextSFTCollator:
                 add_special_tokens=False,
                 truncation=False,
             )["input_ids"]
-            input_ids = (prompt_ids + response_ids)[: self.max_length]
-            labels = ([IGNORE_INDEX] * len(prompt_ids) + response_ids)[: self.max_length]
-            if not input_ids or all(label == IGNORE_INDEX for label in labels):
+            response_limit = max(0, int(self.max_length) - len(prompt_ids))
+            if response_limit <= 0:
                 continue
+            response_ids = response_ids[:response_limit]
+            if len(response_ids) < int(self.min_response_tokens):
+                continue
+            input_ids = prompt_ids + response_ids
+            labels = ([IGNORE_INDEX] * len(prompt_ids)) + response_ids
             input_ids_list.append(torch.tensor(input_ids, dtype=torch.long))
             labels_list.append(torch.tensor(labels, dtype=torch.long))
 
