@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 results/
+logs/
 new_results/
 .env
 剪枝结果-飞书.xlsx

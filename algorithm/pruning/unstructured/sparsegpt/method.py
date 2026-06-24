@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
@@ -69,6 +70,17 @@ class SparseGPTMethod(BasePruningMethod):
         )
         output_states = torch.zeros_like(input_states)
         prune_n, prune_m = _resolve_pruning_pattern(args.structure_pattern)
+        layer_step = float(os.environ.get("SPARSEGPT_LAYER_STEP", "0") or "0")
+        if layer_step > 0:
+            layer_count = len(backbone.layers)
+            first_sparsity = args.sparsity_ratio - (layer_step * (layer_count - 1)) / 2
+            sparsity_rates = [first_sparsity + layer_index * layer_step for layer_index in range(layer_count)]
+            print(
+                f"SparseGPT layer-wise sparsity enabled: mean={args.sparsity_ratio:.6f}, "
+                f"step={layer_step:.6f}, first={sparsity_rates[0]:.6f}, last={sparsity_rates[-1]:.6f}"
+            )
+        else:
+            sparsity_rates = [args.sparsity_ratio] * len(backbone.layers)
 
         with prepend_python_path(source_root):
             from sparsegpt import SparseGPT
@@ -110,9 +122,9 @@ class SparseGPTMethod(BasePruningMethod):
                     handle.remove()
 
                 for name, gpt_state in gpt_states.items():
-                    print(f"pruning layer {layer_index} name {name}")
+                    print(f"pruning layer {layer_index} name {name} sparsity {sparsity_rates[layer_index]:.6f}")
                     gpt_state.fasterprune(
-                        args.sparsity_ratio,
+                        sparsity_rates[layer_index],
                         prunen=prune_n,
                         prunem=prune_m,
                         percdamp=args.damp_percent,
