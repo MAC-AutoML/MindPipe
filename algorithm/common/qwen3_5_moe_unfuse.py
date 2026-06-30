@@ -654,7 +654,7 @@ class UnfusedQwen3MoeSparseMoeBlock(nn.Module):
                     current_hidden_states.to(hidden_states.dtype),
                 )
 
-        return final_hidden_states.reshape(batch_size, sequence_length, hidden_dim), router_logits
+        return final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
 
 class RefusedQwen3MoeSparseMoeBlock(nn.Module):
@@ -707,7 +707,7 @@ class RefusedQwen3MoeSparseMoeBlock(nn.Module):
             selected_experts,
             routing_weights,
         )
-        return expert_output.reshape(batch_size, sequence_length, hidden_dim), router_logits
+        return expert_output.reshape(batch_size, sequence_length, hidden_dim)
 
 
 def _is_qwen3_5_moe_block(module: nn.Module) -> bool:
