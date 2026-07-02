@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
+from algorithm.common.modeling import capture_first_block_inputs
 from algorithm.common.modeling import find_prunable_linear_layers
-from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import get_layer_device
+from algorithm.common.modeling import get_text_backbone
 from algorithm.common.modeling import move_tensors_to_device
+from algorithm.common.modeling import unwrap_layer_output
 from .layerwrapper import WrappedGPT
 from .backend import resolve_runtime_device
 
@@ -75,53 +77,18 @@ def prepare_calibration_input(model, dataloader, device):
     """
     准备校准输入数据。
 
-    通过 Catcher 模式直接捕获模型传给 decoder layer 的全部参数，
-    包括 position_embeddings 等，无需针对不同模型手动构建 kwargs。
+    复用公共 Catcher 路径，和 SparseGPT 保持一致；其中已处理
+    Qwen3-MoE 所需的 attention_mask。
     """
     backbone = get_text_backbone(model)
-    decoder_config = backbone.decoder_config
-    use_cache = decoder_config.use_cache
-    decoder_config.use_cache = False
-    layers = backbone.layers
-
-    # device_map 模式下，直接从模型参数获取 embedding 所在设备
-    capture_device = next(model.parameters()).device
-
-    dtype = next(iter(model.parameters())).dtype
-    sample_count = len(dataloader)
-    inps = torch.zeros((sample_count, model.seqlen, decoder_config.hidden_size), dtype=dtype, device=capture_device)
-    inps.requires_grad = False
-    cache = {'i': 0, 'layer_kwargs': {}}
-
-    class Catcher(nn.Module):
-        def __init__(self, module):
-            super().__init__()
-            self.module = module
-
-        def __getattr__(self, name):
-            try:
-                return super().__getattr__(name)
-            except AttributeError:
-                return getattr(self.module, name)
-
-        def forward(self, inp, **kwargs):
-            inps[cache['i']] = inp
-            cache['i'] += 1
-            cache['layer_kwargs'] = dict(kwargs)
-            raise ValueError
-
-    layers[0] = Catcher(layers[0])
-    for batch in dataloader:
-        try:
-            model(batch[0].to(capture_device), use_cache=False)
-        except ValueError:
-            pass
-    layers[0] = layers[0].module
-
+    inps, layer_kwargs = capture_first_block_inputs(
+        model=model,
+        backbone=backbone,
+        calibration_batches=dataloader,
+        device=device,
+    )
     outs = torch.zeros_like(inps)
-    decoder_config.use_cache = use_cache
-
-    return inps, outs, dict(cache['layer_kwargs'])
+    return inps, outs, layer_kwargs
 
 
 def return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before):
@@ -146,7 +113,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
     layers = backbone.layers
     for i in range(len(layers)):
         layer = layers[i]
-        target_device = next(layer.parameters()).device
+        target_device = get_layer_device(backbone, i)
         inps = inps.to(target_device)
         outs = outs.to(target_device)
         layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
@@ -158,6 +125,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
 
         def add_batch(name):
             def tmp(_, inp, out):
+                out = unwrap_layer_output(out)
                 wrapped_layers[name].add_batch(inp[0].data, out.data)
             return tmp
 
@@ -166,7 +134,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
             handles.append(subset[name].register_forward_hook(add_batch(name)))
         for j in range(args.nsamples):
             with torch.no_grad():
-                outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
+                outs[j] = unwrap_layer_output(layer(inps[j].unsqueeze(0), **layer_kwargs))
         for h in handles:
             h.remove()
 
@@ -212,7 +180,7 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
 
         for j in range(args.nsamples):
             with torch.no_grad():
-                outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
+                outs[j] = unwrap_layer_output(layer(inps[j].unsqueeze(0), **layer_kwargs))
         inps, outs = outs, inps
 
     decoder_config.use_cache = use_cache
