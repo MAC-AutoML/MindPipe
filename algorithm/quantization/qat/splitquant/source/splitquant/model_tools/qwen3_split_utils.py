@@ -1,3 +1,5 @@
+import copy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +9,7 @@ from splitquant.quant_utils import ActivationQuantizer
 from splitquant.quant_utils import WeightQuantizer
 from splitquant.quant_utils import set_quantizer_state
 from splitquant.split_linear import SplitQuantizedLinear
+from splitquant.split_utils import reparameterize_ln
 from splitquant.trans_utils import SVDSingleTransMatrix
 from splitquant.utils import skip_initialization
 
@@ -51,14 +54,56 @@ def _resolve_attention_interface(attention_functions, implementation, eager_atte
 
 
 def _apply_trans_to_weight(weight: torch.Tensor, trans: nn.Module) -> torch.Tensor:
-    trans_matrix = trans.get_matrix().T.to(device=weight.device, dtype=weight.dtype)
     original_shape = weight.shape
-    return torch.matmul(weight.reshape(-1, original_shape[-1]), trans_matrix).reshape(original_shape)
+    return trans(weight.reshape(-1, original_shape[-1]), inv_t=True).reshape(original_shape)
 
 
 def _apply_trans_to_packed_weight(weight: torch.Tensor, trans: nn.Module) -> torch.Tensor:
     original_shape = weight.shape
     return _apply_trans_to_weight(weight.reshape(-1, original_shape[-1]), trans).reshape(original_shape)
+
+
+def _grouped_expert_mm(inputs: torch.Tensor, expert_indices: torch.Tensor, weights: torch.Tensor, alignment: int = 8):
+    grouped_mm = getattr(torch, "_grouped_mm", None)
+    if grouped_mm is None or inputs.device.type != "cuda" or inputs.dtype not in (torch.float16, torch.bfloat16):
+        return None
+    if weights.ndim != 3 or weights.shape[1] % 16 or weights.shape[2] % 16:
+        return None
+    unique, counts = torch.unique_consecutive(expert_indices, return_counts=True)
+    if unique.numel() == 0:
+        return None
+    chunks, raw_counts, padded_counts = [], [], []
+    start = 0
+    for count_value in counts.tolist():
+        count = int(count_value)
+        padded = (count + alignment - 1) // alignment * alignment
+        chunk = inputs[start : start + count]
+        if padded != count:
+            chunk = torch.cat((chunk, torch.zeros((padded - count, chunk.shape[-1]), device=chunk.device, dtype=chunk.dtype)))
+        chunks.append(chunk)
+        raw_counts.append(count)
+        padded_counts.append(padded)
+        start += count
+    packed_inputs = torch.cat(chunks, dim=0).contiguous()
+    offsets = torch.tensor(padded_counts, device=inputs.device, dtype=torch.int32).cumsum(0)
+    try:
+        output = grouped_mm(packed_inputs, weights[unique].contiguous(), offsets)
+    except (RuntimeError, NotImplementedError):
+        return None
+    outputs, start = [], 0
+    for count, padded in zip(raw_counts, padded_counts):
+        outputs.append(output[start : start + count])
+        start += padded
+    return torch.cat(outputs, dim=0)
+
+
+def _route_index_tensors(top_k_index: torch.Tensor):
+    token_count, top_k = top_k_index.shape
+    token_indices = torch.arange(token_count, device=top_k_index.device).unsqueeze(1).expand(-1, top_k).reshape(-1)
+    top_k_positions = torch.arange(top_k, device=top_k_index.device).unsqueeze(0).expand(token_count, -1).reshape(-1)
+    expert_indices = top_k_index.reshape(-1)
+    order = torch.argsort(expert_indices, stable=True)
+    return expert_indices.index_select(0, order), token_indices.index_select(0, order), top_k_positions.index_select(0, order)
 
 
 class _SplitQuantQwen3AttentionMixin:
@@ -577,8 +622,8 @@ class SplitQuantQwen3MoePackedExperts(nn.Module):
         self.hidden_dim = module.hidden_dim
         self.intermediate_dim = module.intermediate_dim
         self.act_fn = module.act_fn
-        self.gate_up_proj = nn.Parameter(module.gate_up_proj.detach().clone())
-        self.down_proj = nn.Parameter(module.down_proj.detach().clone())
+        self.gate_up_proj = module.gate_up_proj
+        self.down_proj = module.down_proj
         self.weight_quantizer = WeightQuantizer()
         self.weight_quantizer.configure(args.w_bits, perchannel=True, sym=not(args.w_asym), mse=False)
         self.group_size = args.w_groupsize if args.w_groupsize > 0 else -1
@@ -597,6 +642,7 @@ class SplitQuantQwen3MoePackedExperts(nn.Module):
             in_channels=self.intermediate_dim,
         )
         self._ori_mode = False
+        self._eval_mode = False
         self.add_fq_trans()
 
     def add_fq_trans(self):
@@ -630,7 +676,7 @@ class SplitQuantQwen3MoePackedExperts(nn.Module):
         return self._degroup_weight(quantized, original_shape).to(weight.dtype)
 
     def _weights(self, input_trans=None):
-        if self._ori_mode:
+        if self._ori_mode or self._eval_mode:
             return self.gate_up_proj, self.down_proj
         gate_up_weight = self.gate_up_proj
         down_weight = self.down_proj
@@ -640,9 +686,42 @@ class SplitQuantQwen3MoePackedExperts(nn.Module):
             down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
         return self._quantize_weight(gate_up_weight), self._quantize_weight(down_weight)
 
+    def _fuse_down_diag_into_gate_up(self, gate_up_weight: torch.Tensor) -> torch.Tensor:
+        if self._down_trans is None or not self._down_trans.add_diag:
+            return gate_up_weight
+        gate_size = gate_up_weight.shape[1] // 2
+        scale = self._down_trans.diag_scale.to(dtype=torch.float64, device=gate_up_weight.device)
+        up_weight = gate_up_weight[:, gate_size:, :]
+        up_weight_fp64 = up_weight.to(torch.float64)
+        up_weight_fp64.mul_(scale.view(1, -1, 1))
+        up_weight.copy_(up_weight_fp64.to(up_weight.dtype))
+        self._down_trans.use_diag = False
+        return gate_up_weight
+
     def forward(self, hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor, input_trans=None) -> torch.Tensor:
         final_hidden_states = torch.zeros_like(hidden_states)
         gate_up_proj, down_proj = self._weights(input_trans=input_trans)
+        route_experts, token_indices, top_k_positions = _route_index_tensors(top_k_index)
+        grouped_input = hidden_states.index_select(0, token_indices)
+        if not self._ori_mode:
+            grouped_input = self.act_quantizer(grouped_input)
+        gate_up_output = _grouped_expert_mm(grouped_input, route_experts, gate_up_proj)
+        if gate_up_output is not None:
+            gate_output, up_output = gate_up_output.chunk(2, dim=-1)
+            intermediate = self.act_fn(gate_output) * up_output
+            if not self._ori_mode:
+                intermediate = self.hidden_act_quantizer(intermediate)
+            if not self._ori_mode and self._down_trans is not None:
+                intermediate = self._down_trans(intermediate)
+            down_output = _grouped_expert_mm(
+                intermediate,
+                route_experts,
+                down_proj.transpose(1, 2).contiguous(),
+            )
+            if down_output is not None:
+                weights = top_k_weights.index_select(0, token_indices).gather(1, top_k_positions.unsqueeze(1))
+                final_hidden_states.index_add_(0, token_indices, (down_output * weights).to(final_hidden_states.dtype))
+                return final_hidden_states
         with torch.no_grad():
             expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
             expert_mask = expert_mask.permute(2, 1, 0)
@@ -667,14 +746,19 @@ class SplitQuantQwen3MoePackedExperts(nn.Module):
 
     def reparameterize(self, input_trans=None):
         gate_up_weight = self.gate_up_proj.data
-        down_weight = self.down_proj.data
         if input_trans is not None:
             gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
         if self._down_trans is not None:
             self._down_trans.to_eval_mode()
-            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
+            gate_up_weight = self._fuse_down_diag_into_gate_up(gate_up_weight)
         self.gate_up_proj.data = self._quantize_weight(gate_up_weight)
+        del gate_up_weight
+
+        down_weight = self.down_proj.data
+        if self._down_trans is not None:
+            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
         self.down_proj.data = self._quantize_weight(down_weight)
+        self._eval_mode = True
 
     def init_diag_scale(self, alpha=0.5):
         del alpha
@@ -697,7 +781,9 @@ class SplitQuantQwen3MoeSparseMoeBlock(nn.Module):
         else:
             self.experts = nn.ModuleList([SplitQuantQwen3MoeMLP(args, expert) for expert in module.experts])
         self._ori_mode = False
+        self._eval_mode = False
         self.calibrate_all_experts = False
+        self._parent_post_attention_layernorm = None
         self.add_fq_trans()
 
     def add_fq_trans(self):
@@ -714,7 +800,7 @@ class SplitQuantQwen3MoeSparseMoeBlock(nn.Module):
             self._moe_in_trans = None
 
     def _route(self, hidden_states: torch.Tensor, input_trans=None):
-        if self._ori_mode or input_trans is None:
+        if self._ori_mode or self._eval_mode or input_trans is None:
             gate_output = self.gate(hidden_states)
         else:
             router_weight = _apply_trans_to_weight(self.gate.weight, input_trans)
@@ -766,6 +852,11 @@ class SplitQuantQwen3MoeSparseMoeBlock(nn.Module):
         else:
             for expert in self.experts:
                 expert.reparameterize(input_trans=self._moe_in_trans)
+        if self._moe_in_trans is not None and self._moe_in_trans.add_diag:
+            if self._parent_post_attention_layernorm is None:
+                raise RuntimeError("SplitQuant Qwen3-MoE MLP is missing parent post_attention_layernorm for diag fusion.")
+            reparameterize_ln(self._parent_post_attention_layernorm, self._moe_in_trans)
+        self._eval_mode = True
 
     def init_diag_scale(self, alpha=0.5):
         del alpha
@@ -779,6 +870,103 @@ class SplitQuantQwen3MoeSparseMoeBlock(nn.Module):
             for expert in self.experts:
                 expert.rep_matrix_only()
 
+    def unfuse_experts(self, calibrate_all_experts: bool = False) -> bool:
+        if not self.experts_are_packed:
+            self.calibrate_all_experts = calibrate_all_experts
+            return False
+
+        packed = self.experts
+        experts = []
+        for expert_index in range(packed.num_experts):
+            gate_up = packed.gate_up_proj[expert_index]
+            down = packed.down_proj[expert_index]
+            intermediate = gate_up.shape[0] // 2
+
+            gate_linear = nn.Linear(gate_up.shape[1], intermediate, bias=False, device="meta")
+            gate_linear.weight = nn.Parameter(gate_up[:intermediate], requires_grad=gate_up.requires_grad)
+            up_linear = nn.Linear(gate_up.shape[1], intermediate, bias=False, device="meta")
+            up_linear.weight = nn.Parameter(gate_up[intermediate:], requires_grad=gate_up.requires_grad)
+            down_linear = nn.Linear(down.shape[1], down.shape[0], bias=False, device="meta")
+            down_linear.weight = nn.Parameter(down, requires_grad=down.requires_grad)
+
+            source = nn.Module()
+            source.gate_proj = gate_linear
+            source.up_proj = up_linear
+            source.down_proj = down_linear
+            source.act_fn = packed.act_fn
+            expert = SplitQuantQwen3MoeMLP(packed.args, source)
+            expert._down_trans = packed._down_trans
+
+            # The packed weights are already transformed and quantized. During
+            # Wanda only activation quantization must remain active.
+            expert.gate_proj._eval_mode = packed._eval_mode
+            expert.up_proj._eval_mode = packed._eval_mode
+            expert.down_proj._eval_mode = packed._eval_mode
+            expert.gate_proj.act_quantizer = copy.deepcopy(packed.act_quantizer)
+            expert.up_proj.act_quantizer = copy.deepcopy(packed.act_quantizer)
+            expert.down_proj.act_quantizer = copy.deepcopy(packed.hidden_act_quantizer)
+            experts.append(expert)
+
+        self.experts = nn.ModuleList(experts)
+        self.experts_are_packed = False
+        self.calibrate_all_experts = calibrate_all_experts
+        return True
+
+    def refuse_experts(self) -> bool:
+        if self.experts_are_packed:
+            return False
+        experts = list(self.experts)
+        if not experts:
+            return False
+
+        gate_up = torch.stack(
+            [torch.cat((expert.gate_proj.linear.weight, expert.up_proj.linear.weight), dim=0) for expert in experts],
+            dim=0,
+        )
+        down = torch.stack([expert.down_proj.linear.weight for expert in experts], dim=0)
+        source = nn.Module()
+        source.num_experts = len(experts)
+        source.hidden_dim = gate_up.shape[-1]
+        source.intermediate_dim = gate_up.shape[1] // 2
+        source.act_fn = experts[0].act_fn
+        source.gate_up_proj = nn.Parameter(gate_up, requires_grad=False)
+        source.down_proj = nn.Parameter(down, requires_grad=False)
+        packed = SplitQuantQwen3MoePackedExperts(experts[0].args, source)
+        packed._down_trans = getattr(experts[0], "_down_trans", None)
+        packed._eval_mode = self._eval_mode
+        packed.act_quantizer = copy.deepcopy(experts[0].gate_proj.act_quantizer)
+        packed.hidden_act_quantizer = copy.deepcopy(experts[0].down_proj.act_quantizer)
+        self.experts = packed
+        self.experts_are_packed = True
+        return True
+
+
+def unfuse_splitquant_qwen3_moe_experts(model: nn.Module, calibrate_all_experts: bool = False) -> int:
+    """Expose packed Qwen3-MoE experts as SplitQuant Linear modules.
+
+    This is used only while collecting/applying fixed Wanda masks and training
+    compression LoRA. The packed representation is restored before export.
+    The existing packed transforms are reused, so expanding the module tree
+    does not replace the calibrated SplitQuant parameters.
+    """
+    replaced = 0
+    blocks = [module for module in model.modules() if isinstance(module, SplitQuantQwen3MoeSparseMoeBlock)]
+    for block in blocks:
+        if not isinstance(block, SplitQuantQwen3MoeSparseMoeBlock):
+            continue
+        replaced += int(block.unfuse_experts(calibrate_all_experts=calibrate_all_experts))
+    return replaced
+
+
+def refuse_splitquant_qwen3_moe_experts(model: nn.Module) -> int:
+    """Pack temporary per-expert SplitQuant modules back into fused tensors."""
+    replaced = 0
+    blocks = [module for module in model.modules() if isinstance(module, SplitQuantQwen3MoeSparseMoeBlock)]
+    for block in blocks:
+        if isinstance(block, SplitQuantQwen3MoeSparseMoeBlock):
+            replaced += int(block.refuse_experts())
+    return replaced
+
 
 class SplitQuantQwen3MoeDecoderLayer(nn.Module):
     def __init__(self, args, ori_layer):
@@ -791,6 +979,8 @@ class SplitQuantQwen3MoeDecoderLayer(nn.Module):
             self.mlp = SplitQuantQwenMLP(args, ori_layer.mlp)
         self.input_layernorm = ori_layer.input_layernorm
         self.post_attention_layernorm = ori_layer.post_attention_layernorm
+        if hasattr(self.mlp, "_parent_post_attention_layernorm"):
+            self.mlp._parent_post_attention_layernorm = self.post_attention_layernorm
 
     def forward(
         self,
@@ -813,7 +1003,7 @@ class SplitQuantQwen3MoeDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         output_attentions = bool(kwargs.pop("output_attentions", False))
-        output_router_logits = bool(kwargs.pop("output_router_logits", False))
+        kwargs.pop("output_router_logits", None)
         past_key_values = kwargs.pop("past_key_value", past_key_values)
         hidden_states, _attn_weights = self.self_attn(
             hidden_states=hidden_states,
@@ -829,16 +1019,10 @@ class SplitQuantQwen3MoeDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
-        router_logits = None
         if isinstance(hidden_states, tuple):
-            hidden_states, router_logits = hidden_states
+            hidden_states, _router_logits = hidden_states
         hidden_states = residual + hidden_states.to(residual.device)
-        outputs = (hidden_states,)
-        if output_attentions:
-            outputs += (_attn_weights,)
-        if output_router_logits:
-            outputs += (router_logits,)
-        return outputs
+        return hidden_states
 
 
 def apply_splitquant_to_qwen3(args, model):

@@ -5,6 +5,10 @@ import torch.nn.functional as F
 from splitquant.quant_utils import WeightQuantizer, ActivationQuantizer
 from splitquant.split_utils import kronecker_matmul
 
+
+_DELEGATED_LINEAR_ATTRS = {"weight", "bias", "in_features", "out_features"}
+
+
 class SplitQuantizedLinear(nn.Module):
     def __init__(self, args, linear: nn.Linear):
         super(SplitQuantizedLinear, self).__init__()
@@ -35,6 +39,27 @@ class SplitQuantizedLinear(nn.Module):
 
         self._eval_mode = False
 
+    def _get_wrapped_linear(self):
+        modules = self.__dict__.get("_modules")
+        if modules is None:
+            return None
+        return modules.get("linear")
+
+    def __getattr__(self, name):
+        if name in _DELEGATED_LINEAR_ATTRS:
+            linear = self._get_wrapped_linear()
+            if linear is not None:
+                return getattr(linear, name)
+        return super().__getattr__(name)
+
+    def __setattr__(self, name, value):
+        if name in _DELEGATED_LINEAR_ATTRS:
+            linear = self._get_wrapped_linear()
+            if linear is not None:
+                setattr(linear, name, int(value) if name in {"in_features", "out_features"} else value)
+                return
+        super().__setattr__(name, value)
+
     def group_weight(self, weight):
         if self.group_size > 0:
             return weight.reshape(-1, self.group_size)
@@ -47,8 +72,10 @@ class SplitQuantizedLinear(nn.Module):
 
     def apply_wclip(self, weight):
         wmin, wmax = weight.min(1, keepdim=True)[0], weight.max(1, keepdim=True)[0]
-        wmax *= self.sigmoid(self.clip_factor_w_max)
-        wmin *= self.sigmoid(self.clip_factor_w_min)
+        clip_max = self.sigmoid(self.clip_factor_w_max).to(device=weight.device, dtype=weight.dtype)
+        clip_min = self.sigmoid(self.clip_factor_w_min).to(device=weight.device, dtype=weight.dtype)
+        wmax *= clip_max
+        wmin *= clip_min
         weight = torch.clamp(weight, min=wmin, max=wmax)
         return weight
 

@@ -734,12 +734,31 @@ def _is_qwen3_moe_block(module: nn.Module) -> bool:
 def _is_qwen3_moe_calibratable_wrapper(module: nn.Module) -> bool:
     return (
         module.__class__.__name__ in {
-            "FlatQuantQwen3MoeSparseMoeBlock",
             "SplitQuantQwen3MoeSparseMoeBlock",
             "QuantQwen3MoeSparseMoeBlock",
         }
         and hasattr(module, "calibrate_all_experts")
     )
+
+
+def _is_flatquant_qwen3_moe_unfusible_block(module: nn.Module) -> bool:
+    """FlatQuant w*a16 Qwen3-MoE block whose packed experts can be exposed as Linear views."""
+    if module.__class__.__name__ != "FlatQuantQwen3MoeSparseMoeBlock":
+        return False
+    experts = getattr(module, "experts", None)
+    if experts is None or not (hasattr(experts, "gate_up_proj") and hasattr(experts, "down_proj")):
+        return False
+    args = getattr(experts, "args", getattr(module, "args", None))
+    activation_bits = int(getattr(args, "a_bits", getattr(args, "activation_bits", 16)))
+    if activation_bits < 16:
+        LOGGER.warning(
+            "Skip unfusing %s for pruning because FlatQuant activation_bits=%d; "
+            "packed-aware pruning is required to preserve activation quantization.",
+            module.__class__.__name__,
+            activation_bits,
+        )
+        return False
+    return True
 
 
 def unfuse_qwen3_5_moe_experts(
@@ -781,16 +800,33 @@ def unfuse_qwen3_moe_experts(
 ) -> int:
     """原地拆分 Qwen3 MoE routed experts，返回替换模块数量。"""
     replacements = []
+    native_flatquant_blocks = []
+    native_splitquant_blocks = []
     unfused_count = 0
     for name, module in model.named_modules():
         if isinstance(module, UnfusedQwen3MoeSparseMoeBlock):
             module.calibrate_all_experts = calibrate_all_experts
             unfused_count += 1
+        elif (
+            module.__class__.__name__ == "SplitQuantQwen3MoeSparseMoeBlock"
+            and hasattr(module, "unfuse_experts")
+        ):
+            native_splitquant_blocks.append(module)
         elif _is_qwen3_moe_calibratable_wrapper(module):
             module.calibrate_all_experts = calibrate_all_experts
             unfused_count += 1
+        elif (
+            module.__class__.__name__ == "FlatQuantQwen3MoeSparseMoeBlock"
+            and hasattr(module, "unfuse_experts")
+        ):
+            native_flatquant_blocks.append(module)
         elif _is_qwen3_moe_block(module):
             replacements.append(name)
+
+    for block in native_flatquant_blocks:
+        unfused_count += int(bool(block.unfuse_experts(calibrate_all_experts=calibrate_all_experts)))
+    for block in native_splitquant_blocks:
+        unfused_count += int(bool(block.unfuse_experts(calibrate_all_experts=calibrate_all_experts)))
 
     if not replacements and not unfused_count:
         return 0
@@ -904,15 +940,26 @@ def refuse_qwen3_5_moe_experts_for_hf_save(model: nn.Module) -> int:
     return len(target_names)
 
 
-def refuse_qwen3_moe_experts_for_hf_save(model: nn.Module) -> int:
+def refuse_qwen3_moe_experts_for_hf_save(
+    model: nn.Module,
+    experts_on_cpu: bool | None = None,
+) -> int:
     """保存前把 Qwen3-MoE routed experts 整理成 HF 可加载形态。"""
+    splitquant_refused = 0
+    for module in list(model.modules()):
+        if module.__class__.__name__ != "SplitQuantQwen3MoeSparseMoeBlock":
+            continue
+        refuse = getattr(module, "refuse_experts", None)
+        if callable(refuse):
+            splitquant_refused += int(bool(refuse()))
+
     target_names = [
         name
         for name, module in model.named_modules()
         if isinstance(module, UnfusedQwen3MoeSparseMoeBlock)
     ]
     if not target_names:
-        return 0
+        return splitquant_refused
 
     routed_widths: list[int] = []
     for name in target_names:
@@ -924,9 +971,9 @@ def refuse_qwen3_moe_experts_for_hf_save(model: nn.Module) -> int:
     text_config = _get_text_config(model)
     _set_config_attr_if_present(text_config, "moe_intermediate_size", target_routed_width)
 
-    expert_parameter_device = (
-        "cpu" if _env_enabled("MINDPIPE_QWEN35_HF_SAVE_EXPERTS_ON_CPU", True) else None
-    )
+    if experts_on_cpu is None:
+        experts_on_cpu = _env_enabled("MINDPIPE_QWEN35_HF_SAVE_EXPERTS_ON_CPU", True)
+    expert_parameter_device = "cpu" if experts_on_cpu else None
     if expert_parameter_device == "cpu":
         LOGGER.info("Building refused Qwen3 routed expert tensors on CPU for HF save.")
 
@@ -954,7 +1001,7 @@ def refuse_qwen3_moe_experts_for_hf_save(model: nn.Module) -> int:
         target_routed_width,
         refused,
     )
-    return len(target_names)
+    return len(target_names) + splitquant_refused
 
 
 def set_qwen3_5_moe_calibrate_all_experts(
@@ -968,6 +1015,18 @@ def set_qwen3_5_moe_calibrate_all_experts(
             module.calibrate_all_experts = enabled
             updated += 1
     return updated
+
+
+def refuse_flatquant_qwen3_moe_experts_for_hf_save(model: nn.Module) -> int:
+    """Pack FlatQuant temporary per-expert modules before model export."""
+    refused = 0
+    for module in list(model.modules()):
+        if module.__class__.__name__ != "FlatQuantQwen3MoeSparseMoeBlock":
+            continue
+        refuse = getattr(module, "refuse_experts", None)
+        if callable(refuse):
+            refused += int(refuse())
+    return refused
 
 
 def set_qwen3_moe_calibrate_all_experts(

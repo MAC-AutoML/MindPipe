@@ -77,6 +77,7 @@ def build_alpaca_sft_dataset(
     tokenizer: Any | None = None,
     max_length: int | None = None,
     min_response_tokens: int = 8,
+    sample_start: int = 0,
 ):
     rows = _load_json_or_jsonl(train_file)
     full_examples: list[dict[str, Any]] = []
@@ -125,21 +126,22 @@ def build_alpaca_sft_dataset(
     rng = random.Random(seed)
     rng.shuffle(full_examples)
     rng.shuffle(truncated_examples)
+    ordered_examples = full_examples + truncated_examples
+    sample_start = max(0, int(sample_start))
     if sample_count > 0:
-        examples = full_examples[:sample_count]
-        if len(examples) < sample_count:
-            examples.extend(truncated_examples[: sample_count - len(examples)])
+        examples = ordered_examples[sample_start : sample_start + sample_count]
     else:
-        examples = full_examples + truncated_examples
+        examples = ordered_examples[sample_start:]
     if not examples:
         raise ValueError(f"No Alpaca SFT examples were built from {train_file}.")
     selected_full = sum(1 for example in examples if example["sft_length_bucket"] == "full")
     selected_truncated = sum(1 for example in examples if example["sft_length_bucket"] == "truncated_answer")
     LOGGER.info(
-        "Alpaca SFT length filter: selected=%s full=%s truncated_answer=%s available_full=%s available_truncated_answer=%s "
+        "Alpaca SFT length filter: selected=%s sample_start=%s full=%s truncated_answer=%s available_full=%s available_truncated_answer=%s "
         "dropped_empty=%s dropped_no_response_after_truncation=%s dropped_empty_response_tokens=%s dropped_short_response=%s "
         "min_response_tokens=%s max_length=%s",
         len(examples),
+        sample_start,
         selected_full,
         selected_truncated,
         len(full_examples),

@@ -71,6 +71,71 @@ def _apply_trans_to_packed_weight(weight: torch.Tensor, trans: nn.Module) -> tor
     return _apply_trans_to_weight(weight.reshape(-1, original_shape[-1]), trans).reshape(original_shape)
 
 
+def _grouped_expert_mm(
+    inputs: torch.Tensor,
+    expert_indices: torch.Tensor,
+    weights: torch.Tensor,
+    alignment: int = 8,
+):
+    """Run grouped expert GEMM and return outputs in sorted-token order."""
+    grouped_mm = getattr(torch, "_grouped_mm", None)
+    if grouped_mm is None or inputs.device.type != "cuda":
+        return None
+    if inputs.dtype not in (torch.float16, torch.bfloat16):
+        return None
+    if weights.ndim != 3 or weights.shape[1] % 16 or weights.shape[2] % 16:
+        return None
+    unique, counts = torch.unique_consecutive(expert_indices, return_counts=True)
+    if unique.numel() == 0:
+        return None
+    segments = []
+    padded_inputs = []
+    padded_counts = []
+    start = 0
+    for count in counts.tolist():
+        count = int(count)
+        segment = inputs[start : start + count]
+        padded = (count + alignment - 1) // alignment * alignment
+        if padded != count:
+            segment = torch.cat((segment, torch.zeros(
+                (padded - count, segment.shape[-1]), device=segment.device, dtype=segment.dtype
+            )), dim=0)
+        padded_inputs.append(segment)
+        padded_counts.append(padded)
+        segments.append(count)
+        start += count
+    packed_inputs = torch.cat(padded_inputs, dim=0).contiguous()
+    offsets = torch.tensor(
+        list(torch.tensor(padded_counts, device="cpu").cumsum(0).tolist()),
+        device=inputs.device,
+        dtype=torch.int32,
+    )
+    grouped_weights = weights[unique].contiguous()
+    try:
+        output = grouped_mm(packed_inputs, grouped_weights, offsets)
+    except (RuntimeError, NotImplementedError):
+        return None
+    outputs = []
+    start = 0
+    for count, padded in zip(segments, padded_counts):
+        outputs.append(output[start : start + count])
+        start += padded
+    return torch.cat(outputs, dim=0)
+
+
+def _route_index_tensors(top_k_index: torch.Tensor):
+    token_count, top_k = top_k_index.shape
+    token_indices = torch.arange(token_count, device=top_k_index.device).unsqueeze(1).expand(-1, top_k).reshape(-1)
+    top_k_positions = torch.arange(top_k, device=top_k_index.device).unsqueeze(0).expand(token_count, -1).reshape(-1)
+    expert_indices = top_k_index.reshape(-1)
+    sort_order = torch.argsort(expert_indices, stable=True)
+    return (
+        expert_indices.index_select(0, sort_order),
+        token_indices.index_select(0, sort_order),
+        top_k_positions.index_select(0, sort_order),
+    )
+
+
 class _FlatQuantQwen3AttentionMixin:
     attention_functions = QWEN3_ATTENTION_FUNCTIONS
     eager_attention_fn = staticmethod(qwen3_eager_attention_forward)
@@ -438,6 +503,60 @@ class FlatQuantQwen3VLTextAttention(_FlatQuantQwen3AttentionMixin, Qwen3VLTextAt
         return attn_output, attn_weights
 
 
+class FlatQuantQwen3MoeMLP(nn.Module):
+    """Per-expert FlatQuant MLP used while pruning and training LoRA."""
+
+    def __init__(self, args, module: nn.Module):
+        super().__init__()
+        self.args = args
+        self.gate_proj = FlatQuantizedLinear(args, module.gate_proj)
+        self.up_proj = FlatQuantizedLinear(args, module.up_proj)
+        self.down_proj = FlatQuantizedLinear(args, module.down_proj)
+        self.act_fn = module.act_fn
+        self._ori_mode = False
+        self.add_fq_trans()
+
+    def add_fq_trans(self):
+        if self.args.w_bits < 16 or self.args.a_bits < 16:
+            self._down_trans = _build_group_trans(self.args, self.down_proj.linear.weight.shape[1])
+        else:
+            self._down_trans = None
+
+    def forward(self, hidden_states: torch.Tensor, input_trans=None) -> torch.Tensor:
+        if self._ori_mode:
+            gate = self.gate_proj._ori_forward(hidden_states)
+            up = self.up_proj._ori_forward(hidden_states)
+            return self.down_proj._ori_forward(self.act_fn(gate) * up)
+        gate = self.gate_proj(hidden_states, qa_trans=input_trans)
+        up = self.up_proj(hidden_states, qa_trans=input_trans)
+        hidden_states = self.act_fn(gate) * up
+        if self._down_trans is not None:
+            hidden_states = self._down_trans(hidden_states)
+        return self.down_proj(hidden_states, qa_trans=self._down_trans)
+
+    def reparameterize(self, input_trans=None, down_trans=None, fuse_diag=True):
+        down_trans = self._down_trans if down_trans is None else down_trans
+        if down_trans is not None:
+            down_trans.to_eval_mode()
+        self.gate_proj.reparameterize(qa_trans=input_trans)
+        self.up_proj.reparameterize(qa_trans=input_trans)
+        if down_trans is not None and down_trans.add_diag and fuse_diag:
+            up_weight = self.up_proj.linear.weight
+            original_dtype = up_weight.dtype
+            scaled = up_weight.to(torch.float64).T
+            scaled.mul_(down_trans.diag_scale.to(device=scaled.device, dtype=torch.float64))
+            self.up_proj.linear.weight.data = scaled.T.to(original_dtype)
+            down_trans.use_diag = False
+        self.down_proj.reparameterize(qa_trans=down_trans)
+
+    def init_diag_scale(self, alpha=0.5):
+        del alpha
+
+    def rep_matrix_only(self):
+        if self._down_trans is not None:
+            self._down_trans.to_eval_mode()
+
+
 class FlatQuantQwen3MoePackedExperts(nn.Module):
     def __init__(self, args, module: nn.Module):
         super().__init__()
@@ -445,8 +564,8 @@ class FlatQuantQwen3MoePackedExperts(nn.Module):
         self.num_experts = module.num_experts
         self.intermediate_size = getattr(module, "intermediate_size", getattr(module, "intermediate_dim", None))
         self.act_fn = module.act_fn
-        self.gate_up_proj = nn.Parameter(module.gate_up_proj.detach().clone())
-        self.down_proj = nn.Parameter(module.down_proj.detach().clone())
+        self.gate_up_proj = module.gate_up_proj
+        self.down_proj = module.down_proj
         self.weight_quantizer = WeightQuantizer()
         self.weight_quantizer.configure(args.w_bits, perchannel=True, sym=not args.w_asym, mse=False)
         self.act_quantizer = ActivationQuantizer(
@@ -489,10 +608,12 @@ class FlatQuantQwen3MoePackedExperts(nn.Module):
             return gate_up_weight
         gate_size = gate_up_weight.shape[1] // 2
         scale = self._down_trans.diag_scale.to(dtype=torch.float64, device=gate_up_weight.device)
-        fused_weight = gate_up_weight.to(torch.float64).clone()
-        fused_weight[:, gate_size:, :] = fused_weight[:, gate_size:, :] * scale.view(1, -1, 1)
+        up_weight = gate_up_weight[:, gate_size:, :]
+        up_weight_fp64 = up_weight.to(torch.float64)
+        up_weight_fp64.mul_(scale.view(1, -1, 1))
+        up_weight.copy_(up_weight_fp64.to(up_weight.dtype))
         self._down_trans.use_diag = False
-        return fused_weight.to(gate_up_weight.dtype)
+        return gate_up_weight
 
     def forward(
         self,
@@ -503,6 +624,34 @@ class FlatQuantQwen3MoePackedExperts(nn.Module):
     ) -> torch.Tensor:
         final_hidden_states = torch.zeros_like(hidden_states)
         gate_up_proj, down_proj = self._weights(input_trans=input_trans)
+        route_experts, token_indices, top_k_positions = _route_index_tensors(top_k_index)
+        grouped_input = hidden_states.index_select(0, token_indices)
+        if not self._ori_mode:
+            grouped_input = self.act_quantizer(grouped_input)
+        gate_up_output = _grouped_expert_mm(
+            grouped_input,
+            route_experts,
+            gate_up_proj.transpose(1, 2).contiguous(),
+        )
+        if gate_up_output is not None:
+            gate_output, up_output = gate_up_output.chunk(2, dim=-1)
+            intermediate = self.act_fn(gate_output) * up_output
+            if not self._ori_mode:
+                intermediate = self.act_quantizer(intermediate)
+            if not self._ori_mode and self._down_trans is not None:
+                intermediate = self._down_trans(intermediate)
+            down_output = _grouped_expert_mm(
+                intermediate,
+                route_experts,
+                down_proj.transpose(1, 2).contiguous(),
+            )
+            if down_output is not None:
+                route_weights = top_k_weights.index_select(0, token_indices).gather(
+                    1, top_k_positions.unsqueeze(1)
+                ).to(down_output.dtype)
+                weighted = down_output * route_weights
+                final_hidden_states.index_add_(0, token_indices, weighted.to(final_hidden_states.dtype))
+                return final_hidden_states
         with torch.no_grad():
             expert_mask = F.one_hot(top_k_index, num_classes=self.num_experts)
             expert_mask = expert_mask.permute(2, 1, 0)
@@ -530,14 +679,17 @@ class FlatQuantQwen3MoePackedExperts(nn.Module):
 
     def reparameterize(self, input_trans=None):
         gate_up_weight = self.gate_up_proj.data
-        down_weight = self.down_proj.data
         if input_trans is not None:
             gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
         if self._down_trans is not None:
             self._down_trans.to_eval_mode()
-            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
             gate_up_weight = self._fuse_down_diag_into_gate_up(gate_up_weight)
         self.gate_up_proj.data = self._quantize_weight(gate_up_weight)
+        del gate_up_weight
+
+        down_weight = self.down_proj.data
+        if self._down_trans is not None:
+            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
         self.down_proj.data = self._quantize_weight(down_weight)
         self._eval_mode = True
 
@@ -554,7 +706,21 @@ class FlatQuantQwen3MoeSparseMoeBlock(nn.Module):
         super().__init__()
         self.args = args
         self.gate = module.gate
-        self.experts = FlatQuantQwen3MoePackedExperts(args, module.experts)
+        self.experts_are_packed = hasattr(module.experts, "gate_up_proj")
+        if self.experts_are_packed:
+            self.experts = FlatQuantQwen3MoePackedExperts(args, module.experts)
+        else:
+            self.experts = nn.ModuleList([FlatQuantQwen3MoeMLP(args, expert) for expert in module.experts])
+        if hasattr(module, "num_experts"):
+            self.num_experts = int(module.num_experts)
+        elif hasattr(module.gate, "num_experts"):
+            self.num_experts = int(module.gate.num_experts)
+        elif self.experts_are_packed:
+            self.num_experts = int(self.experts.num_experts)
+        else:
+            self.num_experts = len(self.experts)
+        self.top_k = int(getattr(module, "top_k", getattr(module.gate, "top_k", 1)))
+        self.calibrate_all_experts = False
         self._parent_post_attention_layernorm = None
         self._ori_mode = False
         self._eval_mode = False
@@ -568,7 +734,11 @@ class FlatQuantQwen3MoeSparseMoeBlock(nn.Module):
 
     def _set_ori_mode(self, enabled: bool):
         self._ori_mode = enabled
-        self.experts._ori_mode = enabled
+        if self.experts_are_packed:
+            self.experts._ori_mode = enabled
+        else:
+            for expert in self.experts:
+                expert._ori_mode = enabled
 
     def _route(self, hidden_states: torch.Tensor, input_trans=None):
         if self._ori_mode or self._eval_mode or input_trans is None:
@@ -582,7 +752,7 @@ class FlatQuantQwen3MoeSparseMoeBlock(nn.Module):
         return router_logits, router_scores, router_indices
 
     def forward(self, hidden_states: torch.Tensor):
-        self.experts._ori_mode = self._ori_mode
+        self._set_ori_mode(self._ori_mode)
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
         input_trans = None
@@ -590,19 +760,49 @@ class FlatQuantQwen3MoeSparseMoeBlock(nn.Module):
             hidden_states_reshaped = self._moe_in_trans(hidden_states_reshaped)
             input_trans = self._moe_in_trans
         _, routing_weights, selected_experts = self._route(hidden_states_reshaped, input_trans=input_trans)
-        final_hidden_states = self.experts(
-            hidden_states_reshaped,
-            selected_experts,
-            routing_weights,
-            input_trans=input_trans,
-        )
+        if self.experts_are_packed:
+            final_hidden_states = self.experts(
+                hidden_states_reshaped,
+                selected_experts,
+                routing_weights,
+                input_trans=input_trans,
+            )
+        else:
+            expert_mask = F.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+            final_hidden_states = torch.zeros_like(hidden_states_reshaped)
+            for expert_index, expert in enumerate(self.experts):
+                top_k_pos, token_index = torch.where(expert_mask[expert_index])
+                if not self.calibrate_all_experts and token_index.numel() == 0:
+                    continue
+                if self.calibrate_all_experts:
+                    expert_output = expert(hidden_states_reshaped, input_trans=input_trans)[token_index]
+                else:
+                    expert_output = expert(hidden_states_reshaped[token_index], input_trans=input_trans)
+                if token_index.numel() > 0:
+                    expert_output = expert_output * routing_weights[token_index, top_k_pos, None]
+                    final_hidden_states.index_add_(0, token_index, expert_output.to(final_hidden_states.dtype))
         return final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
     def reparameterize(self):
         if self._moe_in_trans is not None:
             self._moe_in_trans.to_eval_mode()
             self.gate.weight.data = _apply_trans_to_weight(self.gate.weight.data, self._moe_in_trans)
-        self.experts.reparameterize(input_trans=self._moe_in_trans)
+        if self.experts_are_packed:
+            self.experts.reparameterize(input_trans=self._moe_in_trans)
+        else:
+            down_trans = self.experts[0]._down_trans if len(self.experts) else None
+            if down_trans is not None:
+                down_trans.to_eval_mode()
+            for expert in self.experts:
+                expert.reparameterize(input_trans=self._moe_in_trans, down_trans=down_trans, fuse_diag=False)
+            if down_trans is not None and down_trans.add_diag:
+                scale = down_trans.diag_scale.to(dtype=torch.float64)
+                for expert in self.experts:
+                    up_weight = expert.up_proj.linear.weight
+                    scaled = up_weight.to(torch.float64).T
+                    scaled.mul_(scale.to(device=scaled.device))
+                    expert.up_proj.linear.weight.data = scaled.T.to(up_weight.dtype)
+                down_trans.use_diag = False
         if self._moe_in_trans is not None and self._moe_in_trans.add_diag:
             if self._parent_post_attention_layernorm is None:
                 raise RuntimeError("FlatQuant Qwen3-MoE MLP is missing parent post_attention_layernorm for diag fusion.")
@@ -615,7 +815,107 @@ class FlatQuantQwen3MoeSparseMoeBlock(nn.Module):
     def rep_matrix_only(self):
         if self._moe_in_trans is not None:
             self._moe_in_trans.to_eval_mode()
-        self.experts.rep_matrix_only()
+        if self.experts_are_packed:
+            self.experts.rep_matrix_only()
+        else:
+            for expert in self.experts:
+                expert.rep_matrix_only()
+
+    def unfuse_experts(self, calibrate_all_experts: bool = False) -> int:
+        return unfuse_flatquant_qwen3_moe_experts(self, calibrate_all_experts=calibrate_all_experts)
+
+    def refuse_experts(self) -> int:
+        return refuse_flatquant_qwen3_moe_experts(self)
+
+
+def _disable_flatquant_linear_lwc(linear: FlatQuantizedLinear) -> None:
+    """Match the packed expert path, which has no per-projection LWC state."""
+    linear.lwc = False
+    for parameter_name in ("clip_factor_w_max", "clip_factor_w_min"):
+        if hasattr(linear, parameter_name):
+            delattr(linear, parameter_name)
+    if hasattr(linear, "sigmoid"):
+        delattr(linear, "sigmoid")
+
+
+def unfuse_flatquant_qwen3_moe_experts(model: nn.Module, calibrate_all_experts: bool = False) -> int:
+    """Expose packed Qwen3-MoE weights as per-expert FlatQuant linears."""
+    blocks = [module for module in model.modules() if isinstance(module, FlatQuantQwen3MoeSparseMoeBlock)]
+    replaced = 0
+    for block in blocks:
+        if not block.experts_are_packed:
+            block.calibrate_all_experts = calibrate_all_experts
+            continue
+        packed = block.experts
+        experts = []
+        for expert_index in range(packed.num_experts):
+            gate_up = packed.gate_up_proj[expert_index]
+            down = packed.down_proj[expert_index]
+            intermediate_size = gate_up.shape[0] // 2
+
+            gate_linear = nn.Linear(gate_up.shape[1], intermediate_size, bias=False, device="meta")
+            gate_linear.weight = nn.Parameter(gate_up[:intermediate_size], requires_grad=gate_up.requires_grad)
+            up_linear = nn.Linear(gate_up.shape[1], intermediate_size, bias=False, device="meta")
+            up_linear.weight = nn.Parameter(gate_up[intermediate_size:], requires_grad=gate_up.requires_grad)
+            down_linear = nn.Linear(down.shape[1], down.shape[0], bias=False, device="meta")
+            down_linear.weight = nn.Parameter(down, requires_grad=down.requires_grad)
+
+            source = nn.Module()
+            source.gate_proj = gate_linear
+            source.up_proj = up_linear
+            source.down_proj = down_linear
+            source.act_fn = packed.act_fn
+            expert = FlatQuantQwen3MoeMLP(packed.args, source)
+            for projection in (expert.gate_proj, expert.up_proj, expert.down_proj):
+                _disable_flatquant_linear_lwc(projection)
+                projection.act_quantizer = packed.act_quantizer
+                # The packed tensors have already been transformed and quantized
+                # before Wanda runs. Preserve that state so temporary expert
+                # views call their inner nn.Linear directly. Otherwise the
+                # training path transforms/quantizes the weights a second time
+                # and bypasses Wanda's hook on projection.linear.
+                projection._eval_mode = bool(getattr(packed, "_eval_mode", False))
+            # Reuse the calibrated block-level transform. The packed path has
+            # one down transform, so temporary experts must not create their own.
+            expert._down_trans = packed._down_trans
+            experts.append(expert)
+
+        block.experts = nn.ModuleList(experts)
+        block.experts_are_packed = False
+        block.calibrate_all_experts = calibrate_all_experts
+        replaced += 1
+    return replaced
+
+
+def refuse_flatquant_qwen3_moe_experts(model: nn.Module) -> int:
+    """Restore temporary FlatQuant expert linears to packed Qwen3 tensors."""
+    blocks = [module for module in model.modules() if isinstance(module, FlatQuantQwen3MoeSparseMoeBlock)]
+    replaced = 0
+    for block in blocks:
+        if block.experts_are_packed:
+            continue
+        experts = list(block.experts)
+        if not experts:
+            continue
+        gate_up = torch.stack(
+            [torch.cat((expert.gate_proj.linear.weight, expert.up_proj.linear.weight), dim=0) for expert in experts],
+            dim=0,
+        )
+        down = torch.stack([expert.down_proj.linear.weight for expert in experts], dim=0)
+        source = nn.Module()
+        source.num_experts = len(experts)
+        source.intermediate_size = gate_up.shape[1] // 2
+        source.intermediate_dim = source.intermediate_size
+        source.act_fn = experts[0].act_fn
+        source.gate_up_proj = nn.Parameter(gate_up, requires_grad=False)
+        source.down_proj = nn.Parameter(down, requires_grad=False)
+        packed = FlatQuantQwen3MoePackedExperts(experts[0].args, source)
+        packed._down_trans = getattr(experts[0], "_down_trans", None)
+        packed._eval_mode = block._eval_mode
+        block.experts = packed
+        block.experts_are_packed = True
+        replaced += 1
+    return replaced
 
 
 class FlatQuantQwen3MoeDecoderLayer(nn.Module):

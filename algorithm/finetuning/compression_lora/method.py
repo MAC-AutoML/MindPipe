@@ -1,16 +1,19 @@
-"""FlatQuant fixed-mask compression-aware LoRA."""
+"""Fixed-mask compression-aware LoRA for transform-based quantizers."""
 
 from __future__ import annotations
 
 import logging
 import math
+import os
+import random
+import errno
 import types
 from pathlib import Path
 import time
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from algorithm.common.datasets import get_calibration_and_evaluation_data
 from algorithm.common.device import empty_cache
@@ -23,6 +26,7 @@ from algorithm.finetuning.base import BaseFinetuningMethod
 from algorithm.quantization.qat.flatquant.method import FlatQuantMethod
 from algorithm.quantization.qat.flatquant.method import _infer_direct_inv_from_checkpoint
 from algorithm.quantization.qat.flatquant.method import _purge_conflicting_modules
+from algorithm.quantization.qat.splitquant.method import SplitQuantMethod
 from .collators import RawTextCPTCollator
 from .collators import MiniCPMVImageTextSFTCollator
 from .collators import QwenVLImageTextSFTCollator
@@ -30,8 +34,12 @@ from .collators import TextSFTCollator
 from .data import build_raw_text_jsonl_dataset
 from .flatquant_linear import CompressionLoRAFlatQuantLinear
 from .flatquant_linear import LoRAConfig
+from .splitquant_linear import CompressionLoRASplitQuantLinear
+from .packed_moe import PackedCompressionLoRAExperts
+from .packed_moe import apply_packed_moe_masks
 from .mask_utils import load_masks
 from .mask_utils import mask_sparsity
+from .mask_utils import apply_masks_to_model
 from .mask_utils import validate_masks
 from .run_spec import compression_lora_run_spec
 from .run_spec import parse_compression_lora_train_plan
@@ -46,6 +54,26 @@ def _is_flatquant_linear(module: torch.nn.Module) -> bool:
     return module.__class__.__name__ == "FlatQuantizedLinear" and hasattr(module, "linear")
 
 
+def _is_splitquant_linear(module: torch.nn.Module) -> bool:
+    return module.__class__.__name__ == "SplitQuantizedLinear" and hasattr(module, "linear")
+
+
+_COMPRESSION_LORA_LINEAR_TYPES = (
+    CompressionLoRAFlatQuantLinear,
+    CompressionLoRASplitQuantLinear,
+    PackedCompressionLoRAExperts,
+)
+
+
+def _is_compression_lora_linear(module: torch.nn.Module) -> bool:
+    return isinstance(module, _COMPRESSION_LORA_LINEAR_TYPES)
+
+
+def _matches_lora_target(name: str, target_modules) -> bool:
+    targets = set(target_modules or [])
+    return not targets or any(name == target or name.endswith(f".{target}") for target in targets)
+
+
 def _set_child_module(root: torch.nn.Module, qualified_name: str, replacement: torch.nn.Module) -> None:
     parts = qualified_name.split(".")
     parent = root
@@ -57,11 +85,15 @@ def _set_child_module(root: torch.nn.Module, qualified_name: str, replacement: t
 def _collect_adapter_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     state: dict[str, torch.Tensor] = {}
     for name, module in model.named_modules():
-        if not isinstance(module, CompressionLoRAFlatQuantLinear):
+        if not _is_compression_lora_linear(module):
+            continue
+        if isinstance(module, PackedCompressionLoRAExperts):
+            for param_name in module.adapter_parameter_names():
+                state[f"{name}.{param_name}"] = getattr(module, param_name).detach().cpu()
             continue
         state[f"{name}.lora_A"] = module.lora_A.detach().cpu()
         state[f"{name}.lora_B"] = module.lora_B.detach().cpu()
-        if module.adapter_type == "dora":
+        if not isinstance(module, PackedCompressionLoRAExperts) and module.adapter_type == "dora":
             state[f"{name}.dora_magnitude"] = module.dora_magnitude.detach().cpu()
     return state
 
@@ -86,21 +118,27 @@ def _load_adapter_state(model: torch.nn.Module, adapter_state: dict[str, torch.T
     for key, tensor in adapter_state.items():
         module_name, param_name = key.rsplit(".", maxsplit=1)
         module = module_map.get(module_name)
-        if not isinstance(module, CompressionLoRAFlatQuantLinear):
+        if not _is_compression_lora_linear(module):
             raise KeyError(f"Adapter target {module_name!r} is not a compression LoRA wrapper.")
-        if param_name == "dora_magnitude" and module.adapter_type != "dora":
+        if isinstance(module, PackedCompressionLoRAExperts):
+            if param_name not in module.adapter_parameter_names():
+                raise KeyError(f"Unknown packed expert adapter parameter {key!r}.")
+        elif param_name == "dora_magnitude" and module.adapter_type != "dora":
             raise ValueError(f"Adapter contains DoRA magnitude for non-DoRA module {module_name!r}.")
         param = getattr(module, param_name)
         param.data.copy_(tensor.to(device=param.device, dtype=param.dtype))
     missing = []
     for name, module in model.named_modules():
-        if not isinstance(module, CompressionLoRAFlatQuantLinear):
+        if not _is_compression_lora_linear(module):
             continue
-        for param_name in ("lora_A", "lora_B"):
+        parameter_names = module.adapter_parameter_names() if isinstance(
+            module, PackedCompressionLoRAExperts
+        ) else ("lora_A", "lora_B")
+        for param_name in parameter_names:
             key = f"{name}.{param_name}"
             if key not in loaded_keys:
                 missing.append(key)
-        if module.adapter_type == "dora":
+        if not isinstance(module, PackedCompressionLoRAExperts) and module.adapter_type == "dora":
             key = f"{name}.dora_magnitude"
             if key not in loaded_keys:
                 missing.append(key)
@@ -109,11 +147,33 @@ def _load_adapter_state(model: torch.nn.Module, adapter_state: dict[str, torch.T
         raise KeyError(f"Adapter checkpoint is missing required parameter(s): {preview}")
 
 
-def _iter_adapter_parameters(module: CompressionLoRAFlatQuantLinear):
+def _iter_adapter_parameters(module: torch.nn.Module):
+    if isinstance(module, PackedCompressionLoRAExperts):
+        yield from module.adapter_parameters()
+        return
     yield module.lora_A
     yield module.lora_B
     if module.adapter_type == "dora":
         yield module.dora_magnitude
+
+
+def _named_adapter_parameters(model: torch.nn.Module) -> list[tuple[str, torch.nn.Parameter]]:
+    named: list[tuple[str, torch.nn.Parameter]] = []
+    for module_name, module in model.named_modules():
+        if not _is_compression_lora_linear(module):
+            continue
+        if isinstance(module, PackedCompressionLoRAExperts):
+            parameter_names = module.adapter_parameter_names()
+        else:
+            parameter_names = ["lora_A", "lora_B"]
+            if module.adapter_type == "dora":
+                parameter_names.append("dora_magnitude")
+        for parameter_name in parameter_names:
+            parameter = getattr(module, parameter_name)
+            if parameter.requires_grad:
+                prefix = f"{module_name}." if module_name else ""
+                named.append((f"{prefix}{parameter_name}", parameter))
+    return named
 
 
 def _parse_train_plan(plan: str | None) -> list[str]:
@@ -143,8 +203,7 @@ def _save_adapter(
                 "dora_eps": float(getattr(args, "compression_lora_dora_eps", 1e-6)),
                 "lr_scheduler_type": getattr(args, "compression_lora_lr_scheduler_type", "cosine"),
                 "warmup_ratio": float(getattr(args, "compression_lora_warmup_ratio", 0.03)),
-                "adapter_from": getattr(args, "compression_lora_adapter_from", None),
-                "adapter_from_mode": getattr(args, "compression_lora_adapter_from_mode", "merge_only"),
+                "resume_from": getattr(args, "compression_lora_resume_from", None),
                 "sft_min_response_tokens": int(getattr(args, "compression_lora_sft_min_response_tokens", 8)),
                 "quantization": args.quantization,
                 "pruning": args.pruning,
@@ -158,6 +217,138 @@ def _save_adapter(
         path,
     )
     return path
+
+
+def _capture_rng_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "torch_cpu": torch.get_rng_state(),
+    }
+    try:
+        import numpy as np
+
+        state["numpy"] = np.random.get_state()
+    except ImportError:
+        pass
+    if torch.cuda.is_available():
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(state: dict[str, Any] | None) -> None:
+    if not state:
+        return
+    random.setstate(state["python"])
+    torch.set_rng_state(state["torch_cpu"])
+    if "numpy" in state:
+        import numpy as np
+
+        np.random.set_state(state["numpy"])
+    if "torch_cuda" in state and torch.cuda.is_available():
+        cuda_states = state["torch_cuda"]
+        if len(cuda_states) != torch.cuda.device_count():
+            raise ValueError(
+                "Compression LoRA checkpoint CUDA device count mismatch: "
+                f"checkpoint={len(cuda_states)} current={torch.cuda.device_count()}."
+            )
+        torch.cuda.set_rng_state_all(cuda_states)
+
+
+def _atomic_torch_save(payload: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        torch.save(payload, temporary)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _rotate_training_checkpoints(checkpoint_dir: Path, save_total_limit: int) -> None:
+    limit = int(save_total_limit)
+    if limit <= 0:
+        return
+    checkpoints = sorted(
+        checkpoint_dir.glob("checkpoint-*.pth"),
+        key=lambda path: int(path.stem.rsplit("-", 1)[-1]),
+    )
+    for stale in checkpoints[:-limit]:
+        stale.unlink()
+
+
+def _save_training_checkpoint(
+    *,
+    path: Path,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    lr_scheduler,
+    stage_name: str,
+    global_step: int,
+    micro_step: int,
+    epoch: int,
+    sample_offset: int,
+    dataset_size: int,
+    batch_size: int,
+    grad_accum: int,
+    max_steps: int,
+    run_start_step: int,
+    run_steps: int,
+    data_seed: int,
+    parameter_names: list[str],
+    completed: bool,
+    metadata: dict[str, Any],
+) -> Path:
+    _atomic_torch_save(
+        {
+            "format": "mindpipe.compression_lora.training_checkpoint.v1",
+            "metadata": dict(metadata),
+            "adapter_state_dict": _collect_adapter_state(model),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "lr_scheduler_state_dict": lr_scheduler.state_dict(),
+            "rng_state": _capture_rng_state(),
+            "training_state": {
+                "stage": stage_name,
+                "global_step": int(global_step),
+                "micro_step": int(micro_step),
+                "epoch": int(epoch),
+                "sample_offset": int(sample_offset),
+                "dataset_size": int(dataset_size),
+                "batch_size": int(batch_size),
+                "grad_accum": int(grad_accum),
+                "max_steps": int(max_steps),
+                "run_start_step": int(run_start_step),
+                "run_steps": int(run_steps),
+                "data_seed": int(data_seed),
+                "parameter_names": list(parameter_names),
+                "completed": bool(completed),
+            },
+        },
+        path,
+    )
+    return path
+
+
+def _load_training_checkpoint(path: str | Path) -> dict[str, Any]:
+    retryable_errors = {errno.EBUSY, getattr(errno, "ESTALE", 116)}
+    for attempt in range(6):
+        try:
+            payload = torch.load(path, map_location="cpu", weights_only=False)
+            break
+        except OSError as exc:
+            if exc.errno not in retryable_errors or attempt == 5:
+                raise
+            time.sleep(2**attempt)
+    if not isinstance(payload, dict) or payload.get("format") != "mindpipe.compression_lora.training_checkpoint.v1":
+        raise ValueError(
+            "compression_lora_resume_from must point to a MindPipe compression LoRA training checkpoint; "
+            "the final adapter-only file cannot restore optimizer and data state."
+        )
+    required = {"adapter_state_dict", "optimizer_state_dict", "lr_scheduler_state_dict", "training_state"}
+    missing = sorted(required - set(payload))
+    if missing:
+        raise KeyError(f"Compression LoRA training checkpoint is missing fields: {missing}")
+    return payload
 
 
 def _patch_minicpm_v_vision_embedding_dtype(model: torch.nn.Module) -> None:
@@ -203,6 +394,7 @@ def _build_sft_dataset_and_collator(model, tokenizer_bundle, args):
             tokenizer=tokenizer,
             max_length=int(args.sequence_length),
             min_response_tokens=int(getattr(args, "compression_lora_sft_min_response_tokens", 8)),
+            sample_start=int(getattr(args, "compression_lora_sft_sample_start", 0)),
         )
         return dataset, TextSFTCollator(
             tokenizer,
@@ -416,6 +608,14 @@ def _move_batch_for_model(batch: dict[str, Any], model: torch.nn.Module) -> dict
     return moved
 
 
+def _batch_example_count(batch: dict[str, Any], fallback: int) -> int:
+    for key in ("input_ids", "labels", "attention_mask"):
+        value = batch.get(key)
+        if torch.is_tensor(value) and value.ndim > 0:
+            return int(value.shape[0])
+    return int(fallback)
+
+
 def _train_lora_manually(
     model: torch.nn.Module,
     train_dataset,
@@ -433,25 +633,25 @@ def _train_lora_manually(
     gradient_checkpointing: bool,
     lr_scheduler_type: str,
     warmup_ratio: float,
+    data_seed: int,
+    checkpoint_dir: Path,
+    save_steps: int,
+    save_total_limit: int,
+    resume_payload: dict[str, Any] | None = None,
+    checkpoint_metadata: dict[str, Any] | None = None,
+    resume_mode: str = "strict",
 ) -> dict[str, Any]:
-    trainable_params = [
-        param
-        for module in model.modules()
-        if isinstance(module, CompressionLoRAFlatQuantLinear)
-        for param in _iter_adapter_parameters(module)
-        if param.requires_grad
-    ]
+    named_trainable_params = _named_adapter_parameters(model)
+    parameter_names = [name for name, _ in named_trainable_params]
+    trainable_params = [parameter for _, parameter in named_trainable_params]
     if not trainable_params:
         raise RuntimeError("No trainable compression LoRA parameters found.")
 
+    dataset_size = len(train_dataset)
+    batch_size = max(1, int(batch_size))
     grad_accum = max(1, int(grad_accum))
-    dataloader = DataLoader(
-        train_dataset,
-        batch_size=int(batch_size),
-        shuffle=True,
-        collate_fn=collate_fn,
-    )
-    if len(dataloader) == 0:
+    batches_per_epoch = math.ceil(dataset_size / batch_size)
+    if batches_per_epoch == 0:
         raise RuntimeError("Compression LoRA train dataset is empty.")
 
     optimizer = torch.optim.AdamW(
@@ -459,19 +659,44 @@ def _train_lora_manually(
         lr=float(learning_rate),
         weight_decay=float(weight_decay),
     )
-    max_steps = int(max_steps)
-    if max_steps <= 0:
-        max_steps = max(1, math.ceil(len(dataloader) * float(num_train_epochs) / grad_accum))
+    planned_steps = int(max_steps)
+    if planned_steps <= 0:
+        planned_steps = max(1, math.ceil(batches_per_epoch * float(num_train_epochs) / grad_accum))
+    resume_mode = str(resume_mode)
+    if resume_mode not in {"strict", "extend"}:
+        raise ValueError(f"Unsupported compression LoRA resume mode: {resume_mode!r}.")
+    resume_state = resume_payload["training_state"] if resume_payload is not None else None
+    extending_completed_run = bool(
+        resume_state is not None and resume_mode == "extend" and resume_state.get("completed", False)
+    )
+    resuming_extension = bool(
+        resume_state is not None
+        and not resume_state.get("completed", False)
+        and "run_start_step" in resume_state
+    )
+    if extending_completed_run:
+        run_start_step = int(resume_state["global_step"])
+        run_steps = planned_steps
+        target_global_step = run_start_step + run_steps
+    elif resuming_extension:
+        run_start_step = int(resume_state["run_start_step"])
+        run_steps = int(resume_state["run_steps"])
+        target_global_step = int(resume_state["max_steps"])
+    else:
+        run_start_step = 0
+        run_steps = planned_steps
+        target_global_step = planned_steps
     from transformers import get_scheduler
 
-    warmup_steps = int(max_steps * max(0.0, float(warmup_ratio)))
+    warmup_steps = int(run_steps * max(0.0, float(warmup_ratio)))
     lr_scheduler = get_scheduler(
         name=str(lr_scheduler_type),
         optimizer=optimizer,
         num_warmup_steps=warmup_steps,
-        num_training_steps=max_steps,
+        num_training_steps=run_steps,
     )
     logging_steps = max(1, int(logging_steps))
+    save_steps = max(0, int(save_steps))
     input_device = _infer_input_device(model)
     visual_device = _infer_visual_device(model)
     trainable_devices = _trainable_param_devices(trainable_params)
@@ -482,7 +707,7 @@ def _train_lora_manually(
         len(train_dataset),
         batch_size,
         grad_accum,
-        max_steps,
+        target_global_step,
         str(lr_scheduler_type),
         warmup_steps,
         bool(gradient_checkpointing),
@@ -499,15 +724,92 @@ def _train_lora_manually(
     step_start_time = start_time
     global_step = 0
     micro_step = 0
+    epoch = 0
+    sample_offset = 0
+    resumed_from = None
     loss_sum = 0.0
     loss_count = 0
     log_loss_sum = 0.0
     log_loss_count = 0
     loss_history: list[dict[str, Any]] = []
+    last_saved_step: int | None = None
     optimizer.zero_grad(set_to_none=True)
 
-    while global_step < max_steps:
+    if resume_payload is not None:
+        state = resume_payload["training_state"]
+        expected = {
+            "stage": stage_name,
+            "batch_size": batch_size,
+            "grad_accum": grad_accum,
+            "data_seed": int(data_seed),
+            "parameter_names": parameter_names,
+        }
+        if not extending_completed_run:
+            expected["dataset_size"] = dataset_size
+            expected["run_steps"] = run_steps
+        mismatches = {
+            key: (state.get(key), value)
+            for key, value in expected.items()
+            if (state.get("max_steps") if key == "run_steps" and "run_steps" not in state else state.get(key)) != value
+        }
+        if mismatches:
+            details = ", ".join(
+                f"{key}: checkpoint={old!r} current={new!r}"
+                for key, (old, new) in mismatches.items()
+            )
+            raise ValueError(f"Compression LoRA resume configuration mismatch: {details}")
+        global_step = int(state["global_step"])
+        micro_step = int(state["micro_step"])
+        if extending_completed_run:
+            epoch = 0
+            sample_offset = 0
+        else:
+            epoch = int(state["epoch"])
+            sample_offset = int(state["sample_offset"])
+        if global_step > target_global_step:
+            raise ValueError(
+                f"Resume global_step={global_step} exceeds current max_steps={target_global_step}."
+            )
+        if micro_step % grad_accum != 0:
+            raise ValueError("Compression LoRA checkpoints must be saved at an optimizer-step boundary.")
+        if not 0 <= sample_offset <= dataset_size:
+            raise ValueError(
+                f"Invalid resume sample_offset={sample_offset} for dataset_size={dataset_size}."
+            )
+        optimizer.load_state_dict(resume_payload["optimizer_state_dict"])
+        if extending_completed_run:
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = float(learning_rate)
+                param_group["initial_lr"] = float(learning_rate)
+        else:
+            lr_scheduler.load_state_dict(resume_payload["lr_scheduler_state_dict"])
+        _restore_rng_state(resume_payload.get("rng_state"))
+        resumed_from = str(resume_payload.get("_checkpoint_path", "<checkpoint>"))
+        LOGGER.info(
+            "Resumed compression_lora %s from %s at step=%d epoch=%d sample_offset=%d",
+            stage_name,
+            resumed_from,
+            global_step,
+            epoch,
+            sample_offset,
+        )
+
+    while global_step < target_global_step:
+        if sample_offset >= dataset_size:
+            epoch += 1
+            sample_offset = 0
+        generator = torch.Generator()
+        generator.manual_seed(int(data_seed) + epoch)
+        epoch_indices = torch.randperm(dataset_size, generator=generator).tolist()
+        remaining_indices = epoch_indices[sample_offset:]
+        dataloader = DataLoader(
+            Subset(train_dataset, remaining_indices),
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=collate_fn,
+        )
         for batch in dataloader:
+            batch_examples = _batch_example_count(batch, batch_size)
             batch = _move_batch_for_model(batch, model)
             loss = loss_fn(model, batch)
             if not torch.isfinite(loss).item():
@@ -519,22 +821,17 @@ def _train_lora_manually(
             log_loss_sum += loss_value
             log_loss_count += 1
             micro_step += 1
+            sample_offset += batch_examples
 
             if micro_step % grad_accum != 0:
                 continue
 
-            bad_grads = [
-                name
-                for name, param in model.named_parameters()
-                if param.requires_grad
-                and param.grad is not None
-                and not torch.isfinite(param.grad).all().item()
-            ]
-            if bad_grads:
-                preview = ", ".join(bad_grads[:8])
-                raise RuntimeError(f"Compression LoRA produced non-finite gradients: {preview}")
-
-            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                trainable_params,
+                max_norm=1.0,
+                error_if_nonfinite=True,
+                foreach=True,
+            )
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad(set_to_none=True)
@@ -549,10 +846,7 @@ def _train_lora_manually(
             total_elapsed = now - start_time
             step_start_time = now
 
-            adapter_state = _collect_adapter_state(model)
-            _assert_finite_adapter_state(adapter_state)
-
-            if global_step == 1 or global_step % logging_steps == 0 or global_step >= max_steps:
+            if global_step == 1 or global_step % logging_steps == 0 or global_step >= target_global_step:
                 avg_loss = loss_sum / max(1, loss_count)
                 interval_loss = log_loss_sum / max(1, log_loss_count)
                 grad_norm_value = float(grad_norm.detach().cpu()) if torch.is_tensor(grad_norm) else float(grad_norm)
@@ -560,7 +854,7 @@ def _train_lora_manually(
                     {
                         "stage": stage_name,
                         "step": global_step,
-                        "max_steps": max_steps,
+                        "max_steps": target_global_step,
                         "loss": avg_loss,
                         "interval_loss": interval_loss,
                         "grad_norm": grad_norm_value,
@@ -570,10 +864,12 @@ def _train_lora_manually(
                     }
                 )
                 LOGGER.info(
-                    "compression_lora %s step %s/%s loss %.6f grad_norm %.6f lr %.6g time %.3fs elapsed %.3fs",
+                    "compression_lora %s step %s/%s interval_loss %.6f avg_loss %.6f "
+                    "grad_norm %.6f lr %.6g time %.3fs elapsed %.3fs",
                     stage_name,
                     global_step,
-                    max_steps,
+                    target_global_step,
+                    interval_loss,
                     avg_loss,
                     grad_norm_value,
                     current_lr,
@@ -582,8 +878,59 @@ def _train_lora_manually(
                 )
                 log_loss_sum = 0.0
                 log_loss_count = 0
-            if global_step >= max_steps:
+            if save_steps and global_step % save_steps == 0:
+                checkpoint_path = checkpoint_dir / f"checkpoint-{global_step}.pth"
+                _save_training_checkpoint(
+                    path=checkpoint_path,
+                    model=model,
+                    optimizer=optimizer,
+                    lr_scheduler=lr_scheduler,
+                    stage_name=stage_name,
+                    global_step=global_step,
+                    micro_step=micro_step,
+                    epoch=epoch,
+                    sample_offset=sample_offset,
+                    dataset_size=dataset_size,
+                    batch_size=batch_size,
+                    grad_accum=grad_accum,
+                    max_steps=target_global_step,
+                    run_start_step=run_start_step,
+                    run_steps=run_steps,
+                    data_seed=data_seed,
+                    parameter_names=parameter_names,
+                    completed=global_step >= target_global_step,
+                    metadata=checkpoint_metadata or {},
+                )
+                _rotate_training_checkpoints(checkpoint_dir, save_total_limit)
+                LOGGER.info("Saved compression_lora training checkpoint to %s", checkpoint_path)
+                last_saved_step = global_step
+            if global_step >= target_global_step:
                 break
+
+    final_checkpoint_path = checkpoint_dir / f"checkpoint-{global_step}.pth"
+    if last_saved_step != global_step:
+        _save_training_checkpoint(
+            path=final_checkpoint_path,
+            model=model,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            stage_name=stage_name,
+            global_step=global_step,
+            micro_step=micro_step,
+            epoch=epoch,
+            sample_offset=sample_offset,
+            dataset_size=dataset_size,
+            batch_size=batch_size,
+            grad_accum=grad_accum,
+            max_steps=target_global_step,
+            run_start_step=run_start_step,
+            run_steps=run_steps,
+            data_seed=data_seed,
+            parameter_names=parameter_names,
+            completed=True,
+            metadata=checkpoint_metadata or {},
+        )
+        _rotate_training_checkpoints(checkpoint_dir, save_total_limit)
 
     elapsed = time.perf_counter() - start_time
     return {
@@ -592,6 +939,12 @@ def _train_lora_manually(
         "train_steps_per_second": global_step / elapsed if elapsed > 0 else 0.0,
         "train_loss": loss_sum / max(1, loss_count),
         "global_step": global_step,
+        "initial_global_step": int(resume_payload["training_state"]["global_step"]) if resume_payload else 0,
+        "resume_mode": resume_mode,
+        "run_start_step": run_start_step,
+        "run_steps": run_steps,
+        "resumed_from": resumed_from,
+        "training_checkpoint_path": str(final_checkpoint_path),
         "train_examples": len(train_dataset),
         "stage": stage_name,
         "learning_rate": float(learning_rate),
@@ -622,25 +975,37 @@ def _write_stage_loss_history(output_dir: Path, stage: str, metrics: dict[str, A
     return path
 
 
-def _replace_flatquant_linears_with_lora(
+def _replace_quantized_linears_with_lora(
     model: torch.nn.Module,
     masks: dict[str, torch.Tensor],
     config: LoRAConfig,
+    quantization: str,
+    target_modules=None,
 ) -> dict[str, dict[str, Any]]:
     module_map = dict(model.named_modules())
     replaced: dict[str, dict[str, Any]] = {}
     for name, mask in masks.items():
+        if not _matches_lora_target(name, target_modules):
+            continue
         module = module_map.get(name)
         if module is None:
             raise KeyError(f"Compression LoRA mask target not found: {name}")
-        if isinstance(module, CompressionLoRAFlatQuantLinear):
+        if _is_compression_lora_linear(module):
             continue
-        if not _is_flatquant_linear(module):
+        if quantization == "flatquant":
+            is_supported = _is_flatquant_linear(module)
+            wrapper_type = CompressionLoRAFlatQuantLinear
+        elif quantization == "splitquant":
+            is_supported = _is_splitquant_linear(module)
+            wrapper_type = CompressionLoRASplitQuantLinear
+        else:
+            raise ValueError(f"Unsupported compression LoRA quantization: {quantization!r}.")
+        if not is_supported:
             raise TypeError(
-                f"Compression LoRA currently supports FlatQuantizedLinear only; "
+                f"Compression LoRA expected a {quantization} quantized Linear; "
                 f"target {name} is {module.__class__.__name__}."
             )
-        wrapper = CompressionLoRAFlatQuantLinear(module, mask, config)
+        wrapper = wrapper_type(module, mask, config)
         _set_child_module(model, name, wrapper)
         replaced[name] = {
             "in_features": int(wrapper.in_features),
@@ -653,11 +1018,57 @@ def _replace_flatquant_linears_with_lora(
     return replaced
 
 
+def _replace_packed_moe_experts_with_lora(model, masks, config, quantization, target_modules):
+    targets = set(target_modules or [])
+    expert_projections = {"gate_proj", "up_proj", "down_proj"}
+    expert_targets = expert_projections if not targets else expert_projections & targets
+    if not expert_targets:
+        return {}, set()
+    if expert_targets != expert_projections:
+        raise ValueError(
+            "Packed Qwen3-MoE compression LoRA currently requires gate_proj, up_proj, "
+            "and down_proj together to preserve the exact packed objective."
+        )
+    replaced, consumed = {}, set()
+    for name, block in list(model.named_modules()):
+        expected_class = (
+            "FlatQuantQwen3MoeSparseMoeBlock"
+            if quantization == "flatquant"
+            else "SplitQuantQwen3MoeSparseMoeBlock"
+        )
+        if block.__class__.__name__ != expected_class or not getattr(block, "experts_are_packed", False):
+            continue
+        prefix = name
+        block_masks = {}
+        for expert_index in range(int(block.experts.num_experts)):
+            for projection in ("gate_proj", "up_proj", "down_proj"):
+                key = f"{prefix}.experts.{expert_index}.{projection}"
+                if key not in masks:
+                    raise KeyError(f"Missing packed expert pruning mask: {key}")
+                block_masks[key] = masks[key]
+                consumed.add(key)
+        wrapper = PackedCompressionLoRAExperts(
+            block.experts,
+            block_masks,
+            prefix,
+            config,
+            quantization,
+        )
+        block.experts = wrapper
+        replaced[f"{prefix}.experts"] = {
+            "num_experts": wrapper.num_experts,
+            "rank": wrapper.rank,
+            "alpha": wrapper.alpha,
+            "packed": True,
+        }
+    return replaced, consumed
+
+
 @torch.no_grad()
 def _unwrap_lora_wrappers(model: torch.nn.Module) -> list[str]:
     merged: list[str] = []
     for name, module in list(model.named_modules()):
-        if not isinstance(module, CompressionLoRAFlatQuantLinear):
+        if not _is_compression_lora_linear(module):
             continue
         base = module.merge_into_base()
         _set_child_module(model, name, base)
@@ -669,7 +1080,11 @@ def _prepare_lora_training(model: torch.nn.Module, args) -> None:
     for param in model.parameters():
         param.requires_grad = False
     for module in model.modules():
-        if isinstance(module, CompressionLoRAFlatQuantLinear):
+        if _is_compression_lora_linear(module):
+            if isinstance(module, PackedCompressionLoRAExperts):
+                for param in module.adapter_parameters():
+                    param.requires_grad = True
+                continue
             module.lora_A.requires_grad = True
             module.lora_B.requires_grad = True
             if module.adapter_type == "dora":
@@ -692,11 +1107,57 @@ def _run_lora_train_plan(
     output_dir: Path,
     masks_path: str,
     cpt_adapter_path: Path,
+    resume_payload: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, Any], dict[str, Any]]:
     _prepare_lora_training(model, args)
     train_plan = _parse_train_plan(getattr(args, "compression_lora_train_plan", None))
+    resume_stage = resume_payload["training_state"]["stage"] if resume_payload else None
+    if resume_stage is not None and resume_stage not in train_plan:
+        raise ValueError(
+            f"Resume checkpoint stage={resume_stage!r} is not present in train_plan={train_plan}."
+        )
+    resume_stage_index = train_plan.index(resume_stage) if resume_stage is not None else 0
+    checkpoint_metadata = {
+        "model_path": str(args.model_path),
+        "quantization": str(args.quantization),
+        "pruning": str(args.pruning),
+        "masks_path": str(masks_path),
+        "quantization_from": str(
+            getattr(args, "compression_lora_flatquant_from", None)
+            or getattr(args, "compression_lora_splitquant_from", None)
+            or getattr(args, "flatquant_resume_from", None)
+            or getattr(args, "splitquant_resume_from", None)
+        ),
+        "rank": int(args.compression_lora_rank),
+        "alpha": float(args.compression_lora_alpha),
+        "dropout": float(args.compression_lora_dropout),
+        "init": str(args.compression_lora_init),
+        "adapter_type": str(args.compression_lora_adapter_type),
+        "target_modules": list(args.compression_lora_target_modules),
+        "sequence_length": int(args.sequence_length),
+        "weight_decay": float(args.compression_lora_weight_decay),
+        "lr_scheduler_type": str(args.compression_lora_lr_scheduler_type),
+        "warmup_ratio": float(args.compression_lora_warmup_ratio),
+        "cpt_learning_rate": float(args.compression_lora_cpt_learning_rate),
+        "sft_learning_rate": float(args.compression_lora_sft_learning_rate),
+        "cpt_train_file": getattr(args, "compression_lora_cpt_train_file", None),
+        "cpt_samples": int(args.compression_lora_cpt_samples),
+        "sft_train_file": getattr(args, "compression_lora_sft_train_file", None),
+        "sft_samples": int(args.compression_lora_sft_samples),
+        "sft_sample_start": int(getattr(args, "compression_lora_sft_sample_start", 0)),
+        "sft_format": str(args.compression_lora_sft_format),
+    }
+    checkpoint_root = (
+        Path(args.compression_lora_checkpoint_dir)
+        if getattr(args, "compression_lora_checkpoint_dir", None)
+        else output_dir / "compression_lora_checkpoints"
+    )
     stage_metrics: dict[str, Any] = {}
-    for stage in train_plan:
+    for stage_index, stage in enumerate(train_plan):
+        if resume_payload is not None and stage_index < resume_stage_index:
+            stage_metrics[stage] = {"skipped_due_to_resume": True}
+            continue
+        stage_resume_payload = resume_payload if stage == resume_stage else None
         if stage == "cpt":
             if not getattr(args, "compression_lora_cpt_train_file", None):
                 raise ValueError("compression_lora cpt stage requires --compression_lora_cpt_train_file.")
@@ -723,6 +1184,13 @@ def _run_lora_train_plan(
                 gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
                 lr_scheduler_type=str(args.compression_lora_lr_scheduler_type),
                 warmup_ratio=float(args.compression_lora_warmup_ratio),
+                data_seed=int(args.seed) + 1000,
+                checkpoint_dir=checkpoint_root / stage,
+                save_steps=int(args.compression_lora_save_steps),
+                save_total_limit=int(args.compression_lora_save_total_limit),
+                resume_payload=stage_resume_payload,
+                checkpoint_metadata=checkpoint_metadata,
+                resume_mode=str(getattr(args, "compression_lora_resume_mode", "strict")),
             )
             _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
             if bool(getattr(args, "compression_lora_save_cpt_adapter", True)):
@@ -749,6 +1217,13 @@ def _run_lora_train_plan(
                 gradient_checkpointing=bool(args.compression_lora_gradient_checkpointing),
                 lr_scheduler_type=str(args.compression_lora_lr_scheduler_type),
                 warmup_ratio=float(args.compression_lora_warmup_ratio),
+                data_seed=int(args.seed) + 2000,
+                checkpoint_dir=checkpoint_root / stage,
+                save_steps=int(args.compression_lora_save_steps),
+                save_total_limit=int(args.compression_lora_save_total_limit),
+                resume_payload=stage_resume_payload,
+                checkpoint_metadata=checkpoint_metadata,
+                resume_mode=str(getattr(args, "compression_lora_resume_mode", "strict")),
             )
             _write_stage_loss_history(output_dir, stage, stage_metrics[stage])
             continue
@@ -782,6 +1257,10 @@ def _select_flatquant_apply_wrapper(model, source_root: Path):
         return apply_flatquant_to_qwen
     if model_type in {"qwen3", "qwen3_vl"}:
         return apply_flatquant_to_qwen3
+    if model_type == "qwen3_moe":
+        from flatquant.model_tools.qwen3_utils import apply_flatquant_to_qwen3_moe
+
+        return apply_flatquant_to_qwen3_moe
     if model_type == "qwen3_5":
         from flatquant.model_tools.qwen3_5_utils import apply_flatquant_to_qwen3_5
 
@@ -791,6 +1270,39 @@ def _select_flatquant_apply_wrapper(model, source_root: Path):
 
         return apply_flatquant_to_qwen3_5_moe
     raise NotImplementedError(f"FlatQuant compression_lora does not support model_type={model_type!r}.")
+
+
+def _select_splitquant_apply_wrapper(model):
+    from splitquant.model_tools.llama31_utils import apply_splitquant_to_llama_31
+    from splitquant.model_tools.llama_utils import apply_splitquant_to_llama
+    from splitquant.model_tools.minicpm_split_utils import apply_splitquant_to_minicpm
+    from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3
+    from splitquant.model_tools.qwen_split_utils import apply_splitquant_to_qwen
+
+    model_type = getattr(model.config, "model_type", None)
+    rope_scaling = getattr(model.config, "rope_scaling", None) or {}
+    rope_type = rope_scaling.get("rope_type") if isinstance(rope_scaling, dict) else None
+    if model_type == "llama":
+        return apply_splitquant_to_llama_31 if rope_type == "llama3" else apply_splitquant_to_llama
+    if model_type in {"minicpm", "minicpmv"}:
+        return apply_splitquant_to_minicpm
+    if model_type in {"qwen2", "qwen2_5_vl"}:
+        return apply_splitquant_to_qwen
+    if model_type in {"qwen3", "qwen3_vl"}:
+        return apply_splitquant_to_qwen3
+    if model_type == "qwen3_moe":
+        from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3_moe
+
+        return apply_splitquant_to_qwen3_moe
+    if model_type == "qwen3_5":
+        from splitquant.model_tools.qwen3_5_split_utils import apply_splitquant_to_qwen3_5
+
+        return apply_splitquant_to_qwen3_5
+    if model_type in {"qwen3_5_moe", "qwen3_5_moe_text"}:
+        from splitquant.model_tools.qwen3_5_split_utils import apply_splitquant_to_qwen3_5_moe
+
+        return apply_splitquant_to_qwen3_5_moe
+    raise NotImplementedError(f"SplitQuant compression_lora does not support model_type={model_type!r}.")
 
 
 class CompressionLoRAMethod(BaseFinetuningMethod):
@@ -803,8 +1315,8 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
 
     def _validate_args(self, args) -> None:
-        if getattr(args, "quantization", None) != "flatquant":
-            raise ValueError("compression_lora v1 only supports --quantization flatquant.")
+        if getattr(args, "quantization", None) not in {"flatquant", "splitquant"}:
+            raise ValueError("compression_lora supports --quantization flatquant or splitquant.")
         if getattr(args, "pruning", None) is None:
             raise ValueError("compression_lora requires a pruning stage to provide fixed masks.")
         if getattr(args, "pruning", None) == "flap" and not bool(getattr(args, "pseudo_pruning", True)):
@@ -859,6 +1371,44 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             load_flat_parameters(source_args, model, path=flatquant_from)
         return model, tokenizer_bundle, source_args, source_root
 
+    def _load_fp_splitquant_model(self, args, splitquant_from: str):
+        dtype = getattr(args, "dtype", "auto")
+        model, tokenizer_bundle = load_model_and_tokenizer(
+            args.model_path,
+            dtype=dtype,
+            attn_implementation=getattr(args, "attn_implementation", None),
+            device_map=getattr(args, "device_map", None),
+            max_memory=getattr(args, "max_memory", None),
+            offload_folder=getattr(args, "offload_folder", None),
+            offload_state_dict=getattr(args, "offload_state_dict", None),
+            no_split_module_classes=getattr(args, "no_split_module_classes", None),
+        )
+        model.seqlen = int(args.sequence_length)
+
+        source_root = Path(__file__).resolve().parents[2] / "quantization" / "qat" / "splitquant" / "source"
+        output_dir = ensure_dir(Path(args._workflow_output_dir))
+        splitquant_method = SplitQuantMethod()
+        source_args = splitquant_method._build_source_args(args, output_dir)
+        source_args.resume = True
+        source_args.exp_dir = str(output_dir)
+        source_args.output_dir = str(output_dir)
+
+        with prepend_python_path(source_root):
+            import importlib
+
+            importlib.invalidate_caches()
+            _purge_conflicting_modules("splitquant", source_root / "splitquant")
+            apply_wrapper = _select_splitquant_apply_wrapper(model)
+            from splitquant.backbone_utils import get_decoder_layers
+            from splitquant.split_utils import load_splitquant_parameters
+
+            original_layer_devices = [next(layer.parameters()).device for layer in get_decoder_layers(model)]
+            model = apply_wrapper(source_args, model)
+            for layer, original_device in zip(get_decoder_layers(model), original_layer_devices):
+                layer.to(original_device)
+            load_splitquant_parameters(source_args, model, path=splitquant_from)
+        return model, tokenizer_bundle, source_args, source_root
+
     def apply_finetuning(self, model, tokenizer_bundle, args) -> dict[str, object]:
         self._validate_args(args)
         del model, tokenizer_bundle
@@ -869,16 +1419,40 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
         cpt_adapter_path = output_dir / "compression_lora_cpt_adapter.pth"
         config_path = output_dir / "compression_lora_config.json"
 
-        flatquant_from = getattr(args, "compression_lora_flatquant_from", None) or getattr(args, "flatquant_resume_from", None)
-        if not flatquant_from:
-            raise ValueError(
-                "compression_lora requires FlatQuant parameters. Provide --compression_lora_flatquant_from "
-                "or run it after a flatquant stage that produced flat_parameters.pth."
-            )
-        if not (Path(flatquant_from) / "flat_parameters.pth").exists():
-            raise FileNotFoundError(f"Missing flat_parameters.pth under {flatquant_from}")
+        resume_from = getattr(args, "compression_lora_resume_from", None)
+        resume_payload = None
+        resume_metadata: dict[str, Any] = {}
+        if resume_from:
+            resume_payload = _load_training_checkpoint(resume_from)
+            resume_payload["_checkpoint_path"] = str(resume_from)
+            resume_metadata = dict(resume_payload.get("metadata", {}))
 
-        model, tokenizer_bundle, source_args, source_root = self._load_fp_flatquant_model(args, flatquant_from)
+        quantization = str(args.quantization)
+        if quantization == "flatquant":
+            quantization_from = (
+                getattr(args, "compression_lora_flatquant_from", None)
+                or getattr(args, "flatquant_resume_from", None)
+                or resume_metadata.get("quantization_from")
+            )
+            checkpoint_name = "flat_parameters.pth"
+            load_quantized_model = self._load_fp_flatquant_model
+        else:
+            quantization_from = (
+                getattr(args, "compression_lora_splitquant_from", None)
+                or getattr(args, "splitquant_resume_from", None)
+                or resume_metadata.get("quantization_from")
+            )
+            checkpoint_name = "splitquant_parameters.pth"
+            load_quantized_model = self._load_fp_splitquant_model
+        if not quantization_from:
+            raise ValueError(
+                f"compression_lora requires {quantization} parameters. Provide the corresponding "
+                "--compression_lora_*_from option or run finetuning after its quantization stage."
+            )
+        if not (Path(quantization_from) / checkpoint_name).exists():
+            raise FileNotFoundError(f"Missing {checkpoint_name} under {quantization_from}")
+
+        model, tokenizer_bundle, source_args, source_root = load_quantized_model(args, quantization_from)
         tokenizer = tokenizer_bundle.tokenizer
         tokenizer.padding_side = "right"
         if tokenizer.pad_token is None:
@@ -886,14 +1460,13 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
                 raise ValueError("Tokenizer must define eos_token or pad_token for compression_lora.")
             tokenizer.pad_token = tokenizer.eos_token
 
-        masks_path = getattr(args, "compression_lora_masks_from", None)
+        masks_path = getattr(args, "compression_lora_masks_from", None) or resume_metadata.get("masks_path")
         if not masks_path:
             raise ValueError(
                 "compression_lora requires --compression_lora_masks_from or an earlier pruning stage "
                 "that generated pruning_masks.pth."
             )
         masks, mask_metadata = load_masks(masks_path)
-        validate_masks(model, masks)
         lora_config = LoRAConfig(
             rank=int(args.compression_lora_rank),
             alpha=float(args.compression_lora_alpha),
@@ -904,60 +1477,94 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             dora_simple=bool(getattr(args, "compression_lora_dora_simple", True)),
             dora_eps=float(getattr(args, "compression_lora_dora_eps", 1e-6)),
         )
-        adapter_layers = _replace_flatquant_linears_with_lora(model, masks, lora_config)
+        packed_layers, consumed_masks = _replace_packed_moe_experts_with_lora(
+            model,
+            masks,
+            lora_config,
+            quantization,
+            getattr(args, "compression_lora_target_modules", None),
+        )
+        linear_masks = {name: mask for name, mask in masks.items() if ".experts." not in name}
+        selected_linear_masks = {
+            name: mask
+            for name, mask in linear_masks.items()
+            if _matches_lora_target(name, getattr(args, "compression_lora_target_modules", None))
+        }
+        validate_masks(model, selected_linear_masks)
+        adapter_layers = _replace_quantized_linears_with_lora(
+            model, selected_linear_masks, lora_config, quantization,
+            target_modules=getattr(args, "compression_lora_target_modules", None),
+        )
+        adapter_layers.update(packed_layers)
         if not adapter_layers:
-            raise RuntimeError("No FlatQuantizedLinear layers were wrapped for compression_lora.")
+            raise RuntimeError(f"No {quantization} Linear layers were wrapped for compression_lora.")
 
-        adapter_from = getattr(args, "compression_lora_adapter_from", None)
-        adapter_from_mode = str(getattr(args, "compression_lora_adapter_from_mode", "merge_only"))
-        if adapter_from:
-            payload = torch.load(adapter_from, map_location="cpu")
-            if isinstance(payload, dict) and "metadata" in payload:
-                checkpoint_adapter_type = payload["metadata"].get("adapter_type", "lora")
-                if checkpoint_adapter_type != lora_config.adapter_type:
-                    raise ValueError(
-                        "compression_lora_adapter_from adapter_type mismatch: "
-                        f"checkpoint={checkpoint_adapter_type!r}, requested={lora_config.adapter_type!r}."
-                    )
-            _load_adapter_state(model, payload["state_dict"] if "state_dict" in payload else payload)
-            if adapter_from_mode == "merge_only":
-                train_metrics = {
-                    "skipped_training": True,
-                    "adapter_from": adapter_from,
-                    "adapter_from_mode": adapter_from_mode,
-                }
-                train_plan = ["adapter_from"]
-            elif adapter_from_mode == "merge_and_train":
-                merged_from_layers = _unwrap_lora_wrappers(model)
-                adapter_layers = _replace_flatquant_linears_with_lora(model, masks, lora_config)
-                if not adapter_layers:
-                    raise RuntimeError("No fresh compression LoRA layers were wrapped after merging adapter_from.")
-                train_plan, _stage_metrics, train_metrics = _run_lora_train_plan(
-                    model=model,
-                    tokenizer_bundle=tokenizer_bundle,
-                    tokenizer=tokenizer,
-                    args=args,
-                    output_dir=output_dir,
-                    masks_path=str(masks_path),
-                    cpt_adapter_path=cpt_adapter_path,
+        if resume_from:
+            checkpoint_metadata = resume_metadata
+            resume_mode = str(getattr(args, "compression_lora_resume_mode", "strict"))
+            expected_metadata = {
+                "model_path": str(args.model_path),
+                "quantization": quantization,
+                "pruning": str(args.pruning),
+                "masks_path": str(masks_path),
+                "quantization_from": str(quantization_from),
+                "rank": int(args.compression_lora_rank),
+                "alpha": float(args.compression_lora_alpha),
+                "dropout": float(args.compression_lora_dropout),
+                "init": str(args.compression_lora_init),
+                "adapter_type": str(args.compression_lora_adapter_type),
+                "target_modules": list(args.compression_lora_target_modules),
+                "sequence_length": int(args.sequence_length),
+                "weight_decay": float(args.compression_lora_weight_decay),
+                "lr_scheduler_type": str(args.compression_lora_lr_scheduler_type),
+                "warmup_ratio": float(args.compression_lora_warmup_ratio),
+                "cpt_learning_rate": float(args.compression_lora_cpt_learning_rate),
+                "sft_learning_rate": float(args.compression_lora_sft_learning_rate),
+                "cpt_train_file": getattr(args, "compression_lora_cpt_train_file", None),
+                "cpt_samples": int(args.compression_lora_cpt_samples),
+                "sft_train_file": getattr(args, "compression_lora_sft_train_file", None),
+                "sft_samples": int(args.compression_lora_sft_samples),
+                "sft_sample_start": int(getattr(args, "compression_lora_sft_sample_start", 0)),
+                "sft_format": str(args.compression_lora_sft_format),
+            }
+            if resume_mode == "extend":
+                resume_stage = str(resume_payload["training_state"].get("stage"))
+                if not bool(resume_payload["training_state"].get("completed", False)):
+                    raise ValueError("compression_lora resume_mode=extend requires a completed source checkpoint.")
+                if resume_stage == "sft":
+                    previous_samples = int(checkpoint_metadata.get("sft_samples", 0))
+                    current_start = int(getattr(args, "compression_lora_sft_sample_start", 0))
+                    if current_start != previous_samples:
+                        raise ValueError(
+                            "compression_lora extend must start immediately after the source SFT slice: "
+                            f"expected sample_start={previous_samples}, got {current_start}."
+                        )
+                    expected_metadata.pop("sft_samples", None)
+                    expected_metadata.pop("sft_sample_start", None)
+            mismatches = {
+                key: (checkpoint_metadata.get(key), value)
+                for key, value in expected_metadata.items()
+                if (0 if key == "sft_sample_start" and key not in checkpoint_metadata else checkpoint_metadata.get(key)) != value
+            }
+            if mismatches:
+                details = ", ".join(
+                    f"{key}: checkpoint={old!r} current={new!r}"
+                    for key, (old, new) in mismatches.items()
                 )
-                train_metrics["adapter_from"] = adapter_from
-                train_metrics["adapter_from_mode"] = adapter_from_mode
-                train_metrics["adapter_from_merged_layers"] = merged_from_layers
-                _save_adapter(adapter_path, model, args, str(masks_path), "final", train_metrics)
-            else:
-                raise ValueError(f"Unsupported compression_lora_adapter_from_mode: {adapter_from_mode!r}")
-        else:
-            train_plan, _stage_metrics, train_metrics = _run_lora_train_plan(
-                model=model,
-                tokenizer_bundle=tokenizer_bundle,
-                tokenizer=tokenizer,
-                args=args,
-                output_dir=output_dir,
-                masks_path=str(masks_path),
-                cpt_adapter_path=cpt_adapter_path,
-            )
-            _save_adapter(adapter_path, model, args, str(masks_path), "final", train_metrics)
+                raise ValueError(f"Compression LoRA resume metadata mismatch: {details}")
+            _load_adapter_state(model, resume_payload["adapter_state_dict"])
+
+        train_plan, _stage_metrics, train_metrics = _run_lora_train_plan(
+            model=model,
+            tokenizer_bundle=tokenizer_bundle,
+            tokenizer=tokenizer,
+            args=args,
+            output_dir=output_dir,
+            masks_path=str(masks_path),
+            cpt_adapter_path=cpt_adapter_path,
+            resume_payload=resume_payload,
+        )
+        _save_adapter(adapter_path, model, args, str(masks_path), "final", train_metrics)
 
         merged_layers = _unwrap_lora_wrappers(model)
         calibration_batches, _ = get_calibration_and_evaluation_data(
@@ -972,12 +1579,17 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             import importlib
 
             importlib.invalidate_caches()
-            _purge_conflicting_modules("flatquant", source_root / "flatquant")
+            _purge_conflicting_modules(quantization, source_root / quantization)
             _purge_conflicting_modules("gptq_utils", source_root)
             import gptq_utils
-            from flatquant.flat_utils import reparameterize_model
+            if quantization == "flatquant":
+                from flatquant.flat_utils import reparameterize_model
 
-            reparameterize_model(model)
+                reparameterize_model(model)
+            else:
+                from splitquant.split_utils import reparameterize_splitquant_model
+
+                reparameterize_splitquant_model(model)
             if source_args.w_bits < 16:
                 if source_args.gptq:
                     gptq_utils.gptq_fwrd(model, calibration_batches, args.device, source_args)
@@ -985,7 +1597,8 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
                     gptq_utils.rtn_fwrd(model, args.device, source_args)
         from .mask_utils import apply_masks_to_model
 
-        apply_masks_to_model(model, masks)
+        apply_masks_to_model(model, linear_masks)
+        apply_packed_moe_masks(model, masks)
         model.config.use_cache = True
         model.eval()
         model.seqlen = int(args.sequence_length)
@@ -995,7 +1608,8 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             "adapter_layers": adapter_layers,
             "merged_layers": merged_layers,
             "masks_path": str(masks_path),
-            "flatquant_from": str(flatquant_from),
+            "quantization": quantization,
+            "quantization_from": str(quantization_from),
             "mask_metadata": mask_metadata,
             "mask_sparsity": mask_sparsity(masks),
             "train_metrics": train_metrics,
@@ -1007,8 +1621,7 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             "dora_eps": float(getattr(args, "compression_lora_dora_eps", 1e-6)),
             "lr_scheduler_type": getattr(args, "compression_lora_lr_scheduler_type", "cosine"),
             "warmup_ratio": float(getattr(args, "compression_lora_warmup_ratio", 0.03)),
-            "adapter_from": adapter_from,
-            "adapter_from_mode": adapter_from_mode,
+            "resume_from": resume_from,
             "sft_min_response_tokens": int(getattr(args, "compression_lora_sft_min_response_tokens", 8)),
         }
         config_path = write_json(config_path, config_payload)
@@ -1022,7 +1635,7 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
         artifacts: dict[str, object] = {
             "compression_lora_config_path": str(config_path),
             "compression_lora_masks_path": str(masks_path),
-            "compression_lora_adapter_path": str(adapter_path) if adapter_path.exists() else adapter_from,
+            "compression_lora_adapter_path": str(adapter_path) if adapter_path.exists() else None,
             "compression_lora_cpt_adapter_path": str(cpt_adapter_path) if cpt_adapter_path.exists() else None,
             "compression_lora_wrapped_layer_count": len(adapter_layers),
             "compression_lora_merged_layers": merged_layers,
@@ -1030,6 +1643,14 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             "_updated_model": model,
             "_updated_tokenizer_bundle": tokenizer_bundle,
         }
+        latest_training_checkpoint = None
+        for stage in reversed(train_plan):
+            stage_state = train_metrics["stages"].get(stage)
+            if isinstance(stage_state, dict) and stage_state.get("training_checkpoint_path"):
+                latest_training_checkpoint = stage_state["training_checkpoint_path"]
+                break
+        if latest_training_checkpoint is not None:
+            artifacts["compression_lora_training_checkpoint_path"] = latest_training_checkpoint
         if merged_model_dir is not None:
             artifacts["compression_lora_merged_model_dir"] = str(merged_model_dir)
         return artifacts

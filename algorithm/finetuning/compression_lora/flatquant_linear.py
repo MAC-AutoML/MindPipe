@@ -9,6 +9,17 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from .mask_utils import PackedMask, materialize_mask
+
+
+def deterministic_svd_lowrank(weight: torch.Tensor, rank: int, niter: int):
+    devices = [weight.device] if weight.device.type == "cuda" else []
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(0)
+        if weight.device.type == "cuda":
+            torch.cuda.manual_seed(0)
+        return torch.svd_lowrank(weight, q=rank, niter=niter)
+
 
 @dataclass(frozen=True)
 class LoRAConfig:
@@ -53,7 +64,11 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
         if self.adapter_type == "dora":
             dora_magnitude = weight.detach().to(torch.float32).norm(dim=1, keepdim=True)
             self.dora_magnitude = nn.Parameter(dora_magnitude.to(device=weight.device, dtype=torch.float32))
-        self.register_buffer("pruning_mask", mask.detach().to(device=weight.device).bool(), persistent=True)
+        if isinstance(mask, PackedMask):
+            # Keep routed-MoE masks packed on CPU; only this layer's mask is expanded in forward.
+            self.pruning_mask = mask
+        else:
+            self.register_buffer("pruning_mask", mask.detach().to(device=weight.device).bool(), persistent=True)
         self.reset_lora_parameters(config.init)
 
         for param in self.base.parameters():
@@ -92,7 +107,7 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
             with torch.no_grad():
                 weight = self.base.linear.weight.detach().to(torch.float32)
                 # For DoRA, dora_magnitude intentionally keeps the original pre-PiSSA row norm.
-                u, s, v = torch.svd_lowrank(weight, q=self.rank, niter=16)
+                u, s, v = deterministic_svd_lowrank(weight, self.rank, niter=16)
                 s = s / self.scaling
                 sqrt_s = torch.sqrt(s)
                 self.lora_A.copy_((torch.diag(sqrt_s) @ v.T).to(self.lora_A))
@@ -142,7 +157,7 @@ class CompressionLoRAFlatQuantLinear(nn.Module):
             weight = out_trans(weight.T).T
         self.base.weight_quantizer.find_params(weight)
         weight = self.base.weight_quantizer(weight)
-        return weight * self.pruning_mask.to(device=weight.device, dtype=weight.dtype)
+        return weight * materialize_mask(self.pruning_mask, device=weight.device).to(dtype=weight.dtype)
 
     def _compressed_weight(self, qa_trans=None, out_trans=None) -> torch.Tensor:
         if self.weight_checkpointing and self.training and torch.is_grad_enabled():

@@ -865,13 +865,23 @@ def _add_finetuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--finetuning", default=None, choices=sorted(FINETUNING_METHOD_REGISTRY))
     parser.add_argument("--compression_lora_masks_from", default=None)
     parser.add_argument("--compression_lora_flatquant_from", default=None)
-    parser.add_argument("--compression_lora_adapter_from", default=None)
+    parser.add_argument("--compression_lora_splitquant_from", default=None)
     parser.add_argument(
-        "--compression_lora_adapter_from_mode",
-        default="merge_only",
-        choices=["merge_only", "merge_and_train"],
-        help="How to use --compression_lora_adapter_from: merge_only keeps the old eval/merge behavior; "
-        "merge_and_train merges it into the base weight, creates a fresh adapter, then trains.",
+        "--compression_lora_resume_from",
+        default=None,
+        help="Resume compression LoRA training from a training checkpoint containing adapter, optimizer, "
+        "scheduler, RNG, and data-position state.",
+    )
+    parser.add_argument(
+        "--compression_lora_resume_mode",
+        default="strict",
+        choices=["strict", "extend"],
+        help="Use strict for interrupted-run recovery. Use extend to continue from a completed checkpoint on a new data slice.",
+    )
+    parser.add_argument(
+        "--compression_lora_checkpoint_dir",
+        default=None,
+        help="Optional directory for large resumable training checkpoints. Defaults to the run output directory.",
     )
     parser.add_argument("--compression_lora_save_merged_model", type=_bool_flag, default=False)
     parser.add_argument(
@@ -887,6 +897,7 @@ def _add_finetuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--compression_lora_sft_format", default="alpaca", choices=["alpaca", "llava"])
     parser.add_argument("--compression_lora_sft_train_file", default=None)
     parser.add_argument("--compression_lora_sft_samples", type=int, default=10000)
+    parser.add_argument("--compression_lora_sft_sample_start", type=int, default=0)
     parser.add_argument("--compression_lora_sft_learning_rate", type=float, default=5e-5)
     parser.add_argument("--compression_lora_sft_num_train_epochs", type=float, default=1.0)
     parser.add_argument("--compression_lora_sft_max_steps", type=int, default=-1)
@@ -960,6 +971,16 @@ def build_run_config(args) -> WorkflowConfig:
     has_pruning = args.pruning is not None
     has_quantization = args.quantization is not None
     has_finetuning = args.finetuning is not None
+    resume_compression_lora = bool(
+        args.finetuning == "compression_lora"
+        and getattr(args, "compression_lora_resume_from", None)
+    )
+    if resume_compression_lora:
+        # The finetuning stage reloads quantization parameters and masks recorded
+        # by the checkpoint. Re-running quantization or pruning would change the
+        # training state being resumed.
+        has_pruning = False
+        has_quantization = False
 
     # 校验
     if (

@@ -819,8 +819,8 @@ class FlatQuantQwen3_5MoePackedExperts(nn.Module):
         self.hidden_dim = module.hidden_dim
         self.intermediate_dim = module.intermediate_dim
         self.act_fn = module.act_fn
-        self.gate_up_proj = nn.Parameter(module.gate_up_proj.detach().clone())
-        self.down_proj = nn.Parameter(module.down_proj.detach().clone())
+        self.gate_up_proj = module.gate_up_proj
+        self.down_proj = module.down_proj
         self.weight_quantizer = WeightQuantizer()
         self.weight_quantizer.configure(args.w_bits, perchannel=True, sym=not(args.w_asym), mse=False)
         self.act_quantizer = ActivationQuantizer(bits=args.a_bits, sym=not(args.a_asym), lac=args.lac, groupsize=args.a_groupsize)
@@ -858,10 +858,12 @@ class FlatQuantQwen3_5MoePackedExperts(nn.Module):
             return gate_up_weight
         gate_size = gate_up_weight.shape[1] // 2
         scale = self._down_trans.diag_scale.to(dtype=torch.float64, device=gate_up_weight.device)
-        fused_weight = gate_up_weight.to(torch.float64).clone()
-        fused_weight[:, gate_size:, :] = fused_weight[:, gate_size:, :] * scale.view(1, -1, 1)
+        up_weight = gate_up_weight[:, gate_size:, :]
+        up_weight_fp64 = up_weight.to(torch.float64)
+        up_weight_fp64.mul_(scale.view(1, -1, 1))
+        up_weight.copy_(up_weight_fp64.to(up_weight.dtype))
         self._down_trans.use_diag = False
-        return fused_weight.to(gate_up_weight.dtype)
+        return gate_up_weight
 
     def forward(
         self,
@@ -899,14 +901,17 @@ class FlatQuantQwen3_5MoePackedExperts(nn.Module):
 
     def reparameterize(self, input_trans=None):
         gate_up_weight = self.gate_up_proj.data
-        down_weight = self.down_proj.data
         if input_trans is not None:
             gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
         if self._down_trans is not None:
             self._down_trans.to_eval_mode()
-            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
             gate_up_weight = self._fuse_down_diag_into_gate_up(gate_up_weight)
         self.gate_up_proj.data = self._quantize_weight(gate_up_weight)
+        del gate_up_weight
+
+        down_weight = self.down_proj.data
+        if self._down_trans is not None:
+            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
         self.down_proj.data = self._quantize_weight(down_weight)
         self._eval_mode = True
 

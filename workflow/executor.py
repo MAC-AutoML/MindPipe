@@ -24,6 +24,7 @@ from algorithm.finetuning.compression_lora.mask_utils import save_masks
 from algorithm.finetuning.compression_lora.mask_utils import snapshot_weights
 from algorithm.common.qwen3_5_moe_unfuse import refuse_qwen3_5_moe_experts_for_hf_save
 from algorithm.common.qwen3_5_moe_unfuse import refuse_qwen3_moe_experts_for_hf_save
+from algorithm.common.qwen3_5_moe_unfuse import refuse_flatquant_qwen3_moe_experts_for_hf_save
 from algorithm.common.qwen3_5_moe_unfuse import set_qwen3_5_moe_calibrate_all_experts
 from algorithm.common.qwen3_5_moe_unfuse import set_qwen3_moe_calibrate_all_experts
 from algorithm.common.qwen3_5_moe_unfuse import unfuse_qwen3_5_moe_experts
@@ -87,13 +88,13 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
         stage_result = stage_method.apply_finetuning(model, tokenizer_bundle, stage_args)
     else:
         weight_snapshot = None
+        unfuse_qwen3_5_moe_experts(model, calibrate_all_experts=False)
+        unfuse_qwen3_moe_experts(model, calibrate_all_experts=False)
         if getattr(stage_args, "_capture_pruning_masks", False):
             weight_snapshot = snapshot_weights(
                 model,
                 target_modules=getattr(stage_args, "compression_lora_target_modules", None),
             )
-        unfuse_qwen3_5_moe_experts(model, calibrate_all_experts=True)
-        unfuse_qwen3_moe_experts(model, calibrate_all_experts=True)
         try:
             stage_result = stage_method.apply_pruning(model, tokenizer_bundle, stage_args)
         finally:
@@ -115,6 +116,9 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
                 },
             )
             stage_result["pruning_masks_path"] = str(masks_path)
+        refused_qwen3_moe_blocks = refuse_qwen3_moe_experts_for_hf_save(model, experts_on_cpu=False)
+        if refused_qwen3_moe_blocks:
+            stage_result["refused_qwen3_moe_blocks_for_eval"] = refused_qwen3_moe_blocks
 
     if not isinstance(stage_result, dict):
         raise TypeError(
@@ -184,7 +188,8 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
                 following.stage_type == "finetuning" and following.algorithm_name == "compression_lora"
                 for following in config.stages[stage_index + 1:]
             )
-        if _stage_reloads_model(stage):
+        stage_reloads_model = _stage_reloads_model(stage)
+        if stage_reloads_model:
             # compression_lora 会从 FP 权重重新加载模型。先释放前序压缩阶段模型，
             # 避免旧模型和新加载的 W_fp 在显存中短时间共存。
             model = None
@@ -192,7 +197,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
             gc.collect()
             empty_cache(common_args["device"])
         stage_record, model, tokenizer_bundle = _run_stage(stage_method, stage, model, tokenizer_bundle, stage_args)
-        if _stage_reloads_model(stage) and (model is None or tokenizer_bundle is None):
+        if stage_reloads_model and (model is None or tokenizer_bundle is None):
             raise RuntimeError(
                 "compression_lora must return _updated_model and _updated_tokenizer_bundle after reloading model."
             )
@@ -201,6 +206,10 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
             flat_path = stage_record["artifacts"].get("flat_parameters_path")
             if flat_path and not common_args.get("compression_lora_flatquant_from"):
                 common_args["compression_lora_flatquant_from"] = str(Path(flat_path).parent)
+        if stage.stage_type == "quantization" and stage.algorithm_name == "splitquant":
+            split_path = stage_record["artifacts"].get("splitquant_parameters_path")
+            if split_path and not common_args.get("compression_lora_splitquant_from"):
+                common_args["compression_lora_splitquant_from"] = str(Path(split_path).parent)
         if stage.stage_type == "pruning":
             masks_path = stage_record["artifacts"].get("pruning_masks_path")
             if masks_path and not common_args.get("compression_lora_masks_from"):
@@ -253,6 +262,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         model_dir = ensure_dir(final_output_dir / "saved_model")
         refuse_qwen3_5_moe_experts_for_hf_save(model)
         refuse_qwen3_moe_experts_for_hf_save(model)
+        refuse_flatquant_qwen3_moe_experts_for_hf_save(model)
         normalize_qwen3_moe_expert_intermediate_size_for_hf_save(model)
         normalize_dense_qwen3_mlp_intermediate_size_for_hf_save(model)
         model.save_pretrained(model_dir)

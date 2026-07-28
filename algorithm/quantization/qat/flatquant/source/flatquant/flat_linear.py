@@ -52,8 +52,10 @@ class FlatQuantizedLinear(nn.Module):
 
     def apply_wclip(self, weight):
         wmin, wmax = weight.min(1, keepdim=True)[0], weight.max(1, keepdim=True)[0]
-        wmax *= self.sigmoid(self.clip_factor_w_max)
-        wmin *= self.sigmoid(self.clip_factor_w_min)
+        clip_max = self.sigmoid(self.clip_factor_w_max).to(device=weight.device, dtype=weight.dtype)
+        clip_min = self.sigmoid(self.clip_factor_w_min).to(device=weight.device, dtype=weight.dtype)
+        wmax *= clip_max
+        wmin *= clip_min
         weight = torch.clamp(weight, min=wmin, max=wmax)
         return weight
 

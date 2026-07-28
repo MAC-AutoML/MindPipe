@@ -322,6 +322,12 @@ class QwenVLImageTextSFTCollator:
                     continue
                 item = {key: value for key, value in dict(full_inputs).items() if value is not None}
                 item["input_ids"] = input_ids
+                for key in ("mm_token_type_ids", "token_type_ids"):
+                    value = item.get(key)
+                    if torch.is_tensor(value) and value.dim() >= 2 and value.shape[-1] >= input_ids.numel():
+                        item[key] = value[0][: input_ids.numel()]
+                    elif torch.is_tensor(value) and value.dim() == 1 and value.numel() >= input_ids.numel():
+                        item[key] = value[: input_ids.numel()]
                 item["labels"] = labels
                 encoded_examples.append(item)
                 break
@@ -342,6 +348,13 @@ class QwenVLImageTextSFTCollator:
         ]
         if mm_token_type_tensors:
             batch["mm_token_type_ids"] = _pad_1d_tensors(mm_token_type_tensors, 0)
+        token_type_tensors = [
+            item.get("token_type_ids")
+            for item in encoded_examples
+            if torch.is_tensor(item.get("token_type_ids"))
+        ]
+        if token_type_tensors:
+            batch["token_type_ids"] = _pad_1d_tensors(token_type_tensors, 0)
 
         for key in (
             "pixel_values",

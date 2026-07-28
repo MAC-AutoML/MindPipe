@@ -140,7 +140,13 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
 
         for name in subset:
             print(f"pruning layer {i} name {name}")
+            if wrapped_layers[name].nsamples == 0:
+                print(f"skip pruning layer {i} name {name}: no calibration samples routed to this layer")
+                continue
             W_metric = torch.abs(subset[name].weight.data) * torch.sqrt(wrapped_layers[name].scaler_row.reshape((1,-1)))
+            if not torch.isfinite(W_metric).all() or W_metric.sum() == 0:
+                print(f"skip pruning layer {i} name {name}: invalid or empty Wanda metric")
+                continue
 
             W_mask = (torch.zeros_like(W_metric) == 1)  ## 初始化全 False 的 mask
             if prune_n != 0:

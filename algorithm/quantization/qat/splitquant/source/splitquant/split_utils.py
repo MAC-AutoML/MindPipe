@@ -113,10 +113,11 @@ def convert_legacy_splitquant_checkpoint(splitquant_parameters):
 
 
 def load_splitquant_parameters(args, model, path=None):
-    if path is None:
-        splitquant_parameters = torch.load(os.path.join(args.exp_dir, "splitquant_parameters.pth"))
-    else:
-        splitquant_parameters = torch.load(os.path.join(path, "splitquant_parameters.pth"))
+    checkpoint_dir = args.exp_dir if path is None else path
+    checkpoint_path = os.path.join(checkpoint_dir, "splitquant_parameters.pth")
+    # Checkpoints may have been saved from a different CUDA topology. Load on
+    # CPU first, then let load_state_dict copy tensors to each layer's device.
+    splitquant_parameters = torch.load(checkpoint_path, map_location="cpu")
     splitquant_parameters = convert_legacy_splitquant_checkpoint(splitquant_parameters)
     layers = get_decoder_layers(model)
     
@@ -144,10 +145,9 @@ def save_splitquant_matrices(args, model, rank=None):
 
 
 def load_splitquant_matrices(args, model, path=None):
-    if path is None:
-        splitquant_matrices = torch.load(os.path.join(args.exp_dir, "splitquant_matrices.pth"))
-    else:
-        splitquant_matrices = torch.load(os.path.join(path, "splitquant_matrices.pth"))
+    checkpoint_dir = args.exp_dir if path is None else path
+    checkpoint_path = os.path.join(checkpoint_dir, "splitquant_matrices.pth")
+    splitquant_matrices = torch.load(checkpoint_path, map_location="cpu")
     layers = get_decoder_layers(model)
     
     for i in range(len(splitquant_matrices.keys())):
