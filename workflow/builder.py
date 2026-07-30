@@ -948,6 +948,70 @@ def _add_io_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--calibration_samples", type=int, default=128)
     parser.add_argument("--damp_percent", type=float, default=0.01)
     parser.add_argument("--save_model", type=_bool_flag, default=False)
+    parser.add_argument(
+        "--export_real_quant",
+        type=_bool_flag,
+        default=False,
+        help="Run an export-only ModelSlim conversion for vLLM Ascend.",
+    )
+    parser.add_argument(
+        "--export_backend",
+        default="modelslim",
+        choices=["modelslim"],
+        help="Backend format for --export_real_quant.",
+    )
+    parser.add_argument(
+        "--export_quantized_model_dir",
+        default=None,
+        help=(
+            "ModelSlim checkpoint directory. Defaults to a real_quant_modelslim_model "
+            "directory next to the workflow run output."
+        ),
+    )
+    parser.add_argument(
+        "--modelslim_quant_script",
+        default=None,
+        help="Path to ModelSlim quant_qwen.py. Required unless MODELSLIM_QUANT_SCRIPT is set.",
+    )
+    parser.add_argument(
+        "--modelslim_python",
+        default=None,
+        help="Python executable used to run the ModelSlim script. Defaults to the current Python.",
+    )
+    parser.add_argument(
+        "--modelslim_precision",
+        default="auto",
+        choices=["auto", "w4a8_dynamic", "w8a8", "w8a8_dynamic"],
+        help="Ascend precision. auto maps W4A8/W8A8 to their dynamic variants.",
+    )
+    parser.add_argument("--modelslim_device_type", default="npu", choices=["npu", "cpu"])
+    parser.add_argument("--modelslim_model_type", default=None)
+    parser.add_argument("--modelslim_calib_file", default=None)
+    parser.add_argument("--modelslim_anti_calib_file", default=None)
+    parser.add_argument("--modelslim_anti_method", default=None)
+    parser.add_argument("--modelslim_group_size", type=int, default=None)
+    parser.add_argument("--modelslim_is_dynamic", type=_bool_flag, default=None)
+    parser.add_argument("--modelslim_is_lowbit", type=_bool_flag, default=None)
+    parser.add_argument("--modelslim_open_outlier", type=_bool_flag, default=None)
+    parser.add_argument("--modelslim_w_method", default=None)
+    parser.add_argument("--modelslim_trust_remote_code", type=_bool_flag, default=True)
+    parser.add_argument("--modelslim_visible_devices", default=None)
+    parser.add_argument("--modelslim_overwrite", type=_bool_flag, default=False)
+    parser.add_argument(
+        "--modelslim_extra_args",
+        default=None,
+        help="Extra arguments appended to the ModelSlim command using shell-like parsing.",
+    )
+    parser.add_argument(
+        "--modelslim_model_path_arg_name",
+        default="model_path",
+        help="Argument name used by the ModelSlim script for the source checkpoint.",
+    )
+    parser.add_argument(
+        "--modelslim_save_arg_name",
+        default="save_directory",
+        help="Argument name used by the ModelSlim script for the output checkpoint.",
+    )
 
 
 # ── 唯一 parser ──
@@ -968,6 +1032,9 @@ def build_run_parser() -> argparse.ArgumentParser:
 # ── config builder ──
 
 def build_run_config(args) -> WorkflowConfig:
+    # Keep external callers that construct an older argparse.Namespace working.
+    export_real_quant = bool(getattr(args, "export_real_quant", False))
+    export_backend = getattr(args, "export_backend", "modelslim")
     has_pruning = args.pruning is not None
     has_quantization = args.quantization is not None
     has_finetuning = args.finetuning is not None
@@ -990,8 +1057,12 @@ def build_run_config(args) -> WorkflowConfig:
         and args.eval_ppl is False
         and args.eval_zero_shot is False
         and args.eval_vlm is False
+        and not export_real_quant
     ):
-        raise ValueError("At least one of --pruning, --quantization, --finetuning, or an evaluation flag must be specified.")
+        raise ValueError(
+            "At least one of --pruning, --quantization, --finetuning, "
+            "an evaluation flag, or --export_real_quant must be specified."
+        )
 
     # n:m 半结构化剪枝仅对 wanda / sparsegpt / alps 生效，仅支持 2:4 和 4:8，且稀疏率必须为 0.5（与原 repo 一致）
     _nm_methods = {"wanda", "sparsegpt", "alps"}
@@ -1014,8 +1085,26 @@ def build_run_config(args) -> WorkflowConfig:
         if args.weight_bits not in {2, 3, 4}:
             raise ValueError(f"{args.quantization} currently supports --weight_bits in {{2, 3, 4}}.")
 
+    if export_real_quant:
+        if has_pruning or has_quantization or has_finetuning:
+            raise ValueError(
+                "--export_real_quant is an export-only ModelSlim operation; "
+                "do not combine it with MindPipe pruning, quantization, or finetuning stages."
+            )
+        if args.eval_ppl or args.eval_zero_shot or args.eval_vlm:
+            raise ValueError(
+                "ModelSlim produces an external vLLM Ascend checkpoint; "
+                "disable in-process evaluation and test the exported directory through vLLM Ascend."
+            )
+        if args.save_model:
+            raise ValueError("--save_model is not applicable to export-only ModelSlim runs.")
+        if (args.weight_bits, args.activation_bits) not in {(4, 8), (8, 8)}:
+            raise ValueError("ModelSlim export supports W4A8 or W8A8 only.")
+
     model_name = model_slug(args.model_path)
     base_common_args = vars(args).copy()
+    base_common_args.setdefault("export_real_quant", export_real_quant)
+    base_common_args.setdefault("export_backend", export_backend)
 
     stages: list[WorkflowStage] = []
     result_metadata: dict = {
@@ -1116,6 +1205,9 @@ def build_run_config(args) -> WorkflowConfig:
                 run_spec_parts.append(f"{s.algorithm_name}_w{args.weight_bits}a{args.activation_bits}")
         run_spec = "_".join(run_spec_parts) + f"_seq{args.sequence_length}"
         output_dir = ensure_dir(Path(args.output_dir) / model_name / args.execution_order / algo_parts / run_spec)
+    elif export_real_quant:
+        output_dir = ensure_dir(Path(args.output_dir) / model_name / "export_modelslim")
+        result_metadata["export_backend"] = export_backend
     else:
         # 仅评测
         output_dir = ensure_dir(Path(args.output_dir) / model_name / "evaluate")
@@ -1134,7 +1226,26 @@ def build_run_config(args) -> WorkflowConfig:
 
 
 def validate_workflow_config(config: WorkflowConfig) -> None:
-    if not config.stages and config.output_dir is None:
+    export_real_quant = bool(config.common_args.get("export_real_quant", False))
+    if export_real_quant:
+        if config.stages:
+            raise ValueError(
+                "--export_real_quant is an export-only ModelSlim operation; "
+                "do not combine it with MindPipe pruning, quantization, or finetuning stages."
+            )
+        if any(config.common_args.get(name, False) for name in ("eval_ppl", "eval_zero_shot", "eval_vlm")):
+            raise ValueError(
+                "ModelSlim produces an external vLLM Ascend checkpoint; "
+                "disable in-process evaluation and test the exported directory through vLLM Ascend."
+            )
+        if config.save_model or config.common_args.get("save_model", False):
+            raise ValueError("--save_model is not applicable to export-only ModelSlim runs.")
+        if config.common_args.get("export_backend") != "modelslim":
+            raise ValueError(
+                f"Unsupported export-only backend: {config.common_args.get('export_backend')!r}"
+            )
+
+    if not config.stages and config.output_dir is None and not export_real_quant:
         raise ValueError("Evaluate-only mode requires --output_dir")
     if not config.flatten_single_stage and len(config.stages) > 1 and config.output_dir is None:
         raise ValueError("Multi-stage workflow requires an explicit output_dir")

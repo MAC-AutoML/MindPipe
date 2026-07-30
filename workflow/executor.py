@@ -31,6 +31,7 @@ from algorithm.common.qwen3_5_moe_unfuse import unfuse_qwen3_5_moe_experts
 from algorithm.common.qwen3_5_moe_unfuse import unfuse_qwen3_moe_experts
 from algorithm.pruning.registry import get_method as get_pruning_method
 from algorithm.quantization.config import normalize_args as normalize_quantization_args
+from algorithm.quantization.exporters.modelslim import export_modelslim_ascend_quant
 from algorithm.quantization.registry import get_method as get_quantization_method
 from evaluation.runner import run_evaluations
 from workflow.builder import validate_workflow_config
@@ -141,10 +142,125 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
     }, next_model, next_tokenizer_bundle
 
 
+def _run_modelslim_export_only(
+    config: WorkflowConfig,
+    common_args: dict[str, Any],
+) -> WorkflowRunResult:
+    final_output_dir = ensure_dir(config.output_dir or Path("results/modelslim_export"))
+    artifacts_path = final_output_dir / "artifacts.json"
+    metrics_path = final_output_dir / "metrics.json"
+    status_path = final_output_dir / "export_status.json"
+    export_dir = common_args.get("export_quantized_model_dir")
+    if export_dir is None:
+        export_dir = final_output_dir.parent / "real_quant_modelslim_model"
+
+    resolved_output_dir = final_output_dir.expanduser().resolve()
+    resolved_export_dir = Path(export_dir).expanduser().resolve()
+    started_at = time.time()
+
+    try:
+        # A failed retry must not leave a previous run's terminal metadata looking current.
+        for path in (artifacts_path, metrics_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        write_json(
+            status_path,
+            {
+                "status": "running",
+                "model_path": config.model_path,
+                "export_backend": common_args.get("export_backend"),
+                "export_path": str(resolved_export_dir),
+                "started_at_unix": started_at,
+            },
+        )
+
+        validate_workflow_config(config)
+        if (
+            resolved_output_dir == resolved_export_dir
+            or resolved_output_dir in resolved_export_dir.parents
+            or resolved_export_dir in resolved_output_dir.parents
+        ):
+            raise ValueError(
+                "ModelSlim checkpoint directory and workflow output directory must not be "
+                "identical or nested: "
+                f"checkpoint={resolved_export_dir}, workflow_output={resolved_output_dir}."
+            )
+
+        real_quant_export = export_modelslim_ascend_quant(
+            model_path=config.model_path,
+            export_dir=resolved_export_dir,
+            common_args=common_args,
+        )
+
+        artifacts = {"real_quant_export": real_quant_export}
+        metrics = copy.deepcopy(config.result_metadata)
+        metrics.update(
+            {
+                "model_path": config.model_path,
+                "export_backend": "modelslim",
+                "export_precision": real_quant_export["precision"],
+                "artifacts_path": artifacts_path.name,
+                "export_status_path": status_path.name,
+            }
+        )
+        write_json(artifacts_path, artifacts)
+        metrics_path = write_json(metrics_path, metrics)
+        write_json(
+            status_path,
+            {
+                "status": "completed",
+                "model_path": config.model_path,
+                "export_backend": "modelslim",
+                "export_path": str(resolved_export_dir),
+                "artifacts_path": artifacts_path.name,
+                "metrics_path": metrics_path.name,
+                "started_at_unix": started_at,
+                "completed_at_unix": time.time(),
+            },
+        )
+    except BaseException as error:
+        for path in (artifacts_path, metrics_path):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        try:
+            write_json(
+                status_path,
+                {
+                    "status": "failed",
+                    "model_path": config.model_path,
+                    "export_backend": common_args.get("export_backend"),
+                    "export_path": str(resolved_export_dir),
+                    "error_type": error.__class__.__name__,
+                    "error": str(error),
+                    "started_at_unix": started_at,
+                    "completed_at_unix": time.time(),
+                },
+            )
+        except OSError:
+            pass
+        raise
+
+    return WorkflowRunResult(
+        model_path=config.model_path,
+        output_dir=str(final_output_dir),
+        metrics_path=str(metrics_path),
+        artifacts_path=str(artifacts_path),
+        metrics=metrics,
+        artifacts=artifacts,
+    )
+
+
 def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
+    common_args = copy.deepcopy(config.common_args)
+    if common_args.get("export_real_quant", False):
+        return _run_modelslim_export_only(config, common_args)
+
     validate_workflow_config(config)
 
-    common_args = copy.deepcopy(config.common_args)
     resolved_device = resolve_device_string(common_args.get("device", "auto"))
     common_args["device"] = resolved_device
 
