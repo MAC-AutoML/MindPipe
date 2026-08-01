@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -43,6 +44,92 @@ def _check_sparsity(model) -> float:
     return zero_count / max(total_count, 1)
 
 
+def _to_cpu(value):
+    if torch.is_tensor(value):
+        return value.detach().cpu()
+    if isinstance(value, tuple):
+        return tuple(_to_cpu(item) for item in value)
+    if isinstance(value, list):
+        return [_to_cpu(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _to_cpu(item) for key, item in value.items()}
+    return value
+
+
+def _capture_multimodal_first_block_inputs(model, tokenizer_bundle, backbone, args):
+    model_type = str(getattr(getattr(model, "config", None), "model_type", "") or "")
+    if model_type != "qwen2_5_vl":
+        raise NotImplementedError(
+            "SparseGPT multimodal calibration currently supports Qwen2.5-VL only, "
+            f"got {model_type!r}."
+        )
+    processor = getattr(tokenizer_bundle, "processor", None)
+    if processor is None:
+        raise ValueError("Qwen2.5-VL SparseGPT multimodal calibration requires a processor.")
+
+    # Reuse the tested Qwen2.5-VL prompt/image preparation used by GPTQ.
+    from ....quantization.ptq.gptq.method import GPTQMethod
+
+    helper_args = args
+    helper_args.gptq_vlm_calib_num = int(
+        getattr(args, "pruning_vlm_calib_num", None) or args.calibration_samples
+    )
+    calibration_inputs = GPTQMethod()._build_qwen2_vlm_calibration_inputs(
+        processor=processor,
+        dataset_name=str(args.pruning_vlm_dataset_name),
+        args=helper_args,
+    )
+
+    decoder_config = backbone.decoder_config
+    use_cache = decoder_config.use_cache
+    decoder_config.use_cache = False
+    blocks = backbone.layers
+    captured_samples: list[tuple[torch.Tensor, dict[str, Any]]] = []
+
+    class _CaptureComplete(Exception):
+        pass
+
+    class Catcher(torch.nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+        def __getattr__(self, name: str):
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.module, name)
+
+        def forward(self, hidden_states, **kwargs):
+            captured_samples.append((_to_cpu(hidden_states), _to_cpu(kwargs)))
+            raise _CaptureComplete
+
+    source_model = getattr(model, "_source_model", model)
+    target_device = resolve_device(args.device)
+    blocks[0] = Catcher(blocks[0])
+    try:
+        source_model.eval()
+        for prepared_inputs in calibration_inputs:
+            moved_inputs = GPTQMethod._move_inputs_to_device(prepared_inputs, target_device)
+            try:
+                GPTQMethod()._run_multimodal_forward(
+                    source_model=source_model,
+                    prepared_inputs=moved_inputs,
+                )
+            except _CaptureComplete:
+                pass
+    finally:
+        blocks[0] = blocks[0].module
+        decoder_config.use_cache = use_cache
+
+    if len(captured_samples) != len(calibration_inputs):
+        raise RuntimeError(
+            "SparseGPT multimodal capture count mismatch: "
+            f"captured {len(captured_samples)} of {len(calibration_inputs)} samples."
+        )
+    return captured_samples
+
+
 class SparseGPTMethod(BasePruningMethod):
     name = "sparsegpt"
     default_calibration_dataset = "c4"
@@ -53,22 +140,34 @@ class SparseGPTMethod(BasePruningMethod):
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
         source_root = Path(__file__).resolve().parent / "source"
-        calibration_batches, _ = get_calibration_and_evaluation_data(
-            tokenizer=tokenizer_bundle.tokenizer,
-            dataset_name=args.calibration_dataset,
-            sequence_length=args.sequence_length,
-            sample_count=args.calibration_samples,
-            seed=args.seed,
-            data_path=args.data_path,
-        )
         backbone = get_text_backbone(model)
-        input_states, layer_kwargs = capture_first_block_inputs(
-            model=model,
-            backbone=backbone,
-            calibration_batches=calibration_batches,
-            device=args.device,
-        )
-        output_states = torch.zeros_like(input_states)
+        vlm_dataset_name = getattr(args, "pruning_vlm_dataset_name", None)
+        if vlm_dataset_name:
+            multimodal_samples = _capture_multimodal_first_block_inputs(
+                model, tokenizer_bundle, backbone, args
+            )
+            input_states = [sample[0] for sample in multimodal_samples]
+            sample_kwargs = [sample[1] for sample in multimodal_samples]
+            sample_count = len(input_states)
+            variable_length_inputs = True
+        else:
+            calibration_batches, _ = get_calibration_and_evaluation_data(
+                tokenizer=tokenizer_bundle.tokenizer,
+                dataset_name=args.calibration_dataset,
+                sequence_length=args.sequence_length,
+                sample_count=args.calibration_samples,
+                seed=args.seed,
+                data_path=args.data_path,
+            )
+            input_states, layer_kwargs = capture_first_block_inputs(
+                model=model,
+                backbone=backbone,
+                calibration_batches=calibration_batches,
+                device=args.device,
+            )
+            output_states = torch.zeros_like(input_states)
+            sample_count = int(args.calibration_samples)
+            variable_length_inputs = False
         prune_n, prune_m = _resolve_pruning_pattern(args.structure_pattern)
         layer_step = float(os.environ.get("SPARSEGPT_LAYER_STEP", "0") or "0")
         if layer_step > 0:
@@ -89,9 +188,10 @@ class SparseGPTMethod(BasePruningMethod):
             for layer_index in range(len(backbone.layers)):
                 block = backbone.layers[layer_index]
                 target_device = get_layer_device(backbone, layer_index)
-                input_states = input_states.to(target_device)
-                output_states = output_states.to(target_device)
-                layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
+                if not variable_length_inputs:
+                    input_states = input_states.to(target_device)
+                    output_states = output_states.to(target_device)
+                    layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
                 linear_layers = find_prunable_linear_layers(block)
 
                 # SparseGPT: collect statistics for every target Linear in one
@@ -113,11 +213,18 @@ class SparseGPTMethod(BasePruningMethod):
                     linear_layers[name].register_forward_hook(add_batch(name))
                     for name in linear_layers
                 ]
-                for sample_index in range(args.calibration_samples):
+                first_pass_outputs = [] if variable_length_inputs else None
+                for sample_index in range(sample_count):
                     with torch.no_grad():
-                        output_states[sample_index] = unwrap_layer_output(
-                            block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
-                        )
+                        if variable_length_inputs:
+                            current_input = input_states[sample_index].to(target_device)
+                            current_kwargs = move_tensors_to_device(sample_kwargs[sample_index], target_device)
+                            current_output = unwrap_layer_output(block(current_input, **current_kwargs))
+                            first_pass_outputs.append(current_output.detach().cpu())
+                        else:
+                            output_states[sample_index] = unwrap_layer_output(
+                                block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
+                            )
                 for handle in handles:
                     handle.remove()
 
@@ -134,13 +241,23 @@ class SparseGPTMethod(BasePruningMethod):
                     pruned_linear_layers.append(f"{backbone.prefix}.layers.{layer_index}.{name}")
                 del gpt_states
 
-                for sample_index in range(args.calibration_samples):
+                next_input_states = [] if variable_length_inputs else None
+                for sample_index in range(sample_count):
                     with torch.no_grad():
-                        output_states[sample_index] = unwrap_layer_output(
-                            block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
-                        )
+                        if variable_length_inputs:
+                            current_input = input_states[sample_index].to(target_device)
+                            current_kwargs = move_tensors_to_device(sample_kwargs[sample_index], target_device)
+                            current_output = unwrap_layer_output(block(current_input, **current_kwargs))
+                            next_input_states.append(current_output.detach().cpu())
+                        else:
+                            output_states[sample_index] = unwrap_layer_output(
+                                block(input_states[sample_index].unsqueeze(0), **layer_kwargs)
+                            )
 
-                input_states, output_states = output_states, input_states
+                if variable_length_inputs:
+                    input_states = next_input_states
+                else:
+                    input_states, output_states = output_states, input_states
 
         observed_sparsity = _check_sparsity(model)
         return {
@@ -150,5 +267,14 @@ class SparseGPTMethod(BasePruningMethod):
             "structure_pattern": args.structure_pattern,
             "pruned_linear_count": len(pruned_linear_layers),
             "pruned_linear_layers": pruned_linear_layers,
+            "multimodal_calibration": (
+                {
+                    "dataset_name": str(vlm_dataset_name),
+                    "sample_count": sample_count,
+                    "scope": "language_layers",
+                }
+                if vlm_dataset_name
+                else None
+            ),
         }
 # Migrate pruning to device_map loading for future multi-GPU support.

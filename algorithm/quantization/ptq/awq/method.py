@@ -980,9 +980,18 @@ class AWQMethod(BaseQuantizationMethod):
     def apply_fake_quantization(self, model, tokenizer_bundle, args) -> dict[str, object]:
         source_root = Path(__file__).resolve().parent / "source"
         output_dir = self.resolve_output_dir(args)
-        awq_state_path = output_dir / "awq_search.pt"
+        explicit_awq_state_path = getattr(args, "awq_search_result_path", None)
+        awq_state_path = (
+            Path(explicit_awq_state_path).expanduser()
+            if explicit_awq_state_path
+            else output_dir / "awq_search.pt"
+        )
         awq_search_sequence_length = int(getattr(args, "awq_search_sequence_length", 512) or 512)
-        awq_reuse_search_result = bool(getattr(args, "awq_reuse_search_result", False))
+        awq_reuse_search_result = bool(
+            getattr(args, "awq_reuse_search_result", False) or explicit_awq_state_path
+        )
+        if explicit_awq_state_path and not awq_state_path.is_file():
+            raise FileNotFoundError(f"AWQ search state does not exist: {awq_state_path}")
         awq_auto_scale = bool(getattr(args, "awq_auto_scale", True))
         awq_mse_range = bool(getattr(args, "awq_mse_range", True))
         awq_clip_targets = str(getattr(args, "awq_clip_targets", "auto") or "auto")
