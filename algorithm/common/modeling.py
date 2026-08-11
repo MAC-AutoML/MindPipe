@@ -681,6 +681,7 @@ def load_model_and_tokenizer(
         or "Qwen3_5MoeForConditionalGeneration" in architectures
     )
     is_qwen3_moe = config.model_type == "qwen3_moe" or "Qwen3MoeForCausalLM" in architectures
+    is_mixtral = config.model_type == "mixtral" or "MixtralForCausalLM" in architectures
     is_qwen3_vl = config.model_type == "qwen3_vl" or "Qwen3VLForConditionalGeneration" in architectures
     is_qwen2_5_vl = config.model_type == "qwen2_5_vl" or "Qwen2_5_VLForConditionalGeneration" in architectures
     is_qwen2_vl = config.model_type == "qwen2_vl" or "Qwen2VLForConditionalGeneration" in architectures
@@ -740,6 +741,9 @@ def load_model_and_tokenizer(
 
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_path, **model_kwargs)
         processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    elif is_mixtral:
+        model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+        processor = None
     elif config.model_type == "internvl_chat" or "InternVLChatModel" in architectures:
         _patch_internvl_remote_class(model_path)
         multimodal_model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
@@ -995,6 +999,16 @@ def _is_qwen3_moe_config(config: Any | None) -> bool:
     return any(str(name) == "Qwen3MoeForCausalLM" for name in architectures)
 
 
+def _is_mixtral_config(config: Any | None) -> bool:
+    if config is None:
+        return False
+    model_type = str(getattr(config, "model_type", "") or "")
+    if model_type == "mixtral":
+        return True
+    architectures = getattr(config, "architectures", []) or []
+    return any(str(name) == "MixtralForCausalLM" for name in architectures)
+
+
 def _copy_or_pad_2d(weight: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
     result = weight.new_zeros((int(rows), int(cols)))
     copy_rows = min(int(rows), int(weight.shape[0]))
@@ -1217,6 +1231,89 @@ def normalize_qwen3_moe_expert_intermediate_size_for_hf_save(model: nn.Module) -
     return changed
 
 
+def _mixtral_expert_width(expert: nn.Module) -> int:
+    w1 = _as_linear(getattr(expert, "w1", None))
+    w2 = _as_linear(getattr(expert, "w2", None))
+    w3 = _as_linear(getattr(expert, "w3", None))
+    if w1 is None or w2 is None or w3 is None:
+        raise ValueError(f"Mixtral expert is missing one of w1/w2/w3: {type(expert)}")
+
+    gate_width = int(w1.weight.shape[0])
+    if int(w3.weight.shape[0]) != gate_width:
+        raise ValueError(
+            "Mixtral expert w1/w3 width mismatch: "
+            f"w1={tuple(w1.weight.shape)}, w3={tuple(w3.weight.shape)}"
+        )
+    if int(w2.weight.shape[1]) != gate_width:
+        raise ValueError(
+            "Mixtral expert w2 input width mismatch: "
+            f"w2={tuple(w2.weight.shape)}, w1={tuple(w1.weight.shape)}"
+        )
+    return gate_width
+
+
+@torch.no_grad()
+def normalize_mixtral_expert_intermediate_size_for_hf_save(model: nn.Module) -> int:
+    """Pad Mixtral routed experts to one global intermediate_size before HF save."""
+    config = getattr(model, "config", None)
+    text_config = getattr(config, "text_config", config)
+    if not (_is_mixtral_config(config) or _is_mixtral_config(text_config)):
+        return 0
+
+    try:
+        backbone = get_text_backbone(model)
+    except NotImplementedError:
+        return 0
+
+    experts: list[nn.Module] = []
+    widths: list[int] = []
+    hidden_sizes: set[int] = set()
+    block_count = 0
+    for layer in backbone.layers:
+        block = getattr(layer, "block_sparse_moe", None)
+        moe_experts = getattr(block, "experts", None)
+        if not isinstance(moe_experts, nn.ModuleList):
+            continue
+        block_count += 1
+        for expert in moe_experts:
+            experts.append(expert)
+            widths.append(_mixtral_expert_width(expert))
+            hidden_sizes.add(int(_as_linear(getattr(expert, "w1", None)).weight.shape[1]))
+
+    if not experts:
+        return 0
+    if len(hidden_sizes) != 1:
+        raise ValueError(f"Mixtral expert hidden sizes differ across layers: {sorted(hidden_sizes)}")
+    hidden_size = hidden_sizes.pop()
+
+    target_width = max(widths)
+    changed = 0
+    for expert, current_width in zip(experts, widths, strict=True):
+        if current_width != target_width:
+            changed += 1
+        w1 = _as_linear(getattr(expert, "w1", None))
+        w2 = _as_linear(getattr(expert, "w2", None))
+        w3 = _as_linear(getattr(expert, "w3", None))
+        _resize_linear_for_hf_save(w1, target_width, hidden_size)
+        _resize_linear_for_hf_save(w3, target_width, hidden_size)
+        _resize_linear_for_hf_save(w2, hidden_size, target_width)
+        if hasattr(expert, "ffn_dim"):
+            expert.ffn_dim = int(target_width)
+
+    _set_intermediate_size_on_configs(model, backbone, target_width)
+    config_width = getattr(text_config, "intermediate_size", None)
+    if changed or config_width != target_width:
+        LOGGER.info(
+            "Normalized %d Mixtral expert MLP block(s) for HF save "
+            "(intermediate_size=%d, padded_experts=%d, routed_blocks=%d).",
+            len(experts),
+            target_width,
+            changed,
+            block_count,
+        )
+    return changed
+
+
 def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> list[list[str]]:
     groups: list[list[str]] = []
     grouped_names: set[str] = set()
@@ -1416,6 +1513,7 @@ def capture_first_block_inputs(
                     "qwen2_5_vl",
                     "qwen3_vl",
                     "qwen3_moe",
+                    "mixtral",
                     "qwen3_5",
                     "qwen3_5_moe",
                     "qwen3_5_moe_text",

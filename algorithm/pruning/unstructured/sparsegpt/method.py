@@ -26,15 +26,18 @@ def _resolve_pruning_pattern(structure_pattern: str) -> tuple[int, int]:
     return tuple(int(part) for part in structure_pattern.split(":", maxsplit=1))
 
 
-def _check_sparsity(model) -> float:
+def _check_sparsity(model, max_layers: int | None = None) -> float:
     backbone = get_text_backbone(model)
     zero_count = 0
     total_count = 0
-    for layer_index, block in enumerate(backbone.layers):
+    layer_count = len(backbone.layers) if max_layers is None else min(len(backbone.layers), int(max_layers))
+    for layer_index, block in enumerate(backbone.layers[:layer_count]):
         layer_zero_count = 0
         layer_total_count = 0
         for linear in find_prunable_linear_layers(block).values():
             weight = linear.weight.data
+            if getattr(weight, "is_meta", False):
+                continue
             layer_zero_count += int((weight == 0).sum().item())
             layer_total_count += int(weight.numel())
         if layer_total_count:
@@ -185,7 +188,18 @@ class SparseGPTMethod(BasePruningMethod):
             from sparsegpt import SparseGPT
 
             pruned_linear_layers = []
-            for layer_index in range(len(backbone.layers)):
+            layer_count = len(backbone.layers)
+            pruning_max_layers = getattr(args, "pruning_max_layers", None)
+            if pruning_max_layers is not None:
+                if pruning_max_layers <= 0:
+                    raise ValueError("--pruning_max_layers must be positive when provided.")
+                layer_count = min(layer_count, int(pruning_max_layers))
+                print(
+                    f"SparseGPT pruning layer cap enabled: pruning first {layer_count} "
+                    f"of {len(backbone.layers)} decoder layers"
+                )
+            layer_indices = list(range(layer_count))
+            for layer_position, layer_index in enumerate(layer_indices):
                 block = backbone.layers[layer_index]
                 target_device = get_layer_device(backbone, layer_index)
                 if not variable_length_inputs:
@@ -241,6 +255,9 @@ class SparseGPTMethod(BasePruningMethod):
                     pruned_linear_layers.append(f"{backbone.prefix}.layers.{layer_index}.{name}")
                 del gpt_states
 
+                if layer_position + 1 >= len(layer_indices):
+                    continue
+
                 next_input_states = [] if variable_length_inputs else None
                 for sample_index in range(sample_count):
                     with torch.no_grad():
@@ -259,12 +276,16 @@ class SparseGPTMethod(BasePruningMethod):
                 else:
                     input_states, output_states = output_states, input_states
 
-        observed_sparsity = _check_sparsity(model)
+        observed_sparsity = _check_sparsity(
+            model,
+            max_layers=getattr(args, "pruning_max_layers", None),
+        )
         return {
             "source_root": str(source_root),
             "target_sparsity_ratio": args.sparsity_ratio,
             "observed_sparsity_ratio": observed_sparsity,
             "structure_pattern": args.structure_pattern,
+            "pruning_max_layers": getattr(args, "pruning_max_layers", None),
             "pruned_linear_count": len(pruned_linear_layers),
             "pruned_linear_layers": pruned_linear_layers,
             "multimodal_calibration": (

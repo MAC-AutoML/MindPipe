@@ -43,7 +43,7 @@ def _move_layer_kwargs(layer_kwargs, device):
     return moved
 
 
-def check_sparsity(model):
+def check_sparsity(model, max_layers=None):
     """检查模型权重的稀疏度。"""
     backbone = get_text_backbone(model)
     decoder_config = backbone.decoder_config
@@ -51,9 +51,10 @@ def check_sparsity(model):
     decoder_config.use_cache = False
 
     layers = backbone.layers
+    layer_count = len(layers) if max_layers is None else min(len(layers), int(max_layers))
     count = 0
     total_params = 0
-    for i in range(len(layers)):
+    for i in range(layer_count):
         layer = layers[i]
         subset = find_prunable_layers(layer)
 
@@ -61,16 +62,19 @@ def check_sparsity(model):
         sub_params = 0
         for name in subset:
             W = subset[name].weight.data
+            if getattr(W, "is_meta", False):
+                continue
             count += (W==0).sum().item()
             total_params += W.numel()
 
             sub_count += (W==0).sum().item()
             sub_params += W.numel()
 
-        print(f"layer {i} sparsity {float(sub_count)/sub_params:.6f}")
+        if sub_params:
+            print(f"layer {i} sparsity {float(sub_count)/sub_params:.6f}")
 
     decoder_config.use_cache = use_cache
-    return float(count)/total_params
+    return float(count) / max(total_params, 1)
 
 
 def prepare_calibration_input(model, dataloader, device):
@@ -111,7 +115,18 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
         inps, outs, layer_kwargs = prepare_calibration_input(model, dataloader, device)
 
     layers = backbone.layers
-    for i in range(len(layers)):
+    layer_count = len(layers)
+    pruning_max_layers = getattr(args, "pruning_max_layers", None)
+    if pruning_max_layers is not None:
+        if pruning_max_layers <= 0:
+            raise ValueError("--pruning_max_layers must be positive when provided.")
+        layer_count = min(layer_count, int(pruning_max_layers))
+        print(
+            f"Wanda pruning layer cap enabled: pruning first {layer_count} "
+            f"of {len(layers)} decoder layers"
+        )
+    layer_indices = list(range(layer_count))
+    for layer_position, i in enumerate(layer_indices):
         layer = layers[i]
         target_device = get_layer_device(backbone, i)
         inps = inps.to(target_device)
@@ -183,6 +198,9 @@ def prune_wanda(args, model, tokenizer, device=None, prune_n=0, prune_m=0, datal
                     W_mask.scatter_(1, indices, True)
 
             subset[name].weight.data[W_mask] = 0  ## 将权重置零
+
+        if layer_position + 1 >= len(layer_indices):
+            continue
 
         for j in range(args.nsamples):
             with torch.no_grad():

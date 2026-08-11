@@ -25,6 +25,8 @@ class BasePruningMethod(ABC):
         # n:m 半结构化模式加入目录名，避免 2:4 / 4:8 撞目录
         pattern = getattr(args, 'structure_pattern', 'unstructured')
         pattern_suffix = f"_{pattern.replace(':', '-')}" if pattern != "unstructured" else ""
-        run_spec = f"{self.name}_s{args.sparsity_ratio}{pattern_suffix}_seq{args.sequence_length}"
+        max_layers = getattr(args, "pruning_max_layers", None)
+        max_layers_suffix = f"_layers{max_layers}" if max_layers is not None else ""
+        run_spec = f"{self.name}_s{args.sparsity_ratio}{pattern_suffix}_seq{args.sequence_length}{max_layers_suffix}"
         return ensure_dir(Path(args.output_root) / model_name / self.name / run_spec)
 # Add 2:4 and 4:8 semi-structured pruning support.
