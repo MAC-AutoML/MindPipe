@@ -50,12 +50,16 @@ class WandaMethod(BasePruningMethod):
                 prune_m=prune_m,
                 dataloader=calibration_batches,
             )
-            observed_sparsity = check_sparsity(model)
+            observed_sparsity = check_sparsity(
+                model,
+                max_layers=getattr(args, "pruning_max_layers", None),
+            )
 
         return {
             "source_root": str(source_root),
             "target_sparsity_ratio": args.sparsity_ratio,
             "observed_sparsity_ratio": observed_sparsity,
             "structure_pattern": args.structure_pattern,
+            "pruning_max_layers": getattr(args, "pruning_max_layers", None),
         }
 # feat: integrate ShortGPT layer pruning and unify calibration data loading.
