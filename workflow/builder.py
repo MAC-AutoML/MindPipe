@@ -143,10 +143,27 @@ def _add_vlm_eval_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_pruning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pruning", default=None, choices=sorted(PRUNING_METHOD_REGISTRY))
+    parser.add_argument(
+        "--pruning_vlm_dataset_name",
+        default=None,
+        help="Use a VLMEvalKit image-text dataset to calibrate SparseGPT language-layer pruning.",
+    )
+    parser.add_argument(
+        "--pruning_vlm_calib_num",
+        type=int,
+        default=None,
+        help="Number of multimodal SparseGPT calibration samples. Defaults to pruning calibration samples.",
+    )
     parser.add_argument("--sparsity_ratio", type=float, default=0.5)
     parser.add_argument("--structure_pattern",default="unstructured",help="剪枝结构模式。当前仅对 wanda / sparsegpt / alps 生效，用于指定 n:m 半结构化剪枝；其他方法会忽略该参数。",)
     parser.add_argument("--block_size", type=int, default=128)
     parser.add_argument("--use_variant", type=_bool_flag, default=False)
+    parser.add_argument(
+        "--pruning_max_layers",
+        type=int,
+        default=None,
+        help="Optional pruning smoke-test cap. When set, prune only the first N decoder layers.",
+    )
     parser.add_argument("--flap_metrics", default="WIFV", choices=["IFV", "WIFV", "WIFN"])
     parser.add_argument("--flap_remove_heads", type=int, default=8)
     parser.add_argument("--pseudo_pruning", type=_bool_flag, default=True)
@@ -362,6 +379,11 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
         type=_bool_flag,
         default=False,
         help="Reuse an existing awq_search.pt under the target AWQ output_dir instead of rerunning AWQ search.",
+    )
+    parser.add_argument(
+        "--awq_search_result_path",
+        default=None,
+        help="Explicit path to an existing AWQ search state. Implies --awq_reuse_search_result.",
     )
     parser.add_argument(
         "--awq_search_sequence_length",

@@ -12,6 +12,7 @@ model_paths:
   Qwen2.5-7B-Instruct: /path/to/Qwen2.5-7B-Instruct
   Llama-2-7b-hf: /path/to/Llama-2-7b-hf
   Meta-Llama-3.1-8B-Instruct: /path/to/Meta-Llama-3.1-8B-Instruct
+  Mixtral-8x7B-v0.1: /path/to/Mixtral-8x7B-v0.1
   MiniCPM-V: /path/to/MiniCPM-V
   Qwen3-VL-2B-Instruct: /path/to/Qwen3-VL-2B-Instruct
   Qwen3-0.6B: /path/to/Qwen3-0.6B

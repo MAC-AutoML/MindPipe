@@ -14,6 +14,7 @@ model_paths:
   Llama-2-7b-hf: /home/ma-user/work/modelzoo/Meta/Llama-2-7b-hf
   Meta-Llama-3.1-8B-Instruct: /home/ma-user/work/modelzoo/Meta/Meta-Llama-3.1-8B-Instruct
   MiniCPM-V: /home/ma-user/work/modelzoo/openbmb/MiniCPM-V
+  Mixtral-8x7B-v0.1: /home/ma-user/work/modelzoo/Mixtral/Mixtral-8x7B-v0.1
   Qwen3-VL-2B-Instruct: /home/ma-user/work/modelzoo/Qwen/Qwen3-VL-2B-Instruct
   Qwen3-0.6B: /home/ma-user/work/modelzoo/Qwen/Qwen3-0.6B
   Qwen3-30B-A3B: /home/ma-user/work/modelzoo/Qwen/Qwen3-30B-A3B

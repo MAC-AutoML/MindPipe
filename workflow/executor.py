@@ -15,6 +15,7 @@ from algorithm.common.io import ensure_dir
 from algorithm.common.io import write_json
 from algorithm.common.modeling import load_model_and_tokenizer
 from algorithm.common.modeling import normalize_dense_qwen3_mlp_intermediate_size_for_hf_save
+from algorithm.common.modeling import normalize_mixtral_expert_intermediate_size_for_hf_save
 from algorithm.common.modeling import normalize_qwen3_moe_expert_intermediate_size_for_hf_save
 from algorithm.finetuning.registry import get_method as get_finetuning_method
 from algorithm.finetuning.compression_lora.mask_utils import extract_masks_from_pruned_model
@@ -380,6 +381,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         refuse_qwen3_moe_experts_for_hf_save(model)
         refuse_flatquant_qwen3_moe_experts_for_hf_save(model)
         normalize_qwen3_moe_expert_intermediate_size_for_hf_save(model)
+        normalize_mixtral_expert_intermediate_size_for_hf_save(model)
         normalize_dense_qwen3_mlp_intermediate_size_for_hf_save(model)
         model.save_pretrained(model_dir)
         tokenizer_bundle.save_pretrained(str(model_dir))
