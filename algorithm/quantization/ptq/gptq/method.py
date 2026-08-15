@@ -22,6 +22,7 @@ from ....common.modeling import get_text_backbone
 from ....common.modeling import move_tensors_to_device
 from ....common.modeling import unwrap_layer_output
 from ....common.runtime import prepend_python_path
+from ...exporters.schema import RealQuantLinearArtifact
 from ...base import BaseQuantizationMethod
 
 
@@ -120,6 +121,7 @@ class GPTQMethod(BaseQuantizationMethod):
             source_model = self._resolve_source_model(model)
             model_type = self._resolve_model_type(source_model)
             vlm_dataset_name = self._resolve_vlm_dataset_name(args)
+            self._validate_real_quant_export_args(args, vlm_dataset_name=vlm_dataset_name)
             if vlm_dataset_name:
                 if model_type not in self._SUPPORTED_VLM_MODEL_TYPES:
                     raise NotImplementedError(
@@ -163,6 +165,30 @@ class GPTQMethod(BaseQuantizationMethod):
         if legacy:
             return str(legacy)
         return None
+
+    @staticmethod
+    def _real_quant_export_enabled(args) -> bool:
+        return bool(getattr(args, "export_real_quant", False))
+
+    def _validate_real_quant_export_args(self, args, *, vlm_dataset_name: str | None) -> None:
+        if not self._real_quant_export_enabled(args):
+            return
+        if getattr(args, "export_backend", "vllm") != "vllm":
+            raise NotImplementedError("GPTQ real quant export currently supports only --export_backend vllm.")
+        if vlm_dataset_name:
+            raise NotImplementedError("GPTQ real quant export MVP is text-only; disable VLM calibration.")
+        if int(args.weight_bits) != 4:
+            raise ValueError("GPTQ real quant export MVP requires --weight_bits 4.")
+        if int(args.activation_bits) != 16:
+            raise ValueError("GPTQ real quant export MVP requires --activation_bits 16.")
+        if not bool(args.weight_symmetric):
+            raise ValueError("GPTQ real quant export MVP requires symmetric weight quantization.")
+        if int(args.weight_group_size) <= 0:
+            raise ValueError("GPTQ real quant export MVP requires positive --weight_group_size.")
+        if bool(args.use_activation_order):
+            raise NotImplementedError(
+                "GPTQ real quant export with --use_activation_order is not supported in the MVP."
+            )
 
     @staticmethod
     def _resolve_vlm_calib_num(args) -> int:
@@ -254,11 +280,18 @@ class GPTQMethod(BaseQuantizationMethod):
         gptq_states: dict[str, Any],
         quantizer_artifacts: dict[str, dict[str, object]],
         args,
+        real_quant_artifacts: dict[str, RealQuantLinearArtifact] | None = None,
     ) -> None:
         for name, gptq_state in gptq_states.items():
             nsamples = int(getattr(gptq_state, "nsamples", 0))
             used_rtn_fallback = False
+            real_quant_result = None
             if nsamples == 0:
+                if real_quant_artifacts is not None:
+                    raise RuntimeError(
+                        f"Cannot export real quant artifact for {group_prefix}.{name}: "
+                        "no calibration samples were collected."
+                    )
                 self._apply_rtn_fallback(gptq_state)
                 used_rtn_fallback = True
                 quantized = True
@@ -282,12 +315,13 @@ class GPTQMethod(BaseQuantizationMethod):
                 for actorder in actorder_schedule:
                     for damp in damp_schedule:
                         try:
-                            gptq_state.fasterquant(
+                            real_quant_result = gptq_state.fasterquant(
                                 blocksize=self.quantization_block_size,
                                 percdamp=damp,
                                 groupsize=args.weight_group_size,
                                 actorder=actorder,
                                 static_groups=args.static_groups,
+                                return_real_quant=real_quant_artifacts is not None,
                             )
                             quantized = True
                             last_error = None
@@ -302,7 +336,23 @@ class GPTQMethod(BaseQuantizationMethod):
             if not quantized and last_error is not None:
                 raise last_error
 
-            quantizer_artifacts[f"{group_prefix}.{name}"] = {
+            full_name = f"{group_prefix}.{name}"
+            if real_quant_artifacts is not None:
+                if real_quant_result is None:
+                    raise RuntimeError(f"GPTQ did not return a real quant artifact for {full_name}.")
+                int_weight = real_quant_result["int_weight"].detach().cpu().to(torch.int8)
+                scale = real_quant_result["scale"].detach().cpu().to(torch.float16)
+                real_quant_artifacts[full_name] = RealQuantLinearArtifact(
+                    name=full_name,
+                    bits=int(args.weight_bits),
+                    group_size=int(real_quant_result.get("group_size", args.weight_group_size)),
+                    symmetric=bool(args.weight_symmetric),
+                    original_shape=tuple(int(dim) for dim in gptq_state.layer.weight.shape),
+                    int_weight=int_weight,
+                    scale=scale,
+                )
+
+            quantizer_artifacts[full_name] = {
                 "bits": args.weight_bits,
                 "group_size": args.weight_group_size,
                 "symmetric": args.weight_symmetric,
@@ -338,6 +388,7 @@ class GPTQMethod(BaseQuantizationMethod):
         )
         output_states = torch.zeros_like(input_states)
         quantizer_artifacts = {}
+        real_quant_artifacts = {} if self._real_quant_export_enabled(args) else None
         max_layers = getattr(args, "gptq_max_layers", None)
         max_layers = None if max_layers is None else max(0, int(max_layers))
         layers = backbone.layers
@@ -350,6 +401,11 @@ class GPTQMethod(BaseQuantizationMethod):
             input_states = input_states.to(target_device)
             output_states = output_states.to(target_device)
             layer_kwargs = move_tensors_to_device(layer_kwargs, target_device)
+            if real_quant_artifacts is not None and self._has_packed_moe_experts(block):
+                raise NotImplementedError(
+                    "GPTQ real quant export does not support packed MoE experts yet. "
+                    "Disable --export_real_quant for MoE models."
+                )
             converted_experts = self._linearize_packed_moe_experts(block)
             if converted_experts:
                 logger.info(
@@ -391,6 +447,7 @@ class GPTQMethod(BaseQuantizationMethod):
                     gptq_states=gptq_states,
                     quantizer_artifacts=quantizer_artifacts,
                     args=args,
+                    real_quant_artifacts=real_quant_artifacts,
                 )
                 del gptq_states
                 empty_cache(target_device)
@@ -412,11 +469,16 @@ class GPTQMethod(BaseQuantizationMethod):
             empty_cache(target_device)
             input_states, output_states = output_states, input_states
 
-        return {
+        result = {
             "source_root": str(source_root),
             "quantized_linear_count": len(quantizer_artifacts),
             "quantized_linear_layers": quantizer_artifacts,
         }
+        if real_quant_artifacts is not None:
+            result["real_quant_backend"] = getattr(args, "export_backend", "vllm")
+            result["real_quant_artifact_count"] = len(real_quant_artifacts)
+            result["_real_quant_artifacts"] = real_quant_artifacts
+        return result
 
     @staticmethod
     def _model_accepts_kwarg(model, kwarg_name: str) -> bool:

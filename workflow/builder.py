@@ -974,20 +974,24 @@ def _add_io_args(parser: argparse.ArgumentParser) -> None:
         "--export_real_quant",
         type=_bool_flag,
         default=False,
-        help="Run an export-only ModelSlim conversion for vLLM Ascend.",
+        help=(
+            "Export a backend-loadable real quantized checkpoint. ModelSlim runs "
+            "as an export-only conversion; vLLM exports a GPTQ W4A16 stage."
+        ),
     )
     parser.add_argument(
         "--export_backend",
         default="modelslim",
-        choices=["modelslim"],
+        choices=["modelslim", "vllm"],
         help="Backend format for --export_real_quant.",
     )
     parser.add_argument(
         "--export_quantized_model_dir",
         default=None,
         help=(
-            "ModelSlim checkpoint directory. Defaults to a real_quant_modelslim_model "
-            "directory next to the workflow run output."
+            "Real-quant checkpoint directory. ModelSlim defaults to a sibling "
+            "real_quant_modelslim_model directory; vLLM defaults to "
+            "<run_output>/real_quant_vllm_model."
         ),
     )
     parser.add_argument(
@@ -1108,20 +1112,39 @@ def build_run_config(args) -> WorkflowConfig:
             raise ValueError(f"{args.quantization} currently supports --weight_bits in {{2, 3, 4}}.")
 
     if export_real_quant:
-        if has_pruning or has_quantization or has_finetuning:
-            raise ValueError(
-                "--export_real_quant is an export-only ModelSlim operation; "
-                "do not combine it with MindPipe pruning, quantization, or finetuning stages."
-            )
-        if args.eval_ppl or args.eval_zero_shot or args.eval_vlm:
-            raise ValueError(
-                "ModelSlim produces an external vLLM Ascend checkpoint; "
-                "disable in-process evaluation and test the exported directory through vLLM Ascend."
-            )
-        if args.save_model:
-            raise ValueError("--save_model is not applicable to export-only ModelSlim runs.")
-        if (args.weight_bits, args.activation_bits) not in {(4, 8), (8, 8)}:
-            raise ValueError("ModelSlim export supports W4A8 or W8A8 only.")
+        if export_backend == "modelslim":
+            if has_pruning or has_quantization or has_finetuning:
+                raise ValueError(
+                    "--export_real_quant is an export-only ModelSlim operation; "
+                    "do not combine it with MindPipe pruning, quantization, or finetuning stages."
+                )
+            if args.eval_ppl or args.eval_zero_shot or args.eval_vlm:
+                raise ValueError(
+                    "ModelSlim produces an external vLLM Ascend checkpoint; "
+                    "disable in-process evaluation and test the exported directory through vLLM Ascend."
+                )
+            if args.save_model:
+                raise ValueError("--save_model is not applicable to export-only ModelSlim runs.")
+            if (args.weight_bits, args.activation_bits) not in {(4, 8), (8, 8)}:
+                raise ValueError("ModelSlim export supports W4A8 or W8A8 only.")
+        elif export_backend == "vllm":
+            if not has_quantization or args.quantization != "gptq":
+                raise ValueError("vLLM real-quant export currently requires --quantization gptq.")
+            if has_pruning or has_finetuning:
+                raise ValueError("vLLM real-quant export currently supports a single GPTQ stage only.")
+            if args.weight_bits != 4 or args.activation_bits != 16:
+                raise ValueError(
+                    "vLLM real-quant export requires W4A16: "
+                    "--weight_bits 4 --activation_bits 16."
+                )
+            if not args.weight_symmetric:
+                raise ValueError("vLLM real-quant export requires --weight_symmetric true.")
+            if args.use_activation_order:
+                raise ValueError(
+                    "vLLM real-quant export does not support --use_activation_order true yet."
+                )
+        else:
+            raise ValueError(f"Unsupported real-quant export backend: {export_backend!r}")
 
     model_name = model_slug(args.model_path)
     base_common_args = vars(args).copy()
@@ -1132,6 +1155,8 @@ def build_run_config(args) -> WorkflowConfig:
     result_metadata: dict = {
         "model_path": args.model_path,
     }
+    if export_real_quant:
+        result_metadata["export_backend"] = export_backend
 
     if has_pruning:
         pruning_method = get_pruning_method(args.pruning)
@@ -1229,7 +1254,6 @@ def build_run_config(args) -> WorkflowConfig:
         output_dir = ensure_dir(Path(args.output_dir) / model_name / args.execution_order / algo_parts / run_spec)
     elif export_real_quant:
         output_dir = ensure_dir(Path(args.output_dir) / model_name / "export_modelslim")
-        result_metadata["export_backend"] = export_backend
     else:
         # 仅评测
         output_dir = ensure_dir(Path(args.output_dir) / model_name / "evaluate")
@@ -1250,22 +1274,40 @@ def build_run_config(args) -> WorkflowConfig:
 def validate_workflow_config(config: WorkflowConfig) -> None:
     export_real_quant = bool(config.common_args.get("export_real_quant", False))
     if export_real_quant:
-        if config.stages:
-            raise ValueError(
-                "--export_real_quant is an export-only ModelSlim operation; "
-                "do not combine it with MindPipe pruning, quantization, or finetuning stages."
-            )
-        if any(config.common_args.get(name, False) for name in ("eval_ppl", "eval_zero_shot", "eval_vlm")):
-            raise ValueError(
-                "ModelSlim produces an external vLLM Ascend checkpoint; "
-                "disable in-process evaluation and test the exported directory through vLLM Ascend."
-            )
-        if config.save_model or config.common_args.get("save_model", False):
-            raise ValueError("--save_model is not applicable to export-only ModelSlim runs.")
-        if config.common_args.get("export_backend") != "modelslim":
-            raise ValueError(
-                f"Unsupported export-only backend: {config.common_args.get('export_backend')!r}"
-            )
+        export_backend = config.common_args.get("export_backend", "modelslim")
+        if export_backend == "modelslim":
+            if config.stages:
+                raise ValueError(
+                    "--export_real_quant is an export-only ModelSlim operation; "
+                    "do not combine it with MindPipe pruning, quantization, or finetuning stages."
+                )
+            if any(
+                config.common_args.get(name, False)
+                for name in ("eval_ppl", "eval_zero_shot", "eval_vlm")
+            ):
+                raise ValueError(
+                    "ModelSlim produces an external vLLM Ascend checkpoint; "
+                    "disable in-process evaluation and test the exported directory through vLLM Ascend."
+                )
+            if config.save_model or config.common_args.get("save_model", False):
+                raise ValueError("--save_model is not applicable to export-only ModelSlim runs.")
+        elif export_backend == "vllm":
+            if len(config.stages) != 1:
+                raise ValueError("vLLM real-quant export requires exactly one GPTQ stage.")
+            stage = config.stages[0]
+            if stage.stage_type != "quantization" or stage.algorithm_name != "gptq":
+                raise ValueError("vLLM real-quant export requires exactly one GPTQ stage.")
+            if (
+                config.common_args.get("weight_bits") != 4
+                or config.common_args.get("activation_bits") != 16
+            ):
+                raise ValueError("vLLM real-quant export requires W4A16.")
+            if not config.common_args.get("weight_symmetric", False):
+                raise ValueError("vLLM real-quant export requires symmetric weights.")
+            if config.common_args.get("use_activation_order", False):
+                raise ValueError("vLLM real-quant export does not support activation order yet.")
+        else:
+            raise ValueError(f"Unsupported export-only backend: {export_backend!r}")
 
     if not config.stages and config.output_dir is None and not export_real_quant:
         raise ValueError("Evaluate-only mode requires --output_dir")
