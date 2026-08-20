@@ -202,7 +202,12 @@ def _build_cli_args(parser: argparse.ArgumentParser, resolved_inputs: dict[str, 
             cli_args.extend(str(item) for item in value)
             continue
 
-        if isinstance(value, bool):
+        if isinstance(value, dict):
+            # Preserve JSON syntax for structured options such as device_map
+            # and max_memory. str(dict) uses single quotes and cannot be
+            # parsed by the model loader's JSON decoder.
+            rendered = json.dumps(value, separators=(",", ":"))
+        elif isinstance(value, bool):
             rendered = "true" if value else "false"
         else:
             rendered = str(value)

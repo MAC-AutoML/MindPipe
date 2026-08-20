@@ -207,6 +207,8 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
     empty_cache(dev)
 
     # same input of first layer for fp model and quant model
+    cpu_offload = bool(getattr(args, "cpu_offload", False))
+    calibration_device = torch.device(dev) if cpu_offload else None
     fp_inps = inps   # take output of fp model as input
     fp_outs = torch.zeros_like(inps)   # take output of fp model as input
 
@@ -218,10 +220,12 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
     for i in range(num_train_layer):
         logger.info(f"========= Layer {i} =========")
         dtype_dict = {}
-        # device_map 模式下不手动移动 layer，在当前设备上操作
         layer = layers[i]
-        # 将输入数据移到当前层设备
-        layer_dev = next(layer.parameters()).device
+        layer_dev = calibration_device if cpu_offload else next(layer.parameters()).device
+        if cpu_offload:
+            # Only the active block participates in the graph. Keep all other
+            # decoder blocks on CPU so their weights do not consume GPU memory.
+            layer = layer.to(layer_dev)
         fp_inps = fp_inps.to(layer_dev)
         fp_outs = fp_outs.to(layer_dev)
         layer_kwargs = move_tensors_to_device(layer_kwargs, layer_dev)
@@ -329,16 +333,33 @@ def cali_flat_quant(args, model, dataloader, dev, logger):
             logger.info(f"layer {i} lwc lac iter {epoch}, lr {cur_lr:.8f}  time {time.time() - start_tick:.6f}s, mse: {float(mse):.8f}" )
 
         fp_inps, fp_outs = fp_outs, fp_inps
-        # device_map 模式下不手动移动到 cpu，保持在当前设备
-        flat_parameters[i] = get_paras_dict_by_name(layer, required_names=paras_name)
+        if cpu_offload:
+            flat_parameters[i] = {
+                name: param.detach().cpu()
+                for name, param in get_paras_dict_by_name(layer, required_names=paras_name).items()
+            }
+        else:
+            flat_parameters[i] = get_paras_dict_by_name(layer, required_names=paras_name)
         torch.save(flat_parameters, os.path.join(args.exp_dir, f"flat_parameters.pth"))
         logger.info("saved paramaters at {}".format(os.path.join(args.exp_dir, f"flat_parameters.pth")))
         for name, param in layer.named_parameters():
             param.requires_grad = False
             if name in dtype_dict.keys():
                 param.data = param.to(dtype_dict[name])
+        if cpu_offload:
+            layer.to("cpu")
+            # Release Adam's GPU states before moving on to the next block.
+            optimizer = None
+            scheduler = None
+            scheduler_main = None
+            if "scheduler_warmup" in locals():
+                scheduler_warmup = None
+            fp_inps, fp_outs = fp_outs.cpu(), fp_inps.cpu()
+            gc.collect()
+            empty_cache(calibration_device)
         del layer
-        empty_cache(dev)
+        if not cpu_offload:
+            empty_cache(dev)
 
     del inps, fp_inps, fp_outs
     gc.collect()

@@ -96,6 +96,16 @@ def _sequential_groups_for_layer(layer):
             ["self_attn.k_proj.linear", "self_attn.v_proj.linear", "self_attn.q_proj.linear"],
             ["self_attn.o_proj.linear"],
         ]
+        if layer.mlp.experts and hasattr(layer.mlp.experts[0], "w1"):
+            for expert_index in range(len(layer.mlp.experts)):
+                groups.append(
+                    [
+                        f"mlp.experts.{expert_index}.w1.linear",
+                        f"mlp.experts.{expert_index}.w3.linear",
+                    ]
+                )
+                groups.append([f"mlp.experts.{expert_index}.w2.linear"])
+            return groups
         for expert_index in range(len(layer.mlp.experts)):
             groups.append(
                 [
@@ -152,6 +162,16 @@ def _quantizable_names_for_layer(layer):
             "self_attn.v_proj.linear",
             "self_attn.o_proj.linear",
         }
+        if layer.mlp.experts and hasattr(layer.mlp.experts[0], "w1"):
+            for expert_index in range(len(layer.mlp.experts)):
+                names.update(
+                    {
+                        f"mlp.experts.{expert_index}.w1.linear",
+                        f"mlp.experts.{expert_index}.w2.linear",
+                        f"mlp.experts.{expert_index}.w3.linear",
+                    }
+                )
+            return names
         for expert_index in range(len(layer.mlp.experts)):
             names.update(
                 {

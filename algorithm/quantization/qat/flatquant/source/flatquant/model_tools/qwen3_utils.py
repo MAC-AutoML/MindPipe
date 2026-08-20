@@ -540,6 +540,7 @@ class FlatQuantQwen3MoeMLP(nn.Module):
             down_trans.to_eval_mode()
         self.gate_proj.reparameterize(qa_trans=input_trans)
         self.up_proj.reparameterize(qa_trans=input_trans)
+        self.down_proj.reparameterize(qa_trans=down_trans)
         if down_trans is not None and down_trans.add_diag and fuse_diag:
             up_weight = self.up_proj.linear.weight
             original_dtype = up_weight.dtype
@@ -547,7 +548,6 @@ class FlatQuantQwen3MoeMLP(nn.Module):
             scaled.mul_(down_trans.diag_scale.to(device=scaled.device, dtype=torch.float64))
             self.up_proj.linear.weight.data = scaled.T.to(original_dtype)
             down_trans.use_diag = False
-        self.down_proj.reparameterize(qa_trans=down_trans)
 
     def init_diag_scale(self, alpha=0.5):
         del alpha
@@ -568,6 +568,16 @@ class FlatQuantQwen3MoePackedExperts(nn.Module):
         self.down_proj = module.down_proj
         self.weight_quantizer = WeightQuantizer()
         self.weight_quantizer.configure(args.w_bits, perchannel=True, sym=not args.w_asym, mse=False)
+        self.lwc = args.lwc
+        if self.lwc:
+            init_value = 4.0
+            gate_up_rows = self.gate_up_proj.shape[0] * self.gate_up_proj.shape[1]
+            down_rows = self.down_proj.shape[0] * self.down_proj.shape[1]
+            self.clip_factor_w_gate_up_max = nn.Parameter(torch.full((gate_up_rows, 1), init_value))
+            self.clip_factor_w_gate_up_min = nn.Parameter(torch.full((gate_up_rows, 1), init_value))
+            self.clip_factor_w_down_max = nn.Parameter(torch.full((down_rows, 1), init_value))
+            self.clip_factor_w_down_min = nn.Parameter(torch.full((down_rows, 1), init_value))
+            self._lwc_sigmoid = nn.Sigmoid()
         self.act_quantizer = ActivationQuantizer(
             bits=args.a_bits,
             sym=not args.a_asym,
@@ -584,13 +594,48 @@ class FlatQuantQwen3MoePackedExperts(nn.Module):
         else:
             self._down_trans = None
 
-    def _quantize_weight(self, weight: torch.Tensor) -> torch.Tensor:
+    def _apply_wclip(
+        self,
+        flat_weight: torch.Tensor,
+        clip_factor_max: torch.Tensor,
+        clip_factor_min: torch.Tensor,
+    ) -> torch.Tensor:
+        wmin = flat_weight.amin(dim=1, keepdim=True)
+        wmax = flat_weight.amax(dim=1, keepdim=True)
+        clip_max = self._lwc_sigmoid(clip_factor_max).to(flat_weight)
+        clip_min = self._lwc_sigmoid(clip_factor_min).to(flat_weight)
+        return torch.clamp(flat_weight, min=wmin * clip_min, max=wmax * clip_max)
+
+    def _quantize_weight(
+        self,
+        weight: torch.Tensor,
+        clip_factor_max: torch.Tensor | None = None,
+        clip_factor_min: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if self.args.w_bits >= 16:
             return weight
         original_shape = weight.shape
         flat_weight = weight.reshape(-1, original_shape[-1])
+        if self.lwc:
+            if clip_factor_max is None or clip_factor_min is None:
+                raise ValueError("Packed expert LWC requires the matching clipping parameters.")
+            flat_weight = self._apply_wclip(flat_weight, clip_factor_max, clip_factor_min)
         self.weight_quantizer.find_params(flat_weight)
         return self.weight_quantizer.quantize(flat_weight).reshape(original_shape).to(weight.dtype)
+
+    def _quantize_gate_up_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        return self._quantize_weight(
+            weight,
+            getattr(self, "clip_factor_w_gate_up_max", None),
+            getattr(self, "clip_factor_w_gate_up_min", None),
+        )
+
+    def _quantize_down_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        return self._quantize_weight(
+            weight,
+            getattr(self, "clip_factor_w_down_max", None),
+            getattr(self, "clip_factor_w_down_min", None),
+        )
 
     def _weights(self, input_trans=None):
         if self._ori_mode or self._eval_mode:
@@ -601,7 +646,7 @@ class FlatQuantQwen3MoePackedExperts(nn.Module):
             gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
         if self._down_trans is not None:
             down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
-        return self._quantize_weight(gate_up_weight), self._quantize_weight(down_weight)
+        return self._quantize_gate_up_weight(gate_up_weight), self._quantize_down_weight(down_weight)
 
     def _fuse_down_diag_into_gate_up(self, gate_up_weight: torch.Tensor) -> torch.Tensor:
         if self._down_trans is None or not self._down_trans.add_diag:
@@ -681,16 +726,17 @@ class FlatQuantQwen3MoePackedExperts(nn.Module):
         gate_up_weight = self.gate_up_proj.data
         if input_trans is not None:
             gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
-        if self._down_trans is not None:
-            self._down_trans.to_eval_mode()
-            gate_up_weight = self._fuse_down_diag_into_gate_up(gate_up_weight)
-        self.gate_up_proj.data = self._quantize_weight(gate_up_weight)
-        del gate_up_weight
-
         down_weight = self.down_proj.data
         if self._down_trans is not None:
+            self._down_trans.to_eval_mode()
+            # Keep the diagonal active until the down projection has absorbed
+            # its inverse. Disabling it earlier changes the expert function.
             down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
-        self.down_proj.data = self._quantize_weight(down_weight)
+            gate_up_weight = self._fuse_down_diag_into_gate_up(gate_up_weight)
+        self.gate_up_proj.data = self._quantize_gate_up_weight(gate_up_weight)
+        del gate_up_weight
+
+        self.down_proj.data = self._quantize_down_weight(down_weight)
         self._eval_mode = True
 
     def init_diag_scale(self, alpha=0.5):

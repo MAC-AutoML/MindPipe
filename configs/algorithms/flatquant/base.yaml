@@ -17,4 +17,5 @@ defaults:
   flatquant_lac: true
   flatquant_direct_inv: true
   flatquant_deactive_amp: true
+  flatquant_cpu_offload: false
 # Replace legacy quantization shell scripts with a config-based GPU/NPU runner covering AWQ, GPTQ, FlatQuant, SplitQuant, SmoothQuant, and OmniQuant.
