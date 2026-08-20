@@ -33,6 +33,7 @@ from algorithm.common.qwen3_5_moe_unfuse import unfuse_qwen3_moe_experts
 from algorithm.pruning.registry import get_method as get_pruning_method
 from algorithm.quantization.config import normalize_args as normalize_quantization_args
 from algorithm.quantization.exporters.modelslim import export_modelslim_ascend_quant
+from algorithm.quantization.exporters.vllm import export_vllm_gptq_w4a16
 from algorithm.quantization.registry import get_method as get_quantization_method
 from evaluation.runner import run_evaluations
 from workflow.builder import validate_workflow_config
@@ -129,6 +130,11 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
 
     next_model = stage_result.pop("_updated_model", model)
     next_tokenizer_bundle = stage_result.pop("_updated_tokenizer_bundle", tokenizer_bundle)
+    internal_artifacts = {
+        key: stage_result.pop(key)
+        for key in list(stage_result)
+        if key.startswith("_")
+    }
     return {
         "stage_type": stage.stage_type,
         "algorithm_name": stage.algorithm_name,
@@ -140,6 +146,7 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
         "output_dir": str(stage_output_dir),
         "elapsed_seconds": time.perf_counter() - stage_start,
         "artifacts": stage_result,
+        "internal_artifacts": internal_artifacts,
     }, next_model, next_tokenizer_bundle
 
 
@@ -255,9 +262,75 @@ def _run_modelslim_export_only(
     )
 
 
+def _export_vllm_real_quant_model(
+    *,
+    model,
+    tokenizer_bundle,
+    common_args: dict[str, Any],
+    stage_records: list[dict[str, Any]],
+    final_output_dir: Path,
+) -> dict[str, Any] | None:
+    if not common_args.get("export_real_quant", False):
+        return None
+    backend = common_args.get("export_backend", "modelslim")
+    if backend != "vllm":
+        return None
+
+    quant_stage = next(
+        (
+            record
+            for record in reversed(stage_records)
+            if record["stage_type"] == "quantization"
+            and record["algorithm_name"] == "gptq"
+        ),
+        None,
+    )
+    if quant_stage is None:
+        raise ValueError("vLLM real-quant export requires a GPTQ quantization stage.")
+
+    real_quant_artifacts = quant_stage.get("internal_artifacts", {}).get(
+        "_real_quant_artifacts"
+    )
+    if not real_quant_artifacts:
+        raise ValueError(
+            "GPTQ did not produce real-quant artifacts. Ensure --export_real_quant true "
+            "and --export_backend vllm are passed with the GPTQ stage."
+        )
+
+    group_sizes = {int(artifact.group_size) for artifact in real_quant_artifacts.values()}
+    if len(group_sizes) != 1:
+        raise ValueError(
+            "vLLM real-quant export requires one shared group size, got "
+            f"{sorted(group_sizes)}."
+        )
+
+    export_dir = common_args.get("export_quantized_model_dir")
+    if export_dir is None:
+        export_dir = final_output_dir / "real_quant_vllm_model"
+
+    return export_vllm_gptq_w4a16(
+        model=model,
+        tokenizer_bundle=tokenizer_bundle,
+        artifacts=real_quant_artifacts,
+        export_dir=export_dir,
+        group_size=group_sizes.pop(),
+    )
+
+
+def _persistable_stage_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in record.items()
+        if key != "internal_artifacts"
+    }
+
+
 def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     common_args = copy.deepcopy(config.common_args)
-    if common_args.get("export_real_quant", False):
+    if (
+        common_args.get("export_real_quant", False)
+        and common_args.get("export_backend", "modelslim") == "modelslim"
+    ):
         return _run_modelslim_export_only(config, common_args)
 
     validate_workflow_config(config)
@@ -347,7 +420,9 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
     elif config.flatten_single_stage and len(stage_records) == 1:
         artifacts = stage_records[0]["artifacts"]
     else:
-        artifacts = {"stages": stage_records}
+        artifacts = {
+            "stages": [_persistable_stage_record(record) for record in stage_records]
+        }
 
     metrics_path = final_output_dir / "metrics.json"
     artifacts_path = final_output_dir / "artifacts.json"
@@ -386,6 +461,17 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         model.save_pretrained(model_dir)
         tokenizer_bundle.save_pretrained(str(model_dir))
         artifacts["saved_model_dir"] = str(model_dir)
+        write_json(artifacts_path, artifacts)
+
+    real_quant_export = _export_vllm_real_quant_model(
+        model=model,
+        tokenizer_bundle=tokenizer_bundle,
+        common_args=common_args,
+        stage_records=stage_records,
+        final_output_dir=final_output_dir,
+    )
+    if real_quant_export is not None:
+        artifacts["real_quant_export"] = real_quant_export
         write_json(artifacts_path, artifacts)
 
     metrics_path = write_json(metrics_path, metrics)

@@ -9,6 +9,14 @@ def quantize(x, scale, zero, maxq):
     q = torch.clamp(torch.round(x / scale) + zero, 0, maxq)
     return scale * (q - zero)
 
+
+def quantize_with_qint(x, scale, zero, maxq):
+    if maxq < 0:
+        raise NotImplementedError("Real quant export does not support ternary quantization.")
+    q = torch.clamp(torch.round(x / scale) + zero, 0, maxq)
+    return scale * (q - zero), q.to(torch.int16)
+
+
 class Quantizer(nn.Module):
 
     def __init__(self, shape=1):
