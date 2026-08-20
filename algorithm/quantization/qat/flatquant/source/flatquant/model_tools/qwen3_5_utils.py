@@ -903,15 +903,16 @@ class FlatQuantQwen3_5MoePackedExperts(nn.Module):
         gate_up_weight = self.gate_up_proj.data
         if input_trans is not None:
             gate_up_weight = _apply_trans_to_packed_weight(gate_up_weight, input_trans)
+        down_weight = self.down_proj.data
         if self._down_trans is not None:
             self._down_trans.to_eval_mode()
+            # The down projection must absorb the inverse diagonal before the
+            # matching positive diagonal is fused into the up projection.
+            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
             gate_up_weight = self._fuse_down_diag_into_gate_up(gate_up_weight)
         self.gate_up_proj.data = self._quantize_weight(gate_up_weight)
         del gate_up_weight
 
-        down_weight = self.down_proj.data
-        if self._down_trans is not None:
-            down_weight = _apply_trans_to_packed_weight(down_weight, self._down_trans)
         self.down_proj.data = self._quantize_weight(down_weight)
         self._eval_mode = True
 

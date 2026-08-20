@@ -132,6 +132,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
             w_bits=args.weight_bits,
             w_groupsize=args.weight_group_size if args.weight_method == "gptq" else -1,
             warmup=args.flatquant_warmup,
+            cpu_offload=args.flatquant_cpu_offload,
         )
 
     def apply_fake_quantization(self, model, tokenizer_bundle, args) -> dict[str, object]:
@@ -180,6 +181,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
                     "cali_trans": False,
                     "add_diag": False,
                     "direct_inv": source_args.direct_inv,
+                    "cpu_offload": source_args.cpu_offload,
                     "weight_quantizer": "none",
                 },
                 "quantized_linear_count": 0,
@@ -239,6 +241,10 @@ class FlatQuantMethod(BaseQuantizationMethod):
                 from flatquant.model_tools.qwen3_utils import apply_flatquant_to_qwen3_moe
 
                 apply_wrapper = apply_flatquant_to_qwen3_moe
+            elif model_type == "mixtral":
+                from flatquant.model_tools.mixtral_utils import apply_flatquant_to_mixtral
+
+                apply_wrapper = apply_flatquant_to_mixtral
             elif model_type == "qwen3_5":
                 from flatquant.model_tools.qwen3_5_utils import apply_flatquant_to_qwen3_5
 
@@ -299,7 +305,7 @@ class FlatQuantMethod(BaseQuantizationMethod):
 
         artifacts = {
             "source_root": str(source_root),
-            "flatquant_config": {
+                "flatquant_config": {
                 "weight_bits": source_args.w_bits,
                 "activation_bits": source_args.a_bits,
                 "query_bits": source_args.q_bits,
@@ -313,7 +319,8 @@ class FlatQuantMethod(BaseQuantizationMethod):
                 "lac": source_args.lac,
                 "cali_trans": source_args.cali_trans,
                 "add_diag": source_args.add_diag,
-                "direct_inv": source_args.direct_inv,
+                    "direct_inv": source_args.direct_inv,
+                    "cpu_offload": source_args.cpu_offload,
                 "weight_quantizer": weight_quantizer_name,
             },
             "quantized_linear_count": len(quantizer_artifacts),
