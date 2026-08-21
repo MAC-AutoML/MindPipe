@@ -21,3 +21,5 @@
 *.so binary
 *.pth binary
 # Refactor v2.
+
+acceleration/runtime_patches/*.patch -text -whitespace
