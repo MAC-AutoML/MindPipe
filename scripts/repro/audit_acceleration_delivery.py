@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_MAX_BYTES = 1024 * 1024
+DEFAULT_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+DEFAULT_MAX_FILE_BYTES = 1024 * 1024
 LOCAL_HOME = b"/home/" + b"ma-user"
 FORBIDDEN_DIRS = {
     "checkpoints",
@@ -265,8 +266,12 @@ def parse_args() -> argparse.Namespace:
         default=Path(__file__).resolve().parents[2],
     )
     parser.add_argument("--base-ref", default="origin/main")
-    parser.add_argument("--max-total-bytes", type=int, default=DEFAULT_MAX_BYTES)
-    parser.add_argument("--max-file-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    parser.add_argument(
+        "--max-total-bytes", type=int, default=DEFAULT_MAX_TOTAL_BYTES
+    )
+    parser.add_argument(
+        "--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES
+    )
     return parser.parse_args()
 
 

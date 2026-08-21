@@ -1,0 +1,1736 @@
+diff --git a/vllm/model_executor/models/mindpipe_qwen2_loop_out.py b/vllm/model_executor/models/mindpipe_qwen2_loop_out.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..aaa6f93caa1b35d39853fbad80ffbc2ee1c23cc8
+--- /dev/null
++++ b/vllm/model_executor/models/mindpipe_qwen2_loop_out.py
+@@ -0,0 +1,300 @@
++"""Opt-in Qwen2 W8A8 grouped SwiGLU hybrid output bridge."""
++
++from __future__ import annotations
++
++import json
++import os
++import threading
++import time
++from pathlib import Path
++from typing import List, Tuple
++
++import torch
++
++from vllm.utils import direct_register_custom_op
++
++_OP_NAME = "mindpipe_qwen2_grouped_swiglu_loop_out"
++_EXTENSION_NAME = "mindpipe_aclnn_grouped_swiglu_out_v2"
++_LOAD_LOCK = threading.Lock()
++_TRACE_LOCK = threading.Lock()
++_BRIDGE = None
++_TORCH_NPU = None
++_OP = None
++_TRACE_COUNT = 0
++
++
++def _trace_limit() -> int:
++    try:
++        return max(
++            0,
++            int(
++                os.getenv(
++                    "MINDPIPE_QWEN2_MLP_CHUNKED_LOOP_OUT_TRACE_LIMIT",
++                    "200",
++                )),
++        )
++    except ValueError:
++        return 200
++
++
++def _record_hit(
++    x: torch.Tensor,
++    weights: List[torch.Tensor],
++    batched_weight: torch.Tensor,
++    weight_scales: List[torch.Tensor],
++    batched_weight_scale: torch.Tensor,
++    outputs: Tuple[torch.Tensor, torch.Tensor],
++    route: str,
++    min_tokens: int,
++    layer_idx: int,
++) -> None:
++    path_value = os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_LOOP_OUT_TRACE_PATH",
++                           "").strip()
++    if not path_value:
++        return
++    limit = _trace_limit()
++    if limit == 0:
++        return
++    global _TRACE_COUNT
++    with _TRACE_LOCK:
++        if _TRACE_COUNT >= limit:
++            return
++        _TRACE_COUNT += 1
++        row = {
++            "kind":
++            "qwen2_mlp_chunked_loop_out_hit",
++            "pid":
++            os.getpid(),
++            "hit_index":
++            _TRACE_COUNT,
++            "time":
++            time.time(),
++            "layer_idx":
++            int(layer_idx),
++            "tokens":
++            int(x.shape[0]),
++            "route":
++            route,
++            "min_tokens":
++            int(min_tokens),
++            "chunks":
++            len(weights),
++            "x_shape":
++            list(x.shape),
++            "x_dtype":
++            str(x.dtype),
++            "weight_shapes": [list(weight.shape) for weight in weights],
++            "weight_storage_offsets":
++            [int(weight.storage_offset()) for weight in weights],
++            "batched_weight_shape":
++            list(batched_weight.shape),
++            "batched_weight_storage_offset":
++            int(batched_weight.storage_offset()),
++            "weight_scale_shapes":
++            [list(scale.shape) for scale in weight_scales],
++            "batched_weight_scale_shape":
++            list(batched_weight_scale.shape),
++            "output_shapes": [list(output.shape) for output in outputs],
++            "output_dtypes": [str(output.dtype) for output in outputs],
++            "task_queue_enable":
++            os.getenv("TASK_QUEUE_ENABLE", "1"),
++        }
++        path = Path(path_value)
++        path.parent.mkdir(parents=True, exist_ok=True)
++        with path.open("a", encoding="utf-8") as handle:
++            handle.write(json.dumps(row, sort_keys=True) + "\n")
++
++
++def _op_impl(
++    x: torch.Tensor,
++    weights: List[torch.Tensor],
++    batched_weight: torch.Tensor,
++    group_list: torch.Tensor,
++    weight_scales: List[torch.Tensor],
++    batched_weight_scale: torch.Tensor,
++    x_scale: torch.Tensor,
++    min_tokens: int,
++    layer_idx: int,
++) -> Tuple[torch.Tensor, torch.Tensor]:
++    if _BRIDGE is None or _TORCH_NPU is None:
++        raise RuntimeError("Qwen2 loop-out bridge was not loaded")
++    token_count = int(x.shape[0])
++    chunks = len(weights)
++    if token_count >= min_tokens:
++        route = "direct"
++        outputs = _BRIDGE.forward(x, weights, group_list, weight_scales,
++                                  x_scale)
++    else:
++        route = "batched_repeat"
++        repeated_x = x.repeat((chunks, 1))
++        repeated_scale = x_scale.repeat(chunks)
++        batched_group_list = (
++            torch.arange(
++                1,
++                chunks + 1,
++                device=x.device,
++                dtype=torch.int64,
++            ) * token_count)
++        quant_output, scale_output, _ = (
++            _TORCH_NPU.npu_grouped_matmul_swiglu_quant(
++                x=repeated_x,
++                weight=batched_weight,
++                group_list=batched_group_list,
++                weight_scale=batched_weight_scale,
++                x_scale=repeated_scale,
++            ))
++        output_width = batched_weight_scale.shape[-1] // 2
++        outputs = (
++            quant_output.reshape(chunks, token_count, output_width),
++            scale_output.reshape(chunks, token_count),
++        )
++    _record_hit(
++        x,
++        weights,
++        batched_weight,
++        weight_scales,
++        batched_weight_scale,
++        outputs,
++        route,
++        min_tokens,
++        layer_idx,
++    )
++    return outputs
++
++
++def _op_fake(
++    x: torch.Tensor,
++    weights: List[torch.Tensor],
++    batched_weight: torch.Tensor,
++    group_list: torch.Tensor,
++    weight_scales: List[torch.Tensor],
++    batched_weight_scale: torch.Tensor,
++    x_scale: torch.Tensor,
++    min_tokens: int,
++    layer_idx: int,
++) -> Tuple[torch.Tensor, torch.Tensor]:
++    del group_list, x_scale, min_tokens, layer_idx
++    if not weights or len(weights) != len(weight_scales):
++        raise RuntimeError("loop-out requires equal non-empty weight lists")
++    chunks = len(weights)
++    if batched_weight.shape[0] != chunks:
++        raise RuntimeError("loop-out batched weight has an invalid chunk count")
++    if batched_weight_scale.shape[0] != chunks:
++        raise RuntimeError(
++            "loop-out batched weight scale has an invalid chunk count")
++    gate_up_width = batched_weight_scale.shape[-1]
++    if batched_weight.shape[-1] != gate_up_width:
++        raise RuntimeError("loop-out batched weight and scale widths differ")
++    for weight, scale in zip(weights, weight_scales):
++        if weight.shape[-1] != gate_up_width:
++            raise RuntimeError("loop-out weight view widths differ")
++        if scale.shape[-1] != gate_up_width:
++            raise RuntimeError("loop-out weight scale view widths differ")
++    output_width = gate_up_width // 2
++    quant_output = torch.empty(
++        (chunks, x.shape[0], output_width),
++        dtype=torch.int8,
++        device=x.device,
++    )
++    scale_output = torch.empty((chunks, x.shape[0]),
++                               dtype=torch.float32,
++                               device=x.device)
++    return quant_output, scale_output
++
++
++def _check_runtime_contract() -> None:
++    if os.getenv("TASK_QUEUE_ENABLE", "1") == "2":
++        raise RuntimeError("Qwen2 loop-out requires TASK_QUEUE_ENABLE=0 or 1; "
++                           "NPU graph capture does not support 2")
++    try:
++        from vllm_ascend.ascend_config import get_ascend_config
++    except ImportError:
++        return
++    try:
++        torchair_config = get_ascend_config().torchair_graph_config
++    except RuntimeError as exc:
++        if "Ascend config is not initialized" in str(exc):
++            return
++        raise
++    if bool(getattr(torchair_config, "enabled", False)):
++        raise RuntimeError(
++            "Qwen2 loop-out is registered as a torch.ops.vllm custom op and "
++            "has not passed a TorchAir GE converter gate")
++
++
++def _load_bridge():
++    import torch_npu
++    from torch.utils.cpp_extension import load
++
++    source_value = os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_LOOP_OUT_SOURCE",
++                             "").strip()
++    if not source_value:
++        raise RuntimeError(
++            "MINDPIPE_QWEN2_MLP_CHUNKED_LOOP_OUT_SOURCE must name the "
++            "audited bridge source")
++    source = Path(source_value).expanduser().resolve()
++    if not source.is_file():
++        raise RuntimeError(f"Qwen2 loop-out bridge source not found: {source}")
++
++    ascend = Path(
++        os.getenv(
++            "ASCEND_HOME_PATH",
++            "/usr/local/Ascend/ascend-toolkit/latest",
++        ))
++    torch_npu_root = Path(torch_npu.__file__).resolve().parent
++    toolchain_value = os.getenv("MINDPIPE_ACLNN_GCC_TOOLCHAIN", "").strip()
++    if not toolchain_value:
++        raise RuntimeError(
++            "MINDPIPE_ACLNN_GCC_TOOLCHAIN must name the GCC 11 "
++            "cross-toolchain bin directory")
++    toolchain = Path(toolchain_value)
++    cc = toolchain / "aarch64-conda-linux-gnu-gcc"
++    cxx = toolchain / "aarch64-conda-linux-gnu-g++"
++    if not cc.is_file() or not cxx.is_file():
++        raise RuntimeError(f"GCC 11 toolchain not found under {toolchain}")
++    os.environ["CC"] = str(cc)
++    os.environ["CXX"] = str(cxx)
++
++    opapi_lib = (ascend /
++                 "opp/built-in/op_impl/ai_core/tbe/op_api/lib/linux/aarch64")
++    return load(
++        name=_EXTENSION_NAME,
++        sources=[str(source)],
++        extra_include_paths=[
++            str(torch_npu_root / "include"),
++            str(ascend / "aarch64-linux/include"),
++            str(ascend / "opp/built-in/op_impl/ai_core/tbe/op_api/include"),
++        ],
++        extra_cflags=["-O3"],
++        extra_ldflags=[
++            f"-L{opapi_lib}",
++            f"-Wl,-rpath,{opapi_lib}",
++            "-lopapi",
++            f"-L{ascend / 'lib64'}",
++            f"-Wl,-rpath,{ascend / 'lib64'}",
++            "-lnnopbase",
++            f"-L{torch_npu_root / 'lib'}",
++            f"-Wl,-rpath,{torch_npu_root / 'lib'}",
++            "-ltorch_npu",
++        ],
++        verbose=(os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_LOOP_OUT_BUILD_VERBOSE")
++                 == "1"),
++    )
++
++
++def load_and_register():
++    global _BRIDGE, _OP, _TORCH_NPU
++    with _LOAD_LOCK:
++        if _OP is not None:
++            return _OP
++        _check_runtime_contract()
++        _BRIDGE = _load_bridge()
++        import torch_npu
++        _TORCH_NPU = torch_npu
++        direct_register_custom_op(
++            op_name=_OP_NAME,
++            op_func=_op_impl,
++            fake_impl=_op_fake,
++            dispatch_key="PrivateUse1",
++        )
++        _OP = getattr(torch.ops.vllm, _OP_NAME).default
+diff --git a/vllm/model_executor/models/qwen2.py b/vllm/model_executor/models/qwen2.py
+index c536b0f60c30d341097034f9851bec1cf01b8da2..c9ddeb44616b3607543b6c7f1f4e1ebf9c5073e7 100644
+--- a/vllm/model_executor/models/qwen2.py
++++ b/vllm/model_executor/models/qwen2.py
+@@ -24,9 +24,11 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ """Inference-only Qwen2 model compatible with HuggingFace weights."""
++import os
+ from collections.abc import Iterable
++from contextlib import nullcontext
+ from itertools import islice
+-from typing import Any, Optional, Union
++from typing import Any, Callable, Optional, Tuple, Union
+ 
+ import torch
+ from torch import nn
+@@ -35,8 +37,12 @@ from transformers import Qwen2Config
+ from vllm.attention import Attention, AttentionType
+ from vllm.attention.layers.encoder_only_attention import EncoderOnlyAttention
+ from vllm.compilation.decorators import support_torch_compile
+-from vllm.config import CacheConfig, VllmConfig
+-from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
++from vllm.config import (CUDAGraphMode, CacheConfig, VllmConfig,
++                         get_current_vllm_config)
++from vllm.distributed import (get_pp_group,
++                              get_tp_group,
++                              get_tensor_model_parallel_world_size,
++                              tensor_model_parallel_all_reduce)
+ from vllm.model_executor.layers.activation import SiluAndMul
+ from vllm.model_executor.layers.layernorm import RMSNorm
+ from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
+@@ -58,6 +64,329 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
+                     make_empty_intermediate_tensors_factory, make_layers,
+                     maybe_prefix)
+ 
++try:
++    from vllm_ascend import stage_timing as _mindpipe_stage_timing
++except Exception:
++    _mindpipe_stage_timing = None
++
++try:
++    import torch_npu as _mindpipe_torch_npu
++except Exception:
++    _mindpipe_torch_npu = None
++
++_MINDPIPE_W8A8_DYNAMIC_LINEAR_METHODS = {
++    "AscendW8A8DynamicLinearMethod",
++    "TorchairAscendW8A8DynamicLinearMethod",
++}
++_MINDPIPE_DISABLE_QWEN2_MLP_CHUNKED_ACLGRAPH = (
++    os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_DISABLE_ACLGRAPH") == "1")
++_MINDPIPE_QWEN2_LOOP_OUT_OP = None
++
++
++def _mindpipe_enable_qwen2_mlp_fused_w8a8() -> bool:
++    return os.getenv("MINDPIPE_QWEN2_MLP_FUSED_W8A8") == "1"
++
++
++def _mindpipe_enable_qwen2_mlp_chunked_w8a8() -> bool:
++    return os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_W8A8") == "1"
++
++
++def _mindpipe_qwen2_mlp_chunked_w8a8_mode() -> str:
++    mode = os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_MODE",
++                     "replace").strip().lower()
++    if mode in ("all", "replace", "1", "true"):
++        return "replace"
++    if mode in ("prefill", "prefill_only", "prefill-only"):
++        return "prefill"
++    return "replace"
++
++
++def _mindpipe_qwen2_mlp_chunked_w8a8_prefill_min_tokens() -> int:
++    value = os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_PREFILL_MIN_TOKENS",
++                      "256")
++    try:
++        return max(1, int(value))
++    except ValueError:
++        return 256
++
++
++def _mindpipe_qwen2_mlp_chunked_w8a8_unroll4() -> bool:
++    return os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_UNROLL4") == "1"
++
++
++def _mindpipe_qwen2_mlp_chunked_w8a8_batched() -> bool:
++    return os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_BATCHED") == "1"
++
++
++def _mindpipe_enable_qwen2_mlp_chunked_loop_out() -> bool:
++    return os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_LOOP_OUT") == "1"
++
++
++def _mindpipe_qwen2_mlp_chunked_loop_out_min_tokens() -> int:
++    value = os.getenv(
++        "MINDPIPE_QWEN2_MLP_CHUNKED_LOOP_OUT_MIN_TOKENS", "32768")
++    try:
++        return max(1, int(value))
++    except ValueError:
++        return 32768
++
++
++def _mindpipe_prepare_qwen2_mlp_chunked_loop_out():
++    global _MINDPIPE_QWEN2_LOOP_OUT_OP
++    if _MINDPIPE_QWEN2_LOOP_OUT_OP is None:
++        from .mindpipe_qwen2_loop_out import load_and_register
++        _MINDPIPE_QWEN2_LOOP_OUT_OP = load_and_register()
++    return _MINDPIPE_QWEN2_LOOP_OUT_OP
++
++
++def _mindpipe_qwen2_mlp_chunked_replication() -> str:
++    mode = os.getenv(
++        "MINDPIPE_QWEN2_MLP_CHUNKED_REPLICATION", "repeat"
++    ).strip().lower()
++    if mode not in ("repeat", "cat"):
++        raise ValueError(
++            "MINDPIPE_QWEN2_MLP_CHUNKED_REPLICATION must be repeat or cat, "
++            f"got {mode!r}"
++        )
++    return mode
++
++
++def _mindpipe_disable_qwen2_mlp_chunked_aclgraph() -> bool:
++    return _MINDPIPE_DISABLE_QWEN2_MLP_CHUNKED_ACLGRAPH
++
++
++def _mindpipe_qwen2_aclgraph_enabled() -> bool:
++    """Return whether the current engine has ACL/CUDA graph capture enabled.
++
++    This is evaluated while the model is constructed, outside TorchDynamo.
++    Checking it on every MLP forward would make the graph-capture guard itself
++    part of the compiled graph and can leave the prefill path chunked while
++    decode is replayed from a graph using the default MLP.
++    """
++    try:
++        compilation_config = get_current_vllm_config().compilation_config
++        mode = getattr(compilation_config, "cudagraph_mode", None)
++        return mode not in (None, CUDAGraphMode.NONE)
++    except Exception:
++        # Standalone/unit-test construction has no active vLLM config.
++        return False
++
++
++def _mindpipe_qwen2_mlp_fused_w8a8_mode() -> str:
++    return os.getenv("MINDPIPE_QWEN2_MLP_FUSED_W8A8_MODE",
++                     "all").strip().lower()
++
++
++def _mindpipe_qwen2_mlp_fused_w8a8_decode_max_tokens() -> int:
++    value = os.getenv("MINDPIPE_QWEN2_MLP_FUSED_W8A8_DECODE_MAX_TOKENS",
++                      "256")
++    try:
++        return max(1, int(value))
++    except ValueError:
++        return 256
++
++
++def _mindpipe_enable_qwen2_mlp_fused_allreduce_w8a8() -> bool:
++    return os.getenv("MINDPIPE_QWEN2_MLP_FUSED_ALLREDUCE_W8A8") == "1"
++
++
++def _mindpipe_enable_qwen2_attn_fused_allreduce_w8a8() -> bool:
++    return os.getenv("MINDPIPE_QWEN2_ATTN_FUSED_ALLREDUCE_W8A8") == "1"
++
++
++def _mindpipe_enable_qwen2_attn_comm_quant() -> bool:
++    """Opt in to INT8 communication quantization for attention o_proj."""
++    return os.getenv("MINDPIPE_QWEN2_ATTN_COMM_QUANT") == "1"
++
++
++def _mindpipe_comm_quant_headroom(name: str, default: float) -> float:
++    try:
++        return max(1.0, float(os.getenv(name, str(default))))
++    except ValueError:
++        return default
++
++
++def _mindpipe_allow_qwen2_fused_allreduce_aclgraph() -> bool:
++    """Opt in to fused all-reduce during ACL Graph capture and replay.
++
++    The default remains eager-only because HCCL-backed fused operators have
++    not passed a model-level graph correctness gate on this branch yet.
++    """
++    return os.getenv("MINDPIPE_QWEN2_FUSED_ALLREDUCE_ACLGRAPH") == "1"
++
++
++_MINDPIPE_QWEN2_TP_HCOM_INFO = None
++
++
++def _mindpipe_qwen2_tp_hcom_info() -> str:
++    """Return the TP HCCL handle used by CANN matmul+all-reduce fusion."""
++    global _MINDPIPE_QWEN2_TP_HCOM_INFO
++    if _MINDPIPE_QWEN2_TP_HCOM_INFO is not None:
++        return _MINDPIPE_QWEN2_TP_HCOM_INFO
++    group = get_tp_group().device_group
++    rank = torch.distributed.get_rank(group)
++    global_rank = torch.distributed.get_global_rank(group, rank)
++    backend = group._get_backend(torch.device("npu"))
++    _MINDPIPE_QWEN2_TP_HCOM_INFO = backend.get_hccl_comm_name(global_rank)
++    return _MINDPIPE_QWEN2_TP_HCOM_INFO
++
++
++def _mindpipe_calibrate_comm_quant_scales(
++        layer: nn.Module, quantized_x: torch.Tensor,
++        pertoken_scale: torch.Tensor, output_dtype: torch.dtype
++    ) -> tuple[torch.Tensor, torch.Tensor]:
++    """Calibrate shared MC2 communication scales once per o_proj layer.
++
++    Calibration follows the A2 kernel contract: scale 1 quantizes each local
++    matmul result, then scale 2 covers the reduced INT8 partial sum.  The
++    result is cached on the layer, so the measured request path only reuses
++    the two static tensors.
++    """
++    cached = (getattr(layer, "_mindpipe_comm_quant_scale_1", None),
++              getattr(layer, "_mindpipe_comm_quant_scale_2", None))
++    if cached[0] is not None and cached[1] is not None:
++        return cached
++    if pertoken_scale.dim() > 1:
++        pertoken_scale = pertoken_scale.flatten()
++    local_output = _mindpipe_torch_npu.npu_quant_matmul(
++        quantized_x,
++        layer.weight,
++        layer.weight_scale_fp32,
++        pertoken_scale=pertoken_scale,
++        output_dtype=output_dtype,
++    ).float()
++    # The scale tensors must be identical on every TP rank.
++    tp_group = get_tp_group().device_group
++    tp_src = torch.distributed.get_global_rank(tp_group, 0)
++    local_amax = local_output.abs().amax(dim=0)
++    torch.distributed.all_reduce(
++        local_amax, op=torch.distributed.ReduceOp.MAX, group=tp_group)
++    scale1 = (
++        local_amax * _mindpipe_comm_quant_headroom(
++            "MINDPIPE_QWEN2_ATTN_COMM_SCALE1_HEADROOM", 1.02)
++        / 127.0
++    ).clamp_min(torch.finfo(torch.float16).tiny).to(torch.float16)
++    torch.distributed.broadcast(scale1, src=tp_src, group=tp_group)
++    q_local = torch.round(local_output / scale1.float()).clamp(-128, 127)
++    torch.distributed.all_reduce(
++        q_local, op=torch.distributed.ReduceOp.SUM, group=tp_group)
++    qsum_amax = q_local.abs().amax(dim=0)
++    # Quantized partial sums are reduced across TP ranks; derive a shared
++    # scale from the global maximum so every rank uses identical dequantization.
++    torch.distributed.all_reduce(
++        qsum_amax, op=torch.distributed.ReduceOp.MAX, group=tp_group)
++    scale2 = (
++        qsum_amax * scale1.float()
++        * _mindpipe_comm_quant_headroom(
++            "MINDPIPE_QWEN2_ATTN_COMM_SCALE2_HEADROOM", 1.02)
++        / 127.0
++    ).clamp_min(torch.finfo(torch.float16).tiny).to(torch.float16)
++    torch.distributed.broadcast(scale2, src=tp_src, group=tp_group)
++    layer._mindpipe_comm_quant_scale_1 = scale1
++    layer._mindpipe_comm_quant_scale_2 = scale2
++    return scale1, scale2
++
++
++def _mindpipe_is_ascend_w8a8_dynamic_linear(layer: nn.Module) -> bool:
++    quant_method = getattr(layer, "quant_method", None)
++    inner_quant_method = getattr(quant_method, "quant_method", quant_method)
++    return (inner_quant_method is not None
++            and inner_quant_method.__class__.__name__
++            in _MINDPIPE_W8A8_DYNAMIC_LINEAR_METHODS)
++
++
++def _mindpipe_in_profile_run() -> bool:
++    try:
++        from vllm.forward_context import get_forward_context
++        return bool(getattr(get_forward_context(), "in_profile_run", False))
++    except Exception:
++        return False
++
++
++def _mindpipe_in_aclgraph_context() -> bool:
++    try:
++        from vllm.forward_context import get_forward_context
++        forward_context = get_forward_context()
++    except Exception:
++        return False
++    if bool(getattr(forward_context, "capturing", False)):
++        return True
++    runtime_mode = getattr(forward_context, "cudagraph_runtime_mode", None)
++    mode_name = getattr(runtime_mode, "name", "NONE")
++    return mode_name != "NONE"
++
++
++def _mindpipe_record(stage: str, **metadata: Any):
++    if _mindpipe_stage_timing is None:
++        return nullcontext()
++    return _mindpipe_stage_timing.record(stage, **metadata)
++
++
++def _mindpipe_enabled() -> bool:
++    if (_mindpipe_stage_timing is None
++            or not _mindpipe_stage_timing.enabled()):
++        return False
++    try:
++        if torch.compiler.is_compiling():
++            return False
++    except Exception:
++        pass
++    return True
++
++
++def _mindpipe_token_count(
++    input_ids: Optional[torch.Tensor] = None,
++    inputs_embeds: Optional[torch.Tensor] = None,
++    intermediate_tensors: Optional[IntermediateTensors] = None,
++    hidden_states: Optional[torch.Tensor] = None,
++) -> Optional[int]:
++    tensor = hidden_states
++    if tensor is None:
++        tensor = inputs_embeds
++    if tensor is None:
++        tensor = input_ids
++    if tensor is None and intermediate_tensors is not None:
++        try:
++            tensor = intermediate_tensors["hidden_states"]
++        except Exception:
++            tensor = None
++    if tensor is None:
++        return None
++    try:
++        return int(tensor.shape[0])
++    except Exception:
++        return None
++
++
++def _mindpipe_phase(token_count: Optional[int]) -> str:
++    if token_count is None:
++        return "unknown"
++    return "prefill_like" if token_count > 256 else "decode_like"
++
++
++class MindPipeQwen2DynamicSiluAndMul(SiluAndMul):
++
++    def __init__(self, *, weight_scale: Callable[[], torch.Tensor]) -> None:
++        super().__init__()
++        self.weight_scale = weight_scale
++
++    def forward_oot(
++        self,
++        x: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
++    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
++        if isinstance(x, tuple):
++            if _mindpipe_torch_npu is None:
++                raise RuntimeError(
++                    "torch_npu is required for Qwen2 dynamic W8A8 SwiGLU.")
++            quantized_x, dynamic_scale = x
++            return _mindpipe_torch_npu.npu_dequant_swiglu_quant(
++                x=quantized_x,
++                weight_scale=self.weight_scale(),
++                activation_scale=dynamic_scale,
++                activate_left=True,
++                quant_mode=1)
++        return super().forward_oot(x)
++
+ 
+ class Qwen2MLP(nn.Module):
+ 
+@@ -88,10 +417,519 @@ class Qwen2MLP(nn.Module):
+             raise ValueError(f"Unsupported activation: {hidden_act}. "
+                              "Only silu is supported for now.")
+         self.act_fn = SiluAndMul()
++        self._mindpipe_mlp_fused_act_fn: Optional[
++            MindPipeQwen2DynamicSiluAndMul] = None
++        self._mindpipe_mlp_fused_w8a8 = False
++        self._mindpipe_mlp_fused_w8a8_mode = "off"
++        self._mindpipe_mlp_fused_w8a8_decode_max_tokens = 256
++        self._mindpipe_mlp_fused_allreduce_w8a8 = (
++            _mindpipe_enable_qwen2_mlp_fused_allreduce_w8a8())
++        self._mindpipe_mlp_chunked_w8a8_requested = (
++            _mindpipe_enable_qwen2_mlp_chunked_w8a8())
++        self._mindpipe_mlp_chunked_w8a8_mode = (
++            _mindpipe_qwen2_mlp_chunked_w8a8_mode())
++        self._mindpipe_mlp_chunked_w8a8_prefill_min_tokens = (
++            _mindpipe_qwen2_mlp_chunked_w8a8_prefill_min_tokens())
++        self._mindpipe_mlp_chunked_w8a8_unroll4 = (
++            _mindpipe_qwen2_mlp_chunked_w8a8_unroll4())
++        self._mindpipe_mlp_chunked_w8a8_batched = (
++            _mindpipe_qwen2_mlp_chunked_w8a8_batched())
++        self._mindpipe_mlp_chunked_loop_out_requested = (
++            _mindpipe_enable_qwen2_mlp_chunked_loop_out())
++        self._mindpipe_mlp_chunked_loop_out_min_tokens = (
++            _mindpipe_qwen2_mlp_chunked_loop_out_min_tokens())
++        self._mindpipe_mlp_chunked_replication = (
++            _mindpipe_qwen2_mlp_chunked_replication())
++        self._mindpipe_mlp_chunked_aclgraph_fallback = (
++            _mindpipe_disable_qwen2_mlp_chunked_aclgraph()
++            and _mindpipe_qwen2_aclgraph_enabled())
++        self._mindpipe_gate_up_default_quant_config = getattr(
++            self.gate_up_proj, "_ascend_quant_config", None)
++        self._mindpipe_down_default_quant_config = getattr(
++            self.down_proj, "_ascend_quant_config", None)
++        self._mindpipe_mlp_chunked_loop_out_layer_idx = -1
++        if self._mindpipe_mlp_chunked_loop_out_requested:
++            self._mindpipe_mlp_chunked_loop_out_layer_idx = (
++                extract_layer_index(self.gate_up_proj.prefix))
++            try:
++                configured_chunks = int(
++                    os.getenv("MINDPIPE_QWEN2_MLP_CHUNKED_CHUNKS", "4"))
++            except ValueError as exc:
++                raise RuntimeError(
++                    "Qwen2 loop-out requires an integer chunk count"
++                ) from exc
++            if not self._mindpipe_mlp_chunked_w8a8_requested:
++                raise RuntimeError(
++                    "Qwen2 loop-out requires chunked W8A8 to be enabled")
++            if configured_chunks != 4:
++                raise RuntimeError("Qwen2 loop-out requires exactly 4 chunks")
++            if not self._mindpipe_mlp_chunked_w8a8_batched:
++                raise RuntimeError(
++                    "Qwen2 loop-out requires the batched weight layout")
++            if self._mindpipe_mlp_chunked_w8a8_unroll4:
++                raise RuntimeError(
++                    "Qwen2 loop-out is incompatible with unroll4")
++            if self._mindpipe_mlp_chunked_replication != "repeat":
++                raise RuntimeError(
++                    "Qwen2 loop-out gate requires repeat replication")
++            _mindpipe_prepare_qwen2_mlp_chunked_loop_out()
++        if (_mindpipe_enable_qwen2_mlp_fused_w8a8()
++                and _mindpipe_is_ascend_w8a8_dynamic_linear(self.gate_up_proj)
++                and _mindpipe_is_ascend_w8a8_dynamic_linear(self.down_proj)):
++            self._mindpipe_mlp_fused_w8a8 = True
++            self._mindpipe_mlp_fused_w8a8_mode = (
++                _mindpipe_qwen2_mlp_fused_w8a8_mode())
++            self._mindpipe_mlp_fused_w8a8_decode_max_tokens = (
++                _mindpipe_qwen2_mlp_fused_w8a8_decode_max_tokens())
++            self._mindpipe_mlp_fused_act_fn = MindPipeQwen2DynamicSiluAndMul(
++                weight_scale=lambda: self.gate_up_proj.weight_scale_fp32)
++
++    @staticmethod
++    def _mindpipe_restore_quant_config(layer: nn.Module,
++                                       config: Optional[dict[str, Any]]) -> None:
++        if config is None:
++            if hasattr(layer, "_ascend_quant_config"):
++                delattr(layer, "_ascend_quant_config")
++            return
++        layer._ascend_quant_config = dict(config)
++
++    def _mindpipe_set_mlp_fused_w8a8_config(self, enabled: bool) -> None:
++        if not enabled:
++            self._mindpipe_restore_quant_config(
++                self.gate_up_proj, self._mindpipe_gate_up_default_quant_config)
++            self._mindpipe_restore_quant_config(
++                self.down_proj, self._mindpipe_down_default_quant_config)
++            return
++        self.gate_up_proj._ascend_quant_config = {
++            "output_dtype": torch.int32,
++            "pertoken_scale": False,
++            "return_scale": True,
++        }
++        self.down_proj._ascend_quant_config = {
++            "output_dtype": self.down_proj.params_dtype,
++            "pertoken_scale": True,
++            "return_scale": False,
++        }
++
++    def _mindpipe_should_use_mlp_fused_w8a8(self, x: torch.Tensor) -> bool:
++        if not self._mindpipe_mlp_fused_w8a8:
++            return False
++        if _mindpipe_in_profile_run():
++            return False
++        if _mindpipe_in_aclgraph_context():
++            return False
++        mode = self._mindpipe_mlp_fused_w8a8_mode
++        if mode in ("all", "1", "true"):
++            return True
++        try:
++            token_count = int(x.shape[0])
++        except Exception:
++            return False
++        if mode in ("prefill", "prefill_only", "prefill-only"):
++            return token_count > self._mindpipe_mlp_fused_w8a8_decode_max_tokens
++        if mode not in ("decode", "decode_only", "decode-only"):
++            return False
++        return token_count <= self._mindpipe_mlp_fused_w8a8_decode_max_tokens
++
++    def _mindpipe_should_use_fused_allreduce_w8a8(
++            self, x: torch.Tensor) -> bool:
++        if not self._mindpipe_mlp_fused_allreduce_w8a8:
++            return False
++        if not _mindpipe_is_ascend_w8a8_dynamic_linear(self.down_proj):
++            return False
++        if not (self.down_proj.reduce_results and self.down_proj.tp_size > 1):
++            return False
++        # Keep eager as the default.  ACL Graph is opt-in until its model-level
++        # capture/replay correctness gate has passed.
++        if _mindpipe_in_profile_run():
++            return False
++        if (_mindpipe_in_aclgraph_context()
++                and not _mindpipe_allow_qwen2_fused_allreduce_aclgraph()):
++            return False
++        return True
++
++    def _mindpipe_forward_fused_allreduce_w8a8(
++            self, x: Union[torch.Tensor, Tuple[torch.Tensor,
++                                               torch.Tensor]]) -> torch.Tensor:
++        if _mindpipe_torch_npu is None:
++            raise RuntimeError("torch_npu is required for fused all-reduce")
++        # The fused SwiGLU path already returns the INT8 activation and its
++        # per-token scale.  Re-quantizing that tuple would either fail at
++        # runtime or add an unnecessary quantization kernel before the fused
++        # down-projection/all-reduce.  Keep the ordinary Tensor path for the
++        # existing MLP fused-allreduce candidate.
++        if isinstance(x, tuple):
++            quantized_x, x_scale = x
++        else:
++            quantized_x, x_scale = _mindpipe_torch_npu.npu_dynamic_quant(x)
++        if x_scale.dim() > 1:
++            x_scale = x_scale.flatten()
++        output = _mindpipe_torch_npu.npu_mm_all_reduce_base(
++            quantized_x,
++            self.down_proj.weight,
++            _mindpipe_qwen2_tp_hcom_info(),
++            reduce_op="sum",
++            dequant_scale=self.down_proj.weight_scale_fp32,
++            pertoken_scale=x_scale,
++        )
++        output_dtype = (self.down_proj.params_dtype
++                        if isinstance(x, tuple) else x.dtype)
++        return output.to(output_dtype)
++
++    def _mindpipe_has_chunked_mlp_w8a8(self) -> bool:
++        if not getattr(self, "_mindpipe_mlp_chunked_w8a8_requested", False):
++            return False
++        if _mindpipe_torch_npu is None:
++            return False
++        return (getattr(self.gate_up_proj,
++                        "_mindpipe_qwen2_mlp_chunked_kind", None) == "gate_up"
++                and getattr(self.down_proj,
++                            "_mindpipe_qwen2_mlp_chunked_kind", None)
++                == "down" and getattr(
++                    self.gate_up_proj, "_mindpipe_qwen2_mlp_chunk_count", 0)
++                == getattr(self.down_proj,
++                           "_mindpipe_qwen2_mlp_chunk_count", -1))
++
++    def _mindpipe_should_use_chunked_mlp_w8a8(
++        self,
++        x: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
++    ) -> bool:
++        if not self._mindpipe_has_chunked_mlp_w8a8():
++            return False
++        if (self._mindpipe_mlp_chunked_aclgraph_fallback
++                or (_mindpipe_disable_qwen2_mlp_chunked_aclgraph()
++                    and _mindpipe_in_aclgraph_context())):
++            return False
++        mode = getattr(self, "_mindpipe_mlp_chunked_w8a8_mode", "replace")
++        if mode == "replace":
++            return True
++        if mode != "prefill":
++            return True
++        try:
++            input_tensor = x[0] if isinstance(x, tuple) else x
++            token_count = int(input_tensor.shape[0])
++        except Exception:
++            return False
++        return token_count > self._mindpipe_mlp_chunked_w8a8_prefill_min_tokens
++
++    def _mindpipe_chunked_mlp_output_dtype(
++        self,
++        x: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
++    ) -> torch.dtype:
++        return (self.down_proj.params_dtype
++                if isinstance(x, tuple) else x.dtype)
++
++    def _mindpipe_finalize_chunked_mlp_w8a8(
++            self, output: torch.Tensor,
++            output_dtype: torch.dtype) -> torch.Tensor:
++        output = output.to(output_dtype)
++        if self.down_proj.reduce_results and self.down_proj.tp_size > 1:
++            output = tensor_model_parallel_all_reduce(output)
++        return output
++
++    def _mindpipe_forward_chunked_mlp_w8a8(
++        self,
++        x: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
++    ) -> torch.Tensor:
++        chunks = int(
++            getattr(self.gate_up_proj, "_mindpipe_qwen2_mlp_chunk_count"))
++        if isinstance(x, tuple):
++            quantized_x, x_scale = x
++            if x_scale.dim() > 1:
++                x_scale = x_scale.flatten()
++        else:
++            quantized_x, x_scale = _mindpipe_torch_npu.npu_dynamic_quant(x)
++        if chunks == 1:
++            return self._mindpipe_forward_single_chunk_mlp_w8a8(
++                x, quantized_x, x_scale)
++        if self._mindpipe_should_use_chunked_mlp_loop_out(x, chunks):
++            return self._mindpipe_forward_chunked_mlp_loop_out(
++                x, quantized_x, x_scale, chunks)
++        if (getattr(self, "_mindpipe_mlp_chunked_w8a8_batched", False)
++                and hasattr(self.gate_up_proj,
++                            "_mindpipe_chunked_gate_up_batched_weight")):
++            return self._mindpipe_forward_chunked_mlp_w8a8_batched(
++                x, quantized_x, x_scale, chunks)
++        group_list = torch.ones_like(x_scale[:1],
++                                     dtype=torch.int64) * x_scale.shape[0]
++        if (chunks == 4
++                and getattr(self, "_mindpipe_mlp_chunked_w8a8_unroll4",
++                            False)):
++            return self._mindpipe_forward_chunked_mlp_w8a8_unroll4(
++                x, quantized_x, x_scale, group_list)
++        qhidden_chunks = []
++        hidden_scale_chunks = []
++        for idx in range(chunks):
++            qhidden, hidden_scale, _ = (
++                _mindpipe_torch_npu.npu_grouped_matmul_swiglu_quant(
++                    x=quantized_x,
++                    weight=getattr(self.gate_up_proj,
++                                   f"_mindpipe_chunked_gate_up_weight_{idx}"),
++                    group_list=group_list,
++                    weight_scale=getattr(
++                        self.gate_up_proj,
++                        f"_mindpipe_chunked_gate_up_scale_{idx}"),
++                    x_scale=x_scale,
++                ))
++            qhidden_chunks.append(qhidden)
++            hidden_scale_chunks.append(hidden_scale)
++        qhidden_stacked = torch.stack(qhidden_chunks, dim=0)
++        hidden_scale_stacked = torch.stack(hidden_scale_chunks, dim=0)
++        output = _mindpipe_torch_npu.npu_quant_matmul_reduce_sum(
++            qhidden_stacked,
++            getattr(self.down_proj, "_mindpipe_chunked_down_weight"),
++            x1_scale=hidden_scale_stacked,
++            x2_scale=getattr(self.down_proj,
++                             "_mindpipe_chunked_down_scale_bf16"),
++        )
++        return self._mindpipe_finalize_chunked_mlp_w8a8(
++            output, self._mindpipe_chunked_mlp_output_dtype(x))
++
++    def _mindpipe_should_use_chunked_mlp_loop_out(
++        self,
++        x: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
++        chunks: int,
++    ) -> bool:
++        del x
++        if not getattr(self, "_mindpipe_mlp_chunked_loop_out_requested",
++                       False):
++            return False
++        if chunks != 4:
++            raise RuntimeError("Qwen2 loop-out requires exactly 4 chunks")
++        layout = getattr(self.gate_up_proj,
++                         "_mindpipe_qwen2_mlp_chunked_layout", None)
++        if layout != "batched_with_loop_views":
++            raise RuntimeError(
++                "Qwen2 loop-out batched weight views were not prepared")
++        return True
++
++    def _mindpipe_forward_chunked_mlp_loop_out(
++        self,
++        x: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
++        quantized_x: torch.Tensor,
++        x_scale: torch.Tensor,
++        chunks: int,
++    ) -> torch.Tensor:
++        if _MINDPIPE_QWEN2_LOOP_OUT_OP is None:
++            raise RuntimeError("Qwen2 loop-out custom op was not registered")
++        weights = [
++            getattr(self.gate_up_proj,
++                    f"_mindpipe_chunked_gate_up_weight_{idx}")
++            for idx in range(chunks)
++        ]
++        weight_scales = [
++            getattr(self.gate_up_proj,
++                    f"_mindpipe_chunked_gate_up_scale_{idx}")
++            for idx in range(chunks)
++        ]
++        group_list = torch.ones_like(x_scale[:1],
++                                     dtype=torch.int64) * x_scale.shape[0]
++        qhidden, hidden_scale = _MINDPIPE_QWEN2_LOOP_OUT_OP(
++            quantized_x,
++            weights,
++            getattr(self.gate_up_proj,
++                    "_mindpipe_chunked_gate_up_batched_weight"),
++            group_list,
++            weight_scales,
++            getattr(self.gate_up_proj,
++                    "_mindpipe_chunked_gate_up_batched_scale"),
++            x_scale,
++            self._mindpipe_mlp_chunked_loop_out_min_tokens,
++            self._mindpipe_mlp_chunked_loop_out_layer_idx,
++        )
++        output = _mindpipe_torch_npu.npu_quant_matmul_reduce_sum(
++            qhidden,
++            getattr(self.down_proj, "_mindpipe_chunked_down_weight"),
++            x1_scale=hidden_scale,
++            x2_scale=getattr(self.down_proj,
++                             "_mindpipe_chunked_down_scale_bf16"),
++        )
++        return self._mindpipe_finalize_chunked_mlp_w8a8(
++            output, self._mindpipe_chunked_mlp_output_dtype(x))
++
++    def _mindpipe_forward_single_chunk_mlp_w8a8(
++            self, x: torch.Tensor, quantized_x: torch.Tensor,
++            x_scale: torch.Tensor) -> torch.Tensor:
++        """Use the dense TP shard directly when it fits the fused gate op."""
++        group_list = torch.ones_like(x_scale[:1],
++                                     dtype=torch.int64) * x_scale.shape[0]
++        qhidden, hidden_scale, _ = (
++            _mindpipe_torch_npu.npu_grouped_matmul_swiglu_quant(
++                x=quantized_x,
++                weight=getattr(self.gate_up_proj,
++                               "_mindpipe_chunked_gate_up_weight_0"),
++                group_list=group_list,
++                weight_scale=getattr(self.gate_up_proj,
++                                     "_mindpipe_chunked_gate_up_scale_0"),
++                x_scale=x_scale,
++            ))
++        if self._mindpipe_should_use_fused_allreduce_w8a8(qhidden):
++            output = _mindpipe_torch_npu.npu_mm_all_reduce_base(
++                qhidden,
++                self.down_proj.weight,
++                _mindpipe_qwen2_tp_hcom_info(),
++                reduce_op="sum",
++                dequant_scale=self.down_proj.weight_scale_fp32,
++                pertoken_scale=hidden_scale,
++            )
++            return output.to(self._mindpipe_chunked_mlp_output_dtype(x))
++        output = _mindpipe_torch_npu.npu_quant_matmul(
++            qhidden,
++            self.down_proj.weight,
++            self.down_proj.weight_scale_fp32,
++            pertoken_scale=hidden_scale,
++            output_dtype=self._mindpipe_chunked_mlp_output_dtype(x),
++        )
++        return self._mindpipe_finalize_chunked_mlp_w8a8(
++            output, self._mindpipe_chunked_mlp_output_dtype(x))
++
++    def _mindpipe_forward_chunked_mlp_w8a8_batched(
++            self, x: torch.Tensor, quantized_x: torch.Tensor,
++            x_scale: torch.Tensor, chunks: int) -> torch.Tensor:
++        token_count = x_scale.shape[0]
++        # grouped_matmul_swiglu_quant consumes cumulative token boundaries.
++        # Passing ``[token_count] * chunks`` makes every group after the first
++        # empty (for example, the second hidden scale becomes zero when
++        # chunks=2), silently dropping the remaining MLP chunks.
++        group_list = (torch.arange(1,
++                                   chunks + 1,
++                                   device=x_scale.device,
++                                   dtype=torch.int64) * token_count)
++        replication = getattr(
++            self, "_mindpipe_mlp_chunked_replication", "repeat")
++        if replication == "cat":
++            repeated_x = torch.cat((quantized_x,) * chunks, dim=0)
++            repeated_scale = torch.cat((x_scale,) * chunks, dim=0)
++        else:
++            repeated_x = quantized_x.repeat((chunks, 1))
++            repeated_scale = x_scale.repeat(chunks)
++        qhidden, hidden_scale, _ = (
++            _mindpipe_torch_npu.npu_grouped_matmul_swiglu_quant(
++                x=repeated_x,
++                weight=getattr(self.gate_up_proj,
++                               "_mindpipe_chunked_gate_up_batched_weight"),
++                group_list=group_list,
++                weight_scale=getattr(
++                    self.gate_up_proj,
++                    "_mindpipe_chunked_gate_up_batched_scale"),
++                x_scale=repeated_scale,
++            ))
++        chunk_size = int(
++            getattr(self.gate_up_proj, "_mindpipe_qwen2_mlp_chunk_size"))
++        qhidden_stacked = qhidden.reshape(chunks, token_count, chunk_size)
++        hidden_scale_stacked = hidden_scale.reshape(chunks, token_count)
++        output = _mindpipe_torch_npu.npu_quant_matmul_reduce_sum(
++            qhidden_stacked,
++            getattr(self.down_proj, "_mindpipe_chunked_down_weight"),
++            x1_scale=hidden_scale_stacked,
++            x2_scale=getattr(self.down_proj,
++                             "_mindpipe_chunked_down_scale_bf16"),
++        )
++        return self._mindpipe_finalize_chunked_mlp_w8a8(
++            output, self._mindpipe_chunked_mlp_output_dtype(x))
++
++    def _mindpipe_forward_chunked_mlp_w8a8_unroll4(
++            self, x: torch.Tensor, quantized_x: torch.Tensor,
++            x_scale: torch.Tensor, group_list: torch.Tensor) -> torch.Tensor:
++        qhidden0, hidden_scale0, _ = (
++            _mindpipe_torch_npu.npu_grouped_matmul_swiglu_quant(
++                x=quantized_x,
++                weight=getattr(self.gate_up_proj,
++                               "_mindpipe_chunked_gate_up_weight_0"),
++                group_list=group_list,
++                weight_scale=getattr(self.gate_up_proj,
++                                     "_mindpipe_chunked_gate_up_scale_0"),
++                x_scale=x_scale,
++            ))
++        qhidden1, hidden_scale1, _ = (
++            _mindpipe_torch_npu.npu_grouped_matmul_swiglu_quant(
++                x=quantized_x,
++                weight=getattr(self.gate_up_proj,
++                               "_mindpipe_chunked_gate_up_weight_1"),
++                group_list=group_list,
++                weight_scale=getattr(self.gate_up_proj,
++                                     "_mindpipe_chunked_gate_up_scale_1"),
++                x_scale=x_scale,
++            ))
++        qhidden2, hidden_scale2, _ = (
++            _mindpipe_torch_npu.npu_grouped_matmul_swiglu_quant(
++                x=quantized_x,
++                weight=getattr(self.gate_up_proj,
++                               "_mindpipe_chunked_gate_up_weight_2"),
++                group_list=group_list,
++                weight_scale=getattr(self.gate_up_proj,
++                                     "_mindpipe_chunked_gate_up_scale_2"),
++                x_scale=x_scale,
++            ))
++        qhidden3, hidden_scale3, _ = (
++            _mindpipe_torch_npu.npu_grouped_matmul_swiglu_quant(
++                x=quantized_x,
++                weight=getattr(self.gate_up_proj,
++                               "_mindpipe_chunked_gate_up_weight_3"),
++                group_list=group_list,
++                weight_scale=getattr(self.gate_up_proj,
++                                     "_mindpipe_chunked_gate_up_scale_3"),
++                x_scale=x_scale,
++            ))
++        qhidden_stacked = torch.stack(
++            (qhidden0, qhidden1, qhidden2, qhidden3), dim=0)
++        hidden_scale_stacked = torch.stack(
++            (hidden_scale0, hidden_scale1, hidden_scale2, hidden_scale3),
++            dim=0)
++        output = _mindpipe_torch_npu.npu_quant_matmul_reduce_sum(
++            qhidden_stacked,
++            getattr(self.down_proj, "_mindpipe_chunked_down_weight"),
++            x1_scale=hidden_scale_stacked,
++            x2_scale=getattr(self.down_proj,
++                             "_mindpipe_chunked_down_scale_bf16"),
++        )
++        return self._mindpipe_finalize_chunked_mlp_w8a8(
++            output, self._mindpipe_chunked_mlp_output_dtype(x))
+ 
+     def forward(self, x):
+-        gate_up, _ = self.gate_up_proj(x)
+-        x = self.act_fn(gate_up)
++        if self._mindpipe_should_use_chunked_mlp_w8a8(x):
++            if _mindpipe_enabled():
++                input_tensor = x[0] if isinstance(x, tuple) else x
++                token_count = _mindpipe_token_count(
++                    hidden_states=input_tensor)
++                with _mindpipe_record(
++                        "qwen2.mlp.chunked_w8a8",
++                        tokens=token_count,
++                        phase=_mindpipe_phase(token_count),
++                        layer_idx=extract_layer_index(
++                            self.gate_up_proj.prefix),
++                        chunks=getattr(
++                            self.gate_up_proj,
++                            "_mindpipe_qwen2_mlp_chunk_count", None),
++                        tp_size=self.down_proj.tp_size):
++                    return self._mindpipe_forward_chunked_mlp_w8a8(x)
++            return self._mindpipe_forward_chunked_mlp_w8a8(x)
++        use_fused_w8a8 = self._mindpipe_should_use_mlp_fused_w8a8(x)
++        self._mindpipe_set_mlp_fused_w8a8_config(use_fused_w8a8)
++        activation_fn = self.act_fn
++        if use_fused_w8a8:
++            activation_fn = self._mindpipe_mlp_fused_act_fn
++            if activation_fn is None:
++                raise RuntimeError("Qwen2 fused W8A8 activation is missing")
++        if _mindpipe_enabled():
++            token_count = _mindpipe_token_count(hidden_states=x)
++            with _mindpipe_record(
++                    "qwen2.mlp.gate_up_activation",
++                    tokens=token_count,
++                    phase=_mindpipe_phase(token_count),
++                    layer_idx=extract_layer_index(self.gate_up_proj.prefix),
++                    fused_w8a8=use_fused_w8a8,
++                    fused_w8a8_configured=self._mindpipe_mlp_fused_w8a8,
++                    fused_w8a8_mode=self._mindpipe_mlp_fused_w8a8_mode,
++                    activation_path=("dynamic_w8a8"
++                                     if use_fused_w8a8 else "native")):
++                gate_up, _ = self.gate_up_proj(x)
++                x = activation_fn(gate_up)
++        else:
++            gate_up, _ = self.gate_up_proj(x)
++            x = activation_fn(gate_up)
++        if self._mindpipe_should_use_fused_allreduce_w8a8(x):
++            return self._mindpipe_forward_fused_allreduce_w8a8(x)
+         x, _ = self.down_proj(x)
+         return x
+ 
+@@ -151,6 +989,10 @@ class Qwen2Attention(nn.Module):
+             quant_config=quant_config,
+             prefix=f"{prefix}.o_proj",
+         )
++        self._mindpipe_attn_fused_allreduce_w8a8 = (
++            _mindpipe_enable_qwen2_attn_fused_allreduce_w8a8())
++        self._mindpipe_attn_comm_quant = (
++            _mindpipe_enable_qwen2_attn_comm_quant())
+ 
+         self.rotary_emb = get_rope(
+             self.head_dim,
+@@ -181,11 +1023,94 @@ class Qwen2Attention(nn.Module):
+         positions: torch.Tensor,
+         hidden_states: torch.Tensor,
+     ) -> torch.Tensor:
+-        qkv, _ = self.qkv_proj(hidden_states)
+-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+-        q, k = self.rotary_emb(positions, q, k)
+-        attn_output = self.attn(q, k, v)
+-        output, _ = self.o_proj(attn_output)
++        timing_enabled = _mindpipe_enabled()
++        if timing_enabled:
++            token_count = _mindpipe_token_count(hidden_states=hidden_states)
++            timing_metadata = {
++                "tokens": token_count,
++                "phase": _mindpipe_phase(token_count),
++                "layer_idx": extract_layer_index(self.o_proj.prefix),
++            }
++            with _mindpipe_record("qwen2.attention.qkv_proj",
++                                  **timing_metadata):
++                qkv, _ = self.qkv_proj(hidden_states)
++            with _mindpipe_record("qwen2.attention.rope", **timing_metadata):
++                q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size],
++                                    dim=-1)
++                q, k = self.rotary_emb(positions, q, k)
++            with _mindpipe_record("qwen2.attention.core", **timing_metadata):
++                attn_output = self.attn(q, k, v)
++        else:
++            qkv, _ = self.qkv_proj(hidden_states)
++            q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size],
++                                dim=-1)
++            q, k = self.rotary_emb(positions, q, k)
++            attn_output = self.attn(q, k, v)
++        if (self._mindpipe_attn_fused_allreduce_w8a8
++                and _mindpipe_torch_npu is not None
++                and _mindpipe_is_ascend_w8a8_dynamic_linear(self.o_proj)
++                and self.o_proj.reduce_results
++                and self.o_proj.tp_size > 1
++                and not _mindpipe_in_profile_run()
++                and (not _mindpipe_in_aclgraph_context()
++                     or _mindpipe_allow_qwen2_fused_allreduce_aclgraph())):
++            if timing_enabled:
++                with _mindpipe_record("qwen2.attention.o_proj",
++                                      **timing_metadata,
++                                      fused_allreduce=True):
++                    quantized_output, output_scale = (
++                        _mindpipe_torch_npu.npu_dynamic_quant(attn_output))
++                    comm_kwargs = {}
++                    if self._mindpipe_attn_comm_quant:
++                        comm_scale_1, comm_scale_2 = (
++                            _mindpipe_calibrate_comm_quant_scales(
++                                self.o_proj, quantized_output, output_scale,
++                                attn_output.dtype))
++                        comm_kwargs = {
++                            "comm_quant_scale_1": comm_scale_1,
++                            "comm_quant_scale_2": comm_scale_2,
++                            "comm_turn": 0,
++                        }
++                    output = _mindpipe_torch_npu.npu_mm_all_reduce_base(
++                        quantized_output,
++                        self.o_proj.weight,
++                        _mindpipe_qwen2_tp_hcom_info(),
++                        reduce_op="sum",
++                        dequant_scale=self.o_proj.weight_scale_fp32,
++                        pertoken_scale=output_scale,
++                        **comm_kwargs,
++                    )
++            else:
++                quantized_output, output_scale = (
++                    _mindpipe_torch_npu.npu_dynamic_quant(attn_output))
++                comm_kwargs = {}
++                if self._mindpipe_attn_comm_quant:
++                    comm_scale_1, comm_scale_2 = (
++                        _mindpipe_calibrate_comm_quant_scales(
++                            self.o_proj, quantized_output, output_scale,
++                            attn_output.dtype))
++                    comm_kwargs = {
++                        "comm_quant_scale_1": comm_scale_1,
++                        "comm_quant_scale_2": comm_scale_2,
++                        "comm_turn": 0,
++                    }
++                output = _mindpipe_torch_npu.npu_mm_all_reduce_base(
++                    quantized_output,
++                    self.o_proj.weight,
++                    _mindpipe_qwen2_tp_hcom_info(),
++                    reduce_op="sum",
++                    dequant_scale=self.o_proj.weight_scale_fp32,
++                    pertoken_scale=output_scale,
++                    **comm_kwargs,
++                )
++            return output.to(attn_output.dtype)
++        if timing_enabled:
++            with _mindpipe_record("qwen2.attention.o_proj",
++                                  **timing_metadata,
++                                  fused_allreduce=False):
++                output, _ = self.o_proj(attn_output)
++        else:
++            output, _ = self.o_proj(attn_output)
+         return output
+ 
+ 
+@@ -240,6 +1165,9 @@ class Qwen2DecoderLayer(nn.Module):
+                                        eps=config.rms_norm_eps)
+         self.post_attention_layernorm = RMSNorm(config.hidden_size,
+                                                 eps=config.rms_norm_eps)
++        # Keep the layer id in timing metadata without touching the hot path
++        # when stage timing is disabled.
++        self._mindpipe_layer_idx = extract_layer_index(prefix)
+ 
+     def forward(
+         self,
+@@ -254,15 +1182,36 @@ class Qwen2DecoderLayer(nn.Module):
+         else:
+             hidden_states, residual = self.input_layernorm(
+                 hidden_states, residual)
+-        hidden_states = self.self_attn(
+-            positions=positions,
+-            hidden_states=hidden_states,
+-        )
++        token_count = _mindpipe_token_count(hidden_states=hidden_states)
++        phase = _mindpipe_phase(token_count)
++        if _mindpipe_enabled():
++            with _mindpipe_record(
++                    "qwen2.layer.attention",
++                    tokens=token_count,
++                    phase=phase,
++                    layer_idx=self._mindpipe_layer_idx):
++                hidden_states = self.self_attn(
++                    positions=positions,
++                    hidden_states=hidden_states,
++                )
++        else:
++            hidden_states = self.self_attn(
++                positions=positions,
++                hidden_states=hidden_states,
++            )
+ 
+         # Fully Connected
+         hidden_states, residual = self.post_attention_layernorm(
+             hidden_states, residual)
+-        hidden_states = self.mlp(hidden_states)
++        if _mindpipe_enabled():
++            with _mindpipe_record(
++                    "qwen2.layer.mlp",
++                    tokens=token_count,
++                    phase=phase,
++                    layer_idx=self._mindpipe_layer_idx):
++                hidden_states = self.mlp(hidden_states)
++        else:
++            hidden_states = self.mlp(hidden_states)
+         return hidden_states, residual
+ 
+ 
+@@ -345,11 +1294,28 @@ class Qwen2Model(nn.Module):
+         intermediate_tensors: Optional[IntermediateTensors] = None,
+         inputs_embeds: Optional[torch.Tensor] = None,
+     ) -> Union[torch.Tensor, IntermediateTensors]:
++        token_count = _mindpipe_token_count(
++            input_ids=input_ids,
++            inputs_embeds=inputs_embeds,
++            intermediate_tensors=intermediate_tensors,
++        )
++        phase = _mindpipe_phase(token_count)
+         if get_pp_group().is_first_rank:
+-            if inputs_embeds is not None:
+-                hidden_states = inputs_embeds
++            if _mindpipe_enabled():
++                with _mindpipe_record(
++                        "qwen2.embedding",
++                        tokens=token_count,
++                        phase=phase,
++                        has_inputs_embeds=inputs_embeds is not None):
++                    if inputs_embeds is not None:
++                        hidden_states = inputs_embeds
++                    else:
++                        hidden_states = self.get_input_embeddings(input_ids)
+             else:
+-                hidden_states = self.get_input_embeddings(input_ids)
++                if inputs_embeds is not None:
++                    hidden_states = inputs_embeds
++                else:
++                    hidden_states = self.get_input_embeddings(input_ids)
+             residual = None
+         else:
+             assert intermediate_tensors is not None
+@@ -357,11 +1323,25 @@ class Qwen2Model(nn.Module):
+             residual = intermediate_tensors["residual"]
+ 
+         aux_hidden_states = []
+-        for idx, layer in enumerate(
+-                islice(self.layers, self.start_layer, self.end_layer)):
+-            if idx in self.aux_hidden_state_layers:
+-                aux_hidden_states.append(hidden_states + residual)
+-            hidden_states, residual = layer(positions, hidden_states, residual)
++        if _mindpipe_enabled():
++            with _mindpipe_record("qwen2.decoder_layers",
++                                  tokens=token_count,
++                                  phase=phase,
++                                  start_layer=self.start_layer,
++                                  end_layer=self.end_layer):
++                for idx, layer in enumerate(
++                        islice(self.layers, self.start_layer, self.end_layer)):
++                    if idx in self.aux_hidden_state_layers:
++                        aux_hidden_states.append(hidden_states + residual)
++                    hidden_states, residual = layer(positions, hidden_states,
++                                                    residual)
++        else:
++            for idx, layer in enumerate(
++                    islice(self.layers, self.start_layer, self.end_layer)):
++                if idx in self.aux_hidden_state_layers:
++                    aux_hidden_states.append(hidden_states + residual)
++                hidden_states, residual = layer(positions, hidden_states,
++                                                residual)
+ 
+         if not get_pp_group().is_last_rank:
+             return IntermediateTensors({
+@@ -369,7 +1349,13 @@ class Qwen2Model(nn.Module):
+                 "residual": residual
+             })
+ 
+-        hidden_states, _ = self.norm(hidden_states, residual)
++        if _mindpipe_enabled():
++            with _mindpipe_record("qwen2.final_norm",
++                                  tokens=token_count,
++                                  phase=phase):
++                hidden_states, _ = self.norm(hidden_states, residual)
++        else:
++            hidden_states, _ = self.norm(hidden_states, residual)
+ 
+         if len(aux_hidden_states) > 0:
+             return hidden_states, aux_hidden_states
+@@ -502,17 +1488,85 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
+         intermediate_tensors: Optional[IntermediateTensors] = None,
+         inputs_embeds: Optional[torch.Tensor] = None,
+     ) -> Union[torch.Tensor, IntermediateTensors]:
+-        hidden_states = self.model(input_ids, positions, intermediate_tensors,
+-                                   inputs_embeds)
++        token_count = _mindpipe_token_count(
++            input_ids=input_ids,
++            inputs_embeds=inputs_embeds,
++            intermediate_tensors=intermediate_tensors,
++        )
++        if _mindpipe_enabled():
++            with _mindpipe_record("qwen2.forward",
++                                  tokens=token_count,
++                                  phase=_mindpipe_phase(token_count)):
++                hidden_states = self.model(input_ids, positions,
++                                           intermediate_tensors, inputs_embeds)
++        else:
++            hidden_states = self.model(input_ids, positions,
++                                       intermediate_tensors, inputs_embeds)
+         return hidden_states
+ 
+     def compute_logits(
+         self,
+         hidden_states: torch.Tensor,
+     ) -> Optional[torch.Tensor]:
+-        logits = self.logits_processor(self.lm_head, hidden_states)
++        token_count = _mindpipe_token_count(hidden_states=hidden_states)
++        if _mindpipe_enabled():
++            with _mindpipe_record("qwen2.logits",
++                                  tokens=token_count,
++                                  phase=_mindpipe_phase(token_count)):
++                logits = self._mindpipe_compute_logits(hidden_states)
++        else:
++            logits = self._mindpipe_compute_logits(hidden_states)
++        return logits
++
++    def _mindpipe_has_chunked_lm_head_w8a8(self) -> bool:
++        if _mindpipe_torch_npu is None:
++            return False
++        return bool(
++            getattr(self.lm_head, "_mindpipe_lm_head_chunked_w8a8", False))
++
++    def _mindpipe_compute_chunked_lm_head_logits(
++            self, hidden_states: torch.Tensor) -> Optional[torch.Tensor]:
++        quantized_hidden, hidden_scale = _mindpipe_torch_npu.npu_dynamic_quant(
++            hidden_states)
++        chunk_count = int(
++            getattr(self.lm_head, "_mindpipe_lm_head_chunk_count"))
++        logits_chunks = []
++        for idx in range(chunk_count):
++            weight = getattr(self.lm_head,
++                             f"_mindpipe_lm_head_chunk_weight_{idx}", None)
++            scale = getattr(self.lm_head,
++                            f"_mindpipe_lm_head_chunk_scale_{idx}", None)
++            if weight is None or scale is None:
++                continue
++            logits_chunks.append(
++                _mindpipe_torch_npu.npu_quant_matmul(
++                    quantized_hidden,
++                    weight,
++                    scale,
++                    pertoken_scale=hidden_scale,
++                    bias=None,
++                    output_dtype=hidden_states.dtype,
++                ))
++        if not logits_chunks:
++            return None
++        logits = torch.cat(logits_chunks, dim=-1)
++        logits = self.logits_processor._gather_logits(logits)
++        if logits is not None:
++            logits = logits[..., :self.logits_processor.org_vocab_size]
++            if self.logits_processor.soft_cap is not None:
++                logits = logits / self.logits_processor.soft_cap
++                logits = torch.tanh(logits)
++                logits = logits * self.logits_processor.soft_cap
++            if self.logits_processor.scale != 1.0:
++                logits *= self.logits_processor.scale
+         return logits
+ 
++    def _mindpipe_compute_logits(
++            self, hidden_states: torch.Tensor) -> Optional[torch.Tensor]:
++        if self._mindpipe_has_chunked_lm_head_w8a8():
++            return self._mindpipe_compute_chunked_lm_head_logits(hidden_states)
++        return self.logits_processor(self.lm_head, hidden_states)
++
+     def load_weights(self, weights: Iterable[tuple[str,
+                                                    torch.Tensor]]) -> set[str]:
+         loader = AutoWeightsLoader(
+diff --git a/vllm/model_executor/models/qwen3_moe.py b/vllm/model_executor/models/qwen3_moe.py
+index 61f1abad72b69dc96bdc4cc83348443cc644c1dc..ade5b49f8907651f64d2507e188dc1a53d9ab177 100644
+--- a/vllm/model_executor/models/qwen3_moe.py
++++ b/vllm/model_executor/models/qwen3_moe.py
+@@ -22,6 +22,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ """Inference-only Qwen3MoE model compatible with HuggingFace weights."""
++import os
+ import typing
+ from collections.abc import Callable, Iterable
+ from itertools import islice
+@@ -62,6 +63,45 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
+ 
+ logger = init_logger(__name__)
+ 
++_MINDPIPE_SINGLE_STORAGE_AUDIT_ENV = (
++    "MINDPIPE_QWEN3_MOE_SINGLE_STORAGE_AUDIT")
++
++
++def _mindpipe_single_storage_audit_enabled() -> bool:
++    return os.getenv(_MINDPIPE_SINGLE_STORAGE_AUDIT_ENV) == "1"
++
++
++def _mindpipe_record_expert_load(
++    model: nn.Module,
++    *,
++    source_name: str,
++    target_name: str | None,
++    expert_id: int | None,
++    shard_id: str | None,
++    status: str,
++) -> None:
++    """Record loader decisions without retaining checkpoint tensors."""
++    if not _mindpipe_single_storage_audit_enabled():
++        return
++    state = getattr(model, "_mindpipe_qwen3_expert_load_audit", None)
++    if state is None:
++        state = {"schema_version": 1, "records": {}}
++        model._mindpipe_qwen3_expert_load_audit = state
++    records = state["records"]
++    signature = {
++        "target_name": target_name,
++        "expert_id": expert_id,
++        "shard_id": shard_id,
++        "status": status,
++    }
++    record = records.get(source_name)
++    if record is None:
++        records[source_name] = {**signature, "count": 1, "conflicts": []}
++        return
++    record["count"] += 1
++    if any(record.get(key) != value for key, value in signature.items()):
++        record["conflicts"].append(signature)
++
+ 
+ class Qwen3MoeMLP(nn.Module):
+ 
+@@ -457,6 +497,7 @@ class Qwen3MoeModel(nn.Module):
+         loaded_params: set[str] = set()
+         expert_params_mapping = self.get_expert_mapping()
+         for name, loaded_weight in weights:
++            source_name = name
+             for (param_name, weight_name, shard_id) in stacked_params_mapping:
+                 # Skip non-stacked layers and experts (experts handled below).
+                 if weight_name not in name:
+@@ -496,6 +537,7 @@ class Qwen3MoeModel(nn.Module):
+                 break
+             else:
+                 is_expert_weight = False
++                matched_expert: tuple[str, int, str] | None = None
+                 for mapping in expert_params_mapping:
+                     param_name, weight_name, expert_id, shard_id = mapping
+                     if weight_name not in name:
+@@ -508,6 +550,8 @@ class Qwen3MoeModel(nn.Module):
+                     # Do not modify `name` since the loop may continue here
+                     # Instead, create a new variable
+                     name_mapped = name.replace(weight_name, param_name)
++                    if matched_expert is None:
++                        matched_expert = (name_mapped, expert_id, shard_id)
+ 
+                     if is_pp_missing_parameter(name_mapped, self):
+                         continue
+@@ -531,6 +575,14 @@ class Qwen3MoeModel(nn.Module):
+                                             expert_id=expert_id,
+                                             return_success=True)
+                     if success:
++                        _mindpipe_record_expert_load(
++                            self,
++                            source_name=source_name,
++                            target_name=name_mapped,
++                            expert_id=expert_id,
++                            shard_id=shard_id,
++                            status="loaded",
++                        )
+                         name = name_mapped
+                         break
+                 else:
+@@ -538,6 +590,19 @@ class Qwen3MoeModel(nn.Module):
+                         # We've checked that this is an expert weight
+                         # However it's not mapped locally to this rank
+                         # So we simply skip it
++                        target_name = None
++                        expert_id = None
++                        shard_id = None
++                        if matched_expert is not None:
++                            target_name, expert_id, shard_id = matched_expert
++                        _mindpipe_record_expert_load(
++                            self,
++                            source_name=source_name,
++                            target_name=target_name,
++                            expert_id=expert_id,
++                            shard_id=shard_id,
++                            status="skipped_nonlocal",
++                        )
+                         continue
+ 
+                     # Skip loading extra parameters for GPTQ/modelopt models.
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index a43042a5510a8632d3abc7e9f3c3c11f5ce42fdd..889be8d1246d897f236b0c9fcacf7e2c821788bc 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -468,6 +468,19 @@ class EngineCoreProc(EngineCore):
+         self.input_queue = queue.Queue[tuple[EngineCoreRequestType, Any]]()
+         self.output_queue = queue.Queue[Union[tuple[int, EngineCoreOutputs],
+                                               bytes]]()
++        idle_coalesce_ms = int(
++            os.getenv("MINDPIPE_ENGINE_IDLE_COALESCE_MS", "0"))
++        if idle_coalesce_ms < 0:
++            raise ValueError(
++                "MINDPIPE_ENGINE_IDLE_COALESCE_MS must be non-negative")
++        self.idle_coalesce_seconds = idle_coalesce_ms / 1000.0
++        self.idle_coalesce_target_tokens = (
++            vllm_config.scheduler_config.max_num_batched_tokens)
++        if idle_coalesce_ms:
++            logger.info(
++                "EngineCore idle request coalescing enabled: %d ms, "
++                "target_tokens=%d", idle_coalesce_ms,
++                self.idle_coalesce_target_tokens)
+         executor_fail_callback = lambda: self.input_queue.put_nowait(
+             (EngineCoreRequestType.EXECUTOR_FAILED, b''))
+ 
+@@ -730,6 +743,10 @@ class EngineCoreProc(EngineCore):
+     def _process_input_queue(self):
+         """Exits when an engine step needs to be performed."""
+ 
++        was_idle = (not self.engines_running
++                    and not self.scheduler.has_requests()
++                    and not self.batch_queue)
++        idle_prompt_tokens = 0
+         waited = False
+         while not self.engines_running and not self.scheduler.has_requests() \
+                 and not self.batch_queue:
+@@ -737,16 +754,62 @@ class EngineCoreProc(EngineCore):
+                 logger.debug("EngineCore waiting for work.")
+                 waited = True
+             req = self.input_queue.get()
++            idle_prompt_tokens += self._get_add_request_prompt_tokens(*req)
+             self._handle_client_request(*req)
+ 
+         if waited:
+             logger.debug("EngineCore loop active.")
+ 
++        # Front-end tokenization and multimodal processing can make a burst of
++        # requests reach an idle EngineCore a few milliseconds apart. Give an
++        # opt-in deployment a bounded window to form the first full prefill
++        # batch. Stop as soon as the scheduler token budget is covered so a
++        # sufficiently large burst does not pay the entire window.
++        if (was_idle and self.idle_coalesce_seconds > 0
++                and self.scheduler.has_requests()):
++            self._coalesce_idle_inputs(idle_prompt_tokens)
++
+         # Handle any more client requests.
+         while not self.input_queue.empty():
+             req = self.input_queue.get_nowait()
+             self._handle_client_request(*req)
+ 
++    @staticmethod
++    def _get_add_request_prompt_tokens(
++            request_type: EngineCoreRequestType, request: Any) -> int:
++        if request_type != EngineCoreRequestType.ADD:
++            return 0
++        req, _ = request
++        return max(req.num_prompt_tokens - req.num_computed_tokens, 0)
++
++    def _coalesce_idle_inputs(
++            self, initial_prompt_tokens: int) -> tuple[int, int, str]:
++        deadline = time.monotonic() + self.idle_coalesce_seconds
++        prompt_tokens = initial_prompt_tokens
++        coalesced_inputs = 0
++        reason = "token_budget"
++
++        while prompt_tokens < self.idle_coalesce_target_tokens:
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                reason = "deadline"
++                break
++            try:
++                req = self.input_queue.get(timeout=remaining)
++            except queue.Empty:
++                reason = "deadline"
++                break
++            prompt_tokens += self._get_add_request_prompt_tokens(*req)
++            self._handle_client_request(*req)
++            coalesced_inputs += 1
++
++        logger.info(
++            "EngineCore idle window collected %d extra inputs, "
++            "prompt_tokens=%d, target_tokens=%d, reason=%s",
++            coalesced_inputs, prompt_tokens,
++            self.idle_coalesce_target_tokens, reason)
++        return coalesced_inputs, prompt_tokens, reason
++
+     def _process_engine_step(self) -> bool:
+         """Called only when there are unfinished local requests."""
+ 
