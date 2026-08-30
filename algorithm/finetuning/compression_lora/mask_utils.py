@@ -66,7 +66,15 @@ _DEFAULT_EXCLUDED_TARGET_PREFIXES = {
 def _matches_target(name: str, target_suffixes: set[str] | None) -> bool:
     if not target_suffixes:
         return True
-    return any(name == suffix or name.endswith(f".{suffix}") for suffix in target_suffixes)
+    # Mixtral keeps native expert projection names (w1/w3/w2), while the
+    # public compression-LoRA recipe uses the shared gate/up/down names.
+    aliases = {"w1": "gate_proj", "w3": "up_proj", "w2": "down_proj"}
+    if any(name == suffix or name.endswith(f".{suffix}") for suffix in target_suffixes):
+        return True
+    if ".experts." in name:
+        suffix = name.rsplit(".", 1)[-1]
+        return aliases.get(suffix) in target_suffixes
+    return False
 
 
 def _matches_excluded_prefix(name: str, excluded_prefixes: set[str] | None) -> bool:

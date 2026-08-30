@@ -71,7 +71,22 @@ def _is_compression_lora_linear(module: torch.nn.Module) -> bool:
 
 def _matches_lora_target(name: str, target_modules) -> bool:
     targets = set(target_modules or [])
-    return not targets or any(name == target or name.endswith(f".{target}") for target in targets)
+    if not targets:
+        return True
+    # Keep the public target names shared by Qwen/Llama recipes while allowing
+    # Mixtral's native expert projections to use their w1/w3/w2 names.
+    aliases = {
+        "w1": "gate_proj",
+        "w3": "up_proj",
+        "w2": "down_proj",
+    }
+    for target in targets:
+        if name == target or name.endswith(f".{target}"):
+            return True
+        suffix = name.rsplit(".", 1)[-1]
+        if ".experts." in name and aliases.get(suffix) == target:
+            return True
+    return False
 
 
 def _set_child_module(root: torch.nn.Module, qualified_name: str, replacement: torch.nn.Module) -> None:
@@ -1031,22 +1046,39 @@ def _replace_packed_moe_experts_with_lora(model, masks, config, quantization, ta
         )
     replaced, consumed = {}, set()
     for name, block in list(model.named_modules()):
-        expected_class = (
-            "FlatQuantQwen3MoeSparseMoeBlock"
+        expected_classes = (
+            {"FlatQuantQwen3MoeSparseMoeBlock", "FlatQuantMixtralSparseMoeBlock"}
             if quantization == "flatquant"
-            else "SplitQuantQwen3MoeSparseMoeBlock"
+            else {"SplitQuantQwen3MoeSparseMoeBlock", "SplitQuantMixtralSparseMoeBlock"}
         )
-        if block.__class__.__name__ != expected_class or not getattr(block, "experts_are_packed", False):
+        if block.__class__.__name__ not in expected_classes or not getattr(block, "experts_are_packed", False):
             continue
         prefix = name
         block_masks = {}
         for expert_index in range(int(block.experts.num_experts)):
-            for projection in ("gate_proj", "up_proj", "down_proj"):
-                key = f"{prefix}.experts.{expert_index}.{projection}"
-                if key not in masks:
-                    raise KeyError(f"Missing packed expert pruning mask: {key}")
-                block_masks[key] = masks[key]
-                consumed.add(key)
+            # Qwen3 masks use gate/up/down names. Mixtral masks may originate
+            # from its native w1/w3/w2 expert layout, even when quantization
+            # repacks the experts into gate_up_proj/down_proj tensors.
+            projection_aliases = {
+                "gate_proj": ("gate_proj", "w1"),
+                "up_proj": ("up_proj", "w3"),
+                "down_proj": ("down_proj", "w2"),
+            }
+            for projection, aliases in projection_aliases.items():
+                found_key = next(
+                    (
+                        f"{prefix}.experts.{expert_index}.{alias}"
+                        for alias in aliases
+                        if f"{prefix}.experts.{expert_index}.{alias}" in masks
+                    ),
+                    None,
+                )
+                if found_key is None:
+                    raise KeyError(
+                        f"Missing packed expert pruning mask for {prefix}.experts.{expert_index}.{projection}"
+                    )
+                block_masks[f"{prefix}.experts.{expert_index}.{projection}"] = masks[found_key]
+                consumed.add(found_key)
         wrapper = PackedCompressionLoRAExperts(
             block.experts,
             block_masks,
@@ -1245,6 +1277,7 @@ def _select_flatquant_apply_wrapper(model, source_root: Path):
     from flatquant.model_tools.minicpm_utils import apply_flatquant_to_minicpm
     from flatquant.model_tools.qwen3_utils import apply_flatquant_to_qwen3
     from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
+    from flatquant.model_tools.mixtral_utils import apply_flatquant_to_mixtral
 
     model_type = getattr(model.config, "model_type", None)
     rope_scaling = getattr(model.config, "rope_scaling", None) or {}
@@ -1261,6 +1294,8 @@ def _select_flatquant_apply_wrapper(model, source_root: Path):
         from flatquant.model_tools.qwen3_utils import apply_flatquant_to_qwen3_moe
 
         return apply_flatquant_to_qwen3_moe
+    if model_type == "mixtral":
+        return apply_flatquant_to_mixtral
     if model_type == "qwen3_5":
         from flatquant.model_tools.qwen3_5_utils import apply_flatquant_to_qwen3_5
 
@@ -1278,6 +1313,7 @@ def _select_splitquant_apply_wrapper(model):
     from splitquant.model_tools.minicpm_split_utils import apply_splitquant_to_minicpm
     from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3
     from splitquant.model_tools.qwen_split_utils import apply_splitquant_to_qwen
+    from splitquant.model_tools.mixtral_split_utils import apply_splitquant_to_mixtral
 
     model_type = getattr(model.config, "model_type", None)
     rope_scaling = getattr(model.config, "rope_scaling", None) or {}
@@ -1294,6 +1330,8 @@ def _select_splitquant_apply_wrapper(model):
         from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3_moe
 
         return apply_splitquant_to_qwen3_moe
+    if model_type == "mixtral":
+        return apply_splitquant_to_mixtral
     if model_type == "qwen3_5":
         from splitquant.model_tools.qwen3_5_split_utils import apply_splitquant_to_qwen3_5
 
@@ -1484,7 +1522,10 @@ class CompressionLoRAMethod(BaseFinetuningMethod):
             quantization,
             getattr(args, "compression_lora_target_modules", None),
         )
-        linear_masks = {name: mask for name, mask in masks.items() if ".experts." not in name}
+        # Qwen3 packed experts consume their per-expert masks in the packed
+        # wrapper. Mixtral keeps experts as ordinary w1/w2/w3 linears, so those
+        # masks must remain in the regular replacement path.
+        linear_masks = {name: mask for name, mask in masks.items() if name not in consumed_masks}
         selected_linear_masks = {
             name: mask
             for name, mask in linear_masks.items()

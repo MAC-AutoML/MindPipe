@@ -157,8 +157,29 @@ class PackedCompressionLoRAExperts(nn.Module):
             start += count
         return torch.cat(pieces, dim=0)
 
-    def _quantize_weight(self, weight):
-        return self.base._quantize_weight(weight)
+    def _quantize_weight(self, weight, *, indices=None, kind=None):
+        """Re-quantize routed experts while preserving FlatQuant LWC state."""
+        if not getattr(self.base, "lwc", False) or indices is None:
+            return self.base._quantize_weight(weight)
+        if kind == "gate_up":
+            rows = int(self.base.gate_up_proj.shape[1])
+            clip_max = self.base.clip_factor_w_gate_up_max.reshape(
+                self.num_experts, rows, 1
+            ).index_select(0, indices).reshape(-1, 1)
+            clip_min = self.base.clip_factor_w_gate_up_min.reshape(
+                self.num_experts, rows, 1
+            ).index_select(0, indices).reshape(-1, 1)
+        elif kind == "down":
+            rows = int(self.base.down_proj.shape[1])
+            clip_max = self.base.clip_factor_w_down_max.reshape(
+                self.num_experts, rows, 1
+            ).index_select(0, indices).reshape(-1, 1)
+            clip_min = self.base.clip_factor_w_down_min.reshape(
+                self.num_experts, rows, 1
+            ).index_select(0, indices).reshape(-1, 1)
+        else:
+            raise ValueError(f"Unknown packed expert quantization kind: {kind!r}")
+        return self.base._quantize_weight(weight, clip_max, clip_min)
 
     def _gate_up_weights(self, indices, input_trans, gate_A, gate_B, up_A, up_B):
         # Both quantizers derive scales independently per output row (or per
@@ -172,7 +193,9 @@ class PackedCompressionLoRAExperts(nn.Module):
             shape = gate.shape
             gate = input_trans(gate.reshape(-1, shape[-1]), inv_t=True).reshape(shape)
             up = input_trans(up.reshape(-1, shape[-1]), inv_t=True).reshape(shape)
-        gate_up = self._quantize_weight(torch.cat((gate, up), dim=1))
+        gate_up = self._quantize_weight(
+            torch.cat((gate, up), dim=1), indices=indices, kind="gate_up"
+        )
         gate, up = gate_up.split(self.intermediate_size, dim=1)
         gate = gate * self._mask("gate_proj", indices, gate.shape, gate.device, gate.dtype)
         up = up * self._mask("up_proj", indices, up.shape, up.device, up.dtype)
@@ -185,7 +208,7 @@ class PackedCompressionLoRAExperts(nn.Module):
         if down_trans is not None:
             shape = down.shape
             down = down_trans(down.reshape(-1, shape[-1]), inv_t=True).reshape(shape)
-        down = self._quantize_weight(down)
+        down = self._quantize_weight(down, indices=indices, kind="down")
         down = down * self._mask("down_proj", indices, down.shape, down.device, down.dtype)
         return down
 
@@ -307,6 +330,8 @@ def apply_packed_moe_masks(model: nn.Module, masks: dict[str, object]) -> list[s
         if block.__class__.__name__ not in {
             "FlatQuantQwen3MoeSparseMoeBlock",
             "SplitQuantQwen3MoeSparseMoeBlock",
+            "FlatQuantMixtralSparseMoeBlock",
+            "SplitQuantMixtralSparseMoeBlock",
         }:
             continue
         experts = getattr(block, "experts", None)
@@ -314,10 +339,15 @@ def apply_packed_moe_masks(model: nn.Module, masks: dict[str, object]) -> list[s
             continue
         intermediate = experts.gate_up_proj.shape[1] // 2
         for expert_index in range(experts.gate_up_proj.shape[0]):
-            gate_key = f"{name}.experts.{expert_index}.gate_proj"
-            up_key = f"{name}.experts.{expert_index}.up_proj"
-            down_key = f"{name}.experts.{expert_index}.down_proj"
-            if gate_key not in masks:
+            keys = {
+                "gate": [f"{name}.experts.{expert_index}.gate_proj", f"{name}.experts.{expert_index}.w1"],
+                "up": [f"{name}.experts.{expert_index}.up_proj", f"{name}.experts.{expert_index}.w3"],
+                "down": [f"{name}.experts.{expert_index}.down_proj", f"{name}.experts.{expert_index}.w2"],
+            }
+            gate_key = next((key for key in keys["gate"] if key in masks), None)
+            up_key = next((key for key in keys["up"] if key in masks), None)
+            down_key = next((key for key in keys["down"] if key in masks), None)
+            if gate_key is None or up_key is None or down_key is None:
                 continue
             gate = materialize_mask(masks[gate_key], device=experts.gate_up_proj.device)
             up = materialize_mask(masks[up_key], device=experts.gate_up_proj.device)
