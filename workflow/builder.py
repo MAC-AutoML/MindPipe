@@ -240,6 +240,12 @@ def _add_quantization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--flatquant_resume_from", default=None)
     parser.add_argument("--flatquant_reload_matrix_from", default=None)
     parser.add_argument("--flatquant_save_matrix", type=_bool_flag, default=False)
+    parser.add_argument(
+        "--flatquant_cpu_offload",
+        type=_bool_flag,
+        default=False,
+        help="Keep the model on CPU and move only the layer being calibrated to the target device.",
+    )
     # SplitQuant
     parser.add_argument("--splitquant_epochs", type=int, default=15)
     parser.add_argument("--splitquant_calibration_batch_size", type=int, default=32)

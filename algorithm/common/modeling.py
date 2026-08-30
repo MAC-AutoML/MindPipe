@@ -1315,6 +1315,113 @@ def normalize_mixtral_expert_intermediate_size_for_hf_save(model: nn.Module) -> 
     return changed
 
 
+@torch.no_grad()
+def restore_splitquant_mixtral_for_hf_save(
+    model: nn.Module,
+    *,
+    experts_on_cpu: bool = True,
+) -> int:
+    """Restore SplitQuant Mixtral wrappers to the native HF parameter layout.
+
+    SplitQuant calibrates Mixtral experts as individual w1/w2/w3 linears so
+    RTN/GPTQ can visit every projection.  HF Mixtral checkpoints instead store
+    experts as packed gate_up_proj/down_proj tensors and attention projections
+    without the wrapper's extra ``linear`` component.  Rebuilding native
+    decoder layers here keeps calibration unchanged while making the saved
+    checkpoint loadable by AutoModelForCausalLM.
+
+    Native HF modules cannot reproduce activation/KV fake quantization.  The
+    conversion is therefore intentionally limited to weight-only SplitQuant.
+    """
+    config = getattr(model, "config", None)
+    text_config = getattr(config, "text_config", config)
+    if not (_is_mixtral_config(config) or _is_mixtral_config(text_config)):
+        return 0
+
+    try:
+        backbone = get_text_backbone(model)
+    except NotImplementedError:
+        return 0
+
+    target_layer_indices = [
+        index
+        for index, layer in enumerate(backbone.layers)
+        if layer.__class__.__name__ == "SplitQuantMixtralDecoderLayer"
+    ]
+    if not target_layer_indices:
+        return 0
+
+    from transformers.models.mixtral.modeling_mixtral import MixtralDecoderLayer
+
+    for layer_index in target_layer_indices:
+        layer = backbone.layers[layer_index]
+        sample_args = layer.mlp.experts[0].args
+        non_weight_bits = {
+            "activation": int(getattr(sample_args, "a_bits", 16)),
+            "query": int(getattr(sample_args, "q_bits", 16)),
+            "key": int(getattr(sample_args, "k_bits", 16)),
+            "value": int(getattr(sample_args, "v_bits", 16)),
+        }
+        unsupported = {name: bits for name, bits in non_weight_bits.items() if bits < 16}
+        if unsupported:
+            raise ValueError(
+                "Cannot export SplitQuant Mixtral as a native HF checkpoint when "
+                f"activation/KV quantization is enabled: {unsupported}. "
+                "Native Mixtral modules cannot reproduce those fake-quant operations."
+            )
+        if not all(
+            bool(getattr(getattr(layer.self_attn, name), "_eval_mode", False))
+            for name in ("q_proj", "k_proj", "v_proj", "o_proj")
+        ):
+            raise RuntimeError("SplitQuant Mixtral must be reparameterized before HF save.")
+
+        with torch.device("meta"):
+            native_layer = MixtralDecoderLayer(text_config, layer_index)
+
+        for projection_name in ("q_proj", "k_proj", "v_proj", "o_proj"):
+            wrapped = getattr(layer.self_attn, projection_name)
+            setattr(native_layer.self_attn, projection_name, wrapped.linear)
+
+        native_layer.input_layernorm = layer.input_layernorm
+        native_layer.post_attention_layernorm = layer.post_attention_layernorm
+        native_layer.mlp.gate = layer.mlp.gate
+
+        experts = list(layer.mlp.experts)
+        parameter_device = torch.device("cpu") if experts_on_cpu else experts[0].w1.linear.weight.device
+        gate_up_shape = (
+            len(experts),
+            experts[0].w1.linear.weight.shape[0] * 2,
+            experts[0].w1.linear.weight.shape[1],
+        )
+        down_shape = (
+            len(experts),
+            experts[0].w2.linear.weight.shape[0],
+            experts[0].w2.linear.weight.shape[1],
+        )
+        source_dtype = experts[0].w1.linear.weight.dtype
+        gate_up = torch.empty(gate_up_shape, dtype=source_dtype, device=parameter_device)
+        down = torch.empty(down_shape, dtype=source_dtype, device=parameter_device)
+        for expert_index, expert in enumerate(experts):
+            gate_up[expert_index, : gate_up_shape[1] // 2].copy_(
+                expert.w1.linear.weight.detach().to(parameter_device)
+            )
+            gate_up[expert_index, gate_up_shape[1] // 2 :].copy_(
+                expert.w3.linear.weight.detach().to(parameter_device)
+            )
+            down[expert_index].copy_(expert.w2.linear.weight.detach().to(parameter_device))
+
+        native_layer.mlp.experts.gate_up_proj = nn.Parameter(gate_up, requires_grad=False)
+        native_layer.mlp.experts.down_proj = nn.Parameter(down, requires_grad=False)
+        backbone.layers[layer_index] = native_layer
+        del experts, layer, native_layer, gate_up, down
+
+    LOGGER.info(
+        "Restored %d SplitQuant Mixtral decoder layer(s) to native HF packed layout.",
+        len(target_layer_indices),
+    )
+    return len(target_layer_indices)
+
+
 def build_decoder_layer_groups(layer: nn.Module, available_names: set[str]) -> list[list[str]]:
     groups: list[list[str]] = []
     grouped_names: set[str] = set()

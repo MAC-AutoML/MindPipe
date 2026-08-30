@@ -84,13 +84,23 @@ def _sequential_groups_for_layer(layer):
             ["self_attn.o_proj.linear"],
         ]
         for expert_index in range(len(layer.mlp.experts)):
-            groups.append(
-                [
-                    f"mlp.experts.{expert_index}.up_proj.linear",
-                    f"mlp.experts.{expert_index}.gate_proj.linear",
-                ]
-            )
-            groups.append([f"mlp.experts.{expert_index}.down_proj.linear"])
+            expert = layer.mlp.experts[expert_index]
+            if hasattr(expert, "w1"):
+                groups.append(
+                    [
+                        f"mlp.experts.{expert_index}.w1.linear",
+                        f"mlp.experts.{expert_index}.w3.linear",
+                    ]
+                )
+                groups.append([f"mlp.experts.{expert_index}.w2.linear"])
+            else:
+                groups.append(
+                    [
+                        f"mlp.experts.{expert_index}.up_proj.linear",
+                        f"mlp.experts.{expert_index}.gate_proj.linear",
+                    ]
+                )
+                groups.append([f"mlp.experts.{expert_index}.down_proj.linear"])
         return groups
     if getattr(layer, "layer_type", None) == "linear_attention":
         return [
@@ -140,13 +150,23 @@ def _quantizable_names_for_layer(layer):
             "self_attn.o_proj.linear",
         }
         for expert_index in range(len(layer.mlp.experts)):
-            names.update(
-                {
-                    f"mlp.experts.{expert_index}.up_proj.linear",
-                    f"mlp.experts.{expert_index}.gate_proj.linear",
-                    f"mlp.experts.{expert_index}.down_proj.linear",
-                }
-            )
+            expert = layer.mlp.experts[expert_index]
+            if hasattr(expert, "w1"):
+                names.update(
+                    {
+                        f"mlp.experts.{expert_index}.w1.linear",
+                        f"mlp.experts.{expert_index}.w2.linear",
+                        f"mlp.experts.{expert_index}.w3.linear",
+                    }
+                )
+            else:
+                names.update(
+                    {
+                        f"mlp.experts.{expert_index}.up_proj.linear",
+                        f"mlp.experts.{expert_index}.gate_proj.linear",
+                        f"mlp.experts.{expert_index}.down_proj.linear",
+                    }
+                )
         return names
     if getattr(layer, "layer_type", None) == "linear_attention":
         return {

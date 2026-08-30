@@ -1,0 +1,50 @@
+schema: mindpipe/config/v1
+
+model:
+  name: Mixtral-8x7B-v0.1
+  model_path: /mnt/82_store/LLM-weights/Mixtral-8x7B-v0.1
+
+defaults:
+  dtype: bfloat16
+  attn_implementation: sdpa
+  eval_vlm: false
+  splitquant_calibration_batch_size: 4
+  zero_shot_batch_size: 1
+
+recipes:
+  w3a16:
+    weight_bits: 3
+    activation_bits: 16
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+  w4a16:
+    weight_bits: 4
+    activation_bits: 16
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+  w4a4:
+    weight_bits: 4
+    activation_bits: 4
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+  w8a8:
+    weight_bits: 8
+    activation_bits: 8
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+  smoke:
+    weight_bits: 8
+    activation_bits: 16
+    query_bits: 16
+    key_bits: 16
+    value_bits: 16
+    calibration_samples: 2
+    splitquant_calibration_batch_size: 1
+    splitquant_epochs: 1
+    max_eval_chunks: 1
+    eval_ppl: true
+    eval_zero_shot: false

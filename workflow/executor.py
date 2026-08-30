@@ -17,6 +17,7 @@ from algorithm.common.modeling import load_model_and_tokenizer
 from algorithm.common.modeling import normalize_dense_qwen3_mlp_intermediate_size_for_hf_save
 from algorithm.common.modeling import normalize_mixtral_expert_intermediate_size_for_hf_save
 from algorithm.common.modeling import normalize_qwen3_moe_expert_intermediate_size_for_hf_save
+from algorithm.common.modeling import restore_splitquant_mixtral_for_hf_save
 from algorithm.finetuning.registry import get_method as get_finetuning_method
 from algorithm.finetuning.compression_lora.mask_utils import extract_masks_from_pruned_model
 from algorithm.finetuning.compression_lora.mask_utils import mask_sparsity
@@ -93,6 +94,18 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
         weight_snapshot = None
         unfuse_qwen3_5_moe_experts(model, calibrate_all_experts=False)
         unfuse_qwen3_moe_experts(model, calibrate_all_experts=False)
+        # FlatQuant Mixtral may keep routed experts in packed 3-D tensors.
+        # Expose the native per-expert w1/w2/w3 linears while Wanda captures
+        # masks; they are restored immediately after mask extraction.
+        mixtral_unfused = []
+        for module in model.modules():
+            if (
+                module.__class__.__name__ == "FlatQuantMixtralSparseMoeBlock"
+                and getattr(module, "experts_are_packed", False)
+                and hasattr(module, "unfuse_experts")
+            ):
+                if module.unfuse_experts(calibrate_all_experts=False):
+                    mixtral_unfused.append(module)
         if getattr(stage_args, "_capture_pruning_masks", False):
             weight_snapshot = snapshot_weights(
                 model,
@@ -119,6 +132,9 @@ def _run_stage(stage_method, stage: WorkflowStage, model, tokenizer_bundle, stag
                 },
             )
             stage_result["pruning_masks_path"] = str(masks_path)
+        for module in mixtral_unfused:
+            if not getattr(module, "experts_are_packed", False):
+                module.refuse_experts()
         refused_qwen3_moe_blocks = refuse_qwen3_moe_experts_for_hf_save(model, experts_on_cpu=False)
         if refused_qwen3_moe_blocks:
             stage_result["refused_qwen3_moe_blocks_for_eval"] = refused_qwen3_moe_blocks
@@ -458,6 +474,7 @@ def run_workflow(config: WorkflowConfig) -> WorkflowRunResult:
         normalize_qwen3_moe_expert_intermediate_size_for_hf_save(model)
         normalize_mixtral_expert_intermediate_size_for_hf_save(model)
         normalize_dense_qwen3_mlp_intermediate_size_for_hf_save(model)
+        restore_splitquant_mixtral_for_hf_save(model)
         model.save_pretrained(model_dir)
         tokenizer_bundle.save_pretrained(str(model_dir))
         artifacts["saved_model_dir"] = str(model_dir)

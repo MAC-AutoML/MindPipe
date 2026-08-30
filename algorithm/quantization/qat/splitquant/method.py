@@ -239,6 +239,10 @@ class SplitQuantMethod(BaseQuantizationMethod):
                 from splitquant.model_tools.qwen3_split_utils import apply_splitquant_to_qwen3_moe
 
                 apply_wrapper = apply_splitquant_to_qwen3_moe
+            elif model_type == "mixtral":
+                from splitquant.model_tools.mixtral_split_utils import apply_splitquant_to_mixtral
+
+                apply_wrapper = apply_splitquant_to_mixtral
             elif model_type == "qwen3_5":
                 from splitquant.model_tools.qwen3_5_split_utils import apply_splitquant_to_qwen3_5
 
